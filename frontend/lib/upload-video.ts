@@ -15,7 +15,7 @@ export function isVideoFile(file: File | Blob, filename: string): boolean {
 export interface UploadResult {
   file_uri: string;
   mime_type: string;
-  /** 0 = GEMINI_API_KEY, 1 = GEMINI_API_KEY_2 — must match /api/analyze when using file_uri. */
+  /** 0-based index into GEMINI_API_KEY, GEMINI_API_KEY_2, _3, … — must match /api/analyze for file_uri. */
   gemini_key_index?: number;
 }
 

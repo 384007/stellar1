@@ -133,7 +133,7 @@ export async function POST(request: NextRequest) {
           file_uri: data.file?.uri || null,
           file_name: data.file?.name || null,
           mime_type: mimeType,
-          /** Same index as GEMINI_API_KEY (0) / GEMINI_API_KEY_2 (1). Analyze must use this key for file_uri. */
+          /** 0-based index into ordered keys (GEMINI_API_KEY, _2, _3, …). Analyze must use this for file_uri. */
           gemini_key_index: keyIndex,
         });
       } catch (e) {

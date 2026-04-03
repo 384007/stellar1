@@ -4,12 +4,12 @@
  * CF Edge Workers in CN PoPs can't reach generativelanguage.googleapis.com
  * reliably. This module provides:
  *   1. Ordered list of hosts: direct Google → ALI proxy → JD proxy
- *   2. Multi-key failover: GEMINI_API_KEY → GEMINI_API_KEY_2
+ *   2. Multi-key failover: GEMINI_API_KEY → GEMINI_API_KEY_2 … _10 (same order as Python gemini_service)
  *   3. URL rewriting for upload URIs returned by Google
  *
  * Configure via CF Pages Secrets / env vars:
  *   GEMINI_API_KEY        — primary Gemini key
- *   GEMINI_API_KEY_2      — secondary Gemini key (quota failover)
+ *   GEMINI_API_KEY_2 … GEMINI_API_KEY_10 — optional extra keys (quota / Files API failover)
  *   GEMINI_PROXY_ALI      — Alibaba Cloud reverse proxy host
  *   GEMINI_PROXY_JD       — JD Cloud reverse proxy host
  *   QWEN_API_KEY          — Qwen fallback key (dashscope.aliyuncs.com)
@@ -44,8 +44,10 @@ export function getGeminiKeys(getCfEnv: (key: string) => string): string[] {
   const keys: string[] = [];
   const k1 = getCfEnv("GEMINI_API_KEY");
   if (k1) keys.push(k1);
-  const k2 = getCfEnv("GEMINI_API_KEY_2");
-  if (k2) keys.push(k2);
+  for (let n = 2; n <= 10; n++) {
+    const k = getCfEnv(`GEMINI_API_KEY_${n}`);
+    if (k) keys.push(k);
+  }
   return keys;
 }
 

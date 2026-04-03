@@ -94,7 +94,7 @@ function buildAnalysisResponse(
     type: "lite",
     ai_provider: aiProvider,
     model_used: model,
-    /** Gemini only: 1 = GEMINI_API_KEY, 2 = GEMINI_API_KEY_2. null when Qwen fallback. */
+    /** Gemini only: 1-based slot (1 = GEMINI_API_KEY, 2 = GEMINI_API_KEY_2, …). null when Qwen fallback. */
     key_used: aiProvider === "qwen" ? null : keyIndex + 1,
     host_used: hostHostname || (aiProvider === "qwen" ? "dashscope.aliyuncs.com" : ""),
     what_i_see: parsed.what_i_see || "",
