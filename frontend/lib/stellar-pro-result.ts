@@ -63,6 +63,16 @@ function mergePhaseKeyframeMaps(
   return Object.keys(merged).length ? merged : undefined;
 }
 
+/** Coerce API total_score (number or numeric string) for UI / withheld checks. */
+function parseProTotalScore(v: unknown): number {
+  if (typeof v === "number" && Number.isFinite(v)) return v;
+  if (typeof v === "string") {
+    const n = parseFloat(v.replace(/,/g, "").trim());
+    return Number.isFinite(n) ? n : 0;
+  }
+  return 0;
+}
+
 /**
  * Map Stellar Pro expanded payload → PlusResultView model (same tabs / skeleton / video).
  * Analysis text and scores still come from Stellar Pro; Plus-only fields are synthesized.
@@ -76,8 +86,7 @@ export function proExpandedToPlusViewModel(r: Record<string, any>): PlusAnalysis
   const suggestions_zh = Array.isArray(r.suggestions_zh) ? (r.suggestions_zh as string[]) : [];
   const summary = String(r.summary ?? "").trim();
   const summary_zh = String(r.summary_zh ?? r.summary ?? "").trim();
-  const total =
-    typeof r.total_score === "number" && Number.isFinite(r.total_score) ? r.total_score : 0;
+  const total = parseProTotalScore(r.total_score);
   const posture_score = Math.min(10, Math.max(0, total / 10));
 
   const firstIssZh = issues_zh[0] || (summary_zh ? summary_zh.slice(0, 100) : "");
@@ -198,7 +207,7 @@ export function expandStellarProForUi(raw: Record<string, any>): Record<string, 
     summary,
     summary_zh,
     scores: raw.scores ?? {},
-    total_score: Number(raw.total_score ?? 0),
+    total_score: parseProTotalScore(raw.total_score),
     issues: raw.issues ?? [],
     issues_zh: raw.issues_zh ?? [],
     suggestions: raw.suggestions ?? [],

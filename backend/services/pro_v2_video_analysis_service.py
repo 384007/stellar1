@@ -11,6 +11,8 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+import cv2
+
 from services.pro_contact_sheet_service import build_pro_keyframe_contact_sheet
 from services.pro_v2_dense_scan_service import DenseFrame, dense_scan_swing_region
 from services.pro_v2_ffmpeg_service import run_pro_v2_ffmpeg_preprocess
@@ -22,6 +24,67 @@ from services.pro_v2_simple_gate_service import run_simple_gate
 from services.pro_v2_swing_window_service import find_swing_window_seconds
 
 logger = logging.getLogger(__name__)
+
+
+def _source_frame_count(video_path: str) -> int:
+    try:
+        cap = cv2.VideoCapture(video_path)
+        if not cap.isOpened():
+            return 0
+        n = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        cap.release()
+        return max(0, n)
+    except Exception:
+        return 0
+
+
+def _normalize_training_plan(raw: Any) -> dict[str, Any] | None:
+    if not raw or not isinstance(raw, dict):
+        return None
+    out: dict[str, Any] = {}
+    for k, v in raw.items():
+        if not isinstance(k, str) or not isinstance(v, dict):
+            continue
+        kl = k.strip().lower()
+        if not kl.startswith("day"):
+            continue
+        suf = kl[3:]
+        if not suf.isdigit():
+            continue
+        day_key = f"day{int(suf)}"
+        focus = str(v.get("focus") or "").strip()
+        drills_raw = v.get("drills")
+        drills: list[str] = []
+        if isinstance(drills_raw, list):
+            drills = [str(x).strip() for x in drills_raw if str(x).strip()]
+        dur = str(v.get("duration") or "20–30 min").strip()
+        if focus or drills:
+            out[day_key] = {
+                "focus": focus or "练习重点",
+                "drills": drills[:6] or ["参考改进建议完成练习"],
+                "duration": dur,
+            }
+    for need in (f"day{i}" for i in range(1, 8)):
+        if need not in out:
+            return None
+    return out
+
+
+def _training_plan_fallback(suggestions_zh: list[str], suggestions: list[str]) -> dict[str, Any]:
+    zhs = [str(s).strip() for s in suggestions_zh if str(s).strip()]
+    ens = [str(s).strip() for s in suggestions if str(s).strip()]
+    zh0 = zhs[0] if zhs else "按计划完成挥杆与节奏练习"
+    en0 = ens[0] if ens else "Swing and tempo drills"
+    out: dict[str, Any] = {}
+    for i in range(7):
+        zh = zhs[i] if i < len(zhs) else zh0
+        en = ens[i] if i < len(ens) else en0
+        out[f"day{i + 1}"] = {
+            "focus": zh[:120],
+            "drills": [zh[:200], en[:200]],
+            "duration": "20–30 min",
+        }
+    return out
 
 
 def _nearest_dense_motion(dense: list[DenseFrame], frame_index: int) -> float:
@@ -165,6 +228,12 @@ async def run_pro_v2_video_analysis(
     except (TypeError, ValueError):
         total_score_f = 0.0
 
+    training_plan = _normalize_training_plan(report.get("training_plan"))
+    if not training_plan:
+        training_plan = _training_plan_fallback(suggestions_zh, suggestions)
+
+    src_frames = _source_frame_count(ff.analysis_240_path)
+
     minimal: dict[str, Any] = {
         "analysis_id": analysis_id,
         "status": "completed",
@@ -182,6 +251,13 @@ async def run_pro_v2_video_analysis(
         "suggestions_zh": suggestions_zh,
         "scores": report.get("scores") or {},
         "type": "pro",
+        "training_plan": training_plan,
+        "video_meta": {
+            "fps": ff.fps,
+            "duration_s": ff.duration_s,
+            "source_frame_count": src_frames,
+        },
+        "pro_v2_screen_pipeline": bool(screen_mode),
     }
     if screen_cropped_video_path:
         minimal["screen_cropped_video_url"] = screen_cropped_video_path

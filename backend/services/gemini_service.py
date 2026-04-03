@@ -560,15 +560,26 @@ MOTION_CONTEXT (JSON):
 Return ONLY valid JSON:
 {{
   "total_score": <0-100>,
+  "scores": {{"grip": <0-100>, "stance": <0-100>, "backswing": <0-100>, "downswing": <0-100>, "follow_through": <0-100>}},
   "issues": ["Phase: specific issue", "...", "...", "..."],
   "issues_zh": ["阶段：具体问题", "...", "...", "..."],
   "suggestions": ["Phase: actionable drill/cue", "...", "...", "..."],
   "suggestions_zh": ["阶段：可执行练习或口令", "...", "...", "..."],
   "summary": "450-700 words English coaching report",
-  "summary_zh": "500-900字中文教练报告"
+  "summary_zh": "500-900字中文教练报告",
+  "training_plan": {{
+    "day1": {{"focus": "topic (Chinese)", "drills": ["drill1", "drill2"], "duration": "30 min"}},
+    "day2": {{"focus": "...", "drills": ["...", "..."], "duration": "30 min"}},
+    "day3": {{"focus": "...", "drills": ["...", "..."], "duration": "30 min"}},
+    "day4": {{"focus": "...", "drills": ["...", "..."], "duration": "30 min"}},
+    "day5": {{"focus": "...", "drills": ["...", "..."], "duration": "30 min"}},
+    "day6": {{"focus": "...", "drills": ["...", "..."], "duration": "30 min"}},
+    "day7": {{"focus": "复习与录像对比", "drills": ["drill1"], "duration": "20 min"}}
+  }}
 }}
 
 Minimum list length: 4 items for each of issues, issues_zh, suggestions, suggestions_zh.
+training_plan MUST include day1 through day7; focus can be Chinese; drills concrete and short.
 """
 
 IMAGE_ONLY_PROMPT = """You are an expert PGA-level golf coach and biomechanics analyst.

@@ -115,6 +115,8 @@ export default function ProPage() {
   const screenTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   /** Pro v2 screen preprocess: true when 对屏拍摄 (screen tab) before opening 实拍. */
   const screenCaptureForProV2Ref = useRef(false);
+  /** After Pro v2 screen-mode analyze, open 姿势诊断 first (report text); upload path stays 视频分析 first. */
+  const proV2ScreenOpenDiagnosisTabRef = useRef(false);
 
   const backendUrlsRef = useRef<string[]>(["https://stellar1-backend.onrender.com"]);
   /** Default until /api/pro/precheck returns — avoids skipping Modal if user analyzes before precheck finishes. */
@@ -156,8 +158,7 @@ export default function ProPage() {
         }
         const lists = normalizeProV2UrlListsFromPrecheck(data);
         if (lists.backendUrls.length) backendUrlsRef.current = lists.backendUrls;
-        modalUrlsRef.current =
-          lists.modalUrls.length > 0 ? lists.modalUrls : [DEFAULT_PRO_V2_MODAL_URL];
+        modalUrlsRef.current = lists.modalUrls;
         cnNetworkHintRef.current = data.network_hint === "cn";
       })
       .catch(() => {});
@@ -299,6 +300,7 @@ export default function ProPage() {
   }
 
   async function processBlob(blob: Blob, filename: string, proV2ScreenMode?: boolean) {
+    proV2ScreenOpenDiagnosisTabRef.current = resolveProV2ScreenMode(filename, proV2ScreenMode);
     setStage("processing");
     setError("");
     setProgress(0);
@@ -334,8 +336,7 @@ export default function ProPage() {
           backendUrls: backendUrlsRef.current,
           cnNetworkHint: cn,
           screenMode: resolveProV2ScreenMode(filename, proV2ScreenMode),
-          // Same wall clock as Render: CN Modal cold start + latency often exceeds 90s; short budget aborted fetch and skipped real Modal work.
-          modalTimeoutMs: 360_000,
+          modalTimeoutMs: cn ? 90_000 : 360_000,
           renderTimeoutMs: 360_000,
           logPrefix: "[pro]",
         });
@@ -711,7 +712,7 @@ export default function ProPage() {
               backendUrl={backendUrlsRef.current[0] || "https://stellar1-backend.onrender.com"}
               externalVideoSrc={proVideoSrc}
               coachingMode="pro"
-              initialActiveTab="video"
+              initialActiveTab={proV2ScreenOpenDiagnosisTabRef.current ? "diagnosis" : "video"}
             />
             <div className="text-center py-6">
               <button
