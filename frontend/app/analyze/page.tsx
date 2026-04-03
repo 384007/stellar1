@@ -223,7 +223,7 @@ export default function AnalyzePage() {
           backendUrls,
           cnNetworkHint: cnPro,
           screenMode,
-          modalTimeoutMs: cnPro ? 45_000 : 120_000,
+          modalTimeoutMs: 360_000,
           renderTimeoutMs: 360_000,
           logPrefix: `[stellar v2] ${mb}MB`,
         },

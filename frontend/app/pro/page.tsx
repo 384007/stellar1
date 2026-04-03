@@ -156,7 +156,8 @@ export default function ProPage() {
         }
         const lists = normalizeProV2UrlListsFromPrecheck(data);
         if (lists.backendUrls.length) backendUrlsRef.current = lists.backendUrls;
-        modalUrlsRef.current = lists.modalUrls;
+        modalUrlsRef.current =
+          lists.modalUrls.length > 0 ? lists.modalUrls : [DEFAULT_PRO_V2_MODAL_URL];
         cnNetworkHintRef.current = data.network_hint === "cn";
       })
       .catch(() => {});
@@ -333,7 +334,8 @@ export default function ProPage() {
           backendUrls: backendUrlsRef.current,
           cnNetworkHint: cn,
           screenMode: resolveProV2ScreenMode(filename, proV2ScreenMode),
-          modalTimeoutMs: cn ? 90_000 : 360_000,
+          // Same wall clock as Render: CN Modal cold start + latency often exceeds 90s; short budget aborted fetch and skipped real Modal work.
+          modalTimeoutMs: 360_000,
           renderTimeoutMs: 360_000,
           logPrefix: "[pro]",
         });

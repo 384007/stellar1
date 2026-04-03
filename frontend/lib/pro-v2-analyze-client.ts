@@ -5,7 +5,7 @@ export type RunProV2AnalyzeOptions = {
   backendUrls: string[];
   cnNetworkHint: boolean;
   screenMode: boolean;
-  /** Modal attempt timeout (analyze page uses shorter cold-start budget). */
+  /** Modal attempt timeout — align with Render (e.g. 360s) so cold start is not aborted early. */
   modalTimeoutMs: number;
   renderTimeoutMs: number;
   logPrefix: string;
