@@ -19,7 +19,10 @@ import { normalizedTotalScoreForStorage } from "@/lib/safe-analysis-score";
 import { patchLocalHistoryVideoR2Key } from "@/lib/history-sync-record";
 import { expandStellarProForUi } from "@/lib/stellar-pro-result";
 import { pruneLocalStellarHistoryRecords } from "@/lib/pro-history-retention";
-import { normalizeProV2UrlListsFromPrecheck } from "@/lib/pro-v2-endpoints";
+import {
+  DEFAULT_PRO_V2_MODAL_URL,
+  normalizeProV2UrlListsFromPrecheck,
+} from "@/lib/pro-v2-endpoints";
 import { runProV2AnalyzeMultipart } from "@/lib/pro-v2-analyze-client";
 
 interface AnalysisResult {
@@ -191,7 +194,7 @@ export default function AnalyzePage() {
       const defaultBackend =
         process.env.NEXT_PUBLIC_BACKEND_URL || "https://stellar1-backend.onrender.com";
       let proNetworkHint = "";
-      let modalUrls: string[] = [];
+      let modalUrls: string[] = [DEFAULT_PRO_V2_MODAL_URL];
       let backendUrls: string[] = [defaultBackend];
       try {
         const pc = await fetch("/api/pro/precheck", {

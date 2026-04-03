@@ -14,7 +14,8 @@
  * - BACKEND_URL_CN_EXTRA        — CN-only, prepended before primary + global fallbacks
  */
 
-const DEFAULT_MODAL = "https://dytsui--stellar-ai-fastapi-app.modal.run";
+/** Shipped default when env has no MODAL_BACKEND_URL; keep in sync with Modal dashboard deployment. */
+export const DEFAULT_PRO_V2_MODAL_URL = "https://dytsui--stellar-ai-fastapi-app.modal.run";
 const DEFAULT_RENDER = "https://stellar1-backend.onrender.com";
 
 function splitCsv(raw: string): string[] {
@@ -44,7 +45,7 @@ export function buildProV2ModalUrlList(
   const primary = (
     getCfEnv("MODAL_BACKEND_URL") ||
     processEnv.MODAL_BACKEND_URL ||
-    DEFAULT_MODAL
+    DEFAULT_PRO_V2_MODAL_URL
   )
     .trim()
     .replace(/\/+$/, "");

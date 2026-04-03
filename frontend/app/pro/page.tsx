@@ -8,7 +8,10 @@ import { preloadPoseModel } from "@/lib/mediapipe-assets";
 import AnalysisWaiting from "@/components/AnalysisWaiting";
 import type { PoseSnapshot } from "@/components/KeyframeStrip";
 import { saveAnalysisVideo } from "@/lib/video-store";
-import { normalizeProV2UrlListsFromPrecheck } from "@/lib/pro-v2-endpoints";
+import {
+  DEFAULT_PRO_V2_MODAL_URL,
+  normalizeProV2UrlListsFromPrecheck,
+} from "@/lib/pro-v2-endpoints";
 import { runProV2AnalyzeMultipart } from "@/lib/pro-v2-analyze-client";
 import { slimAnalysisResultForHistoryTransport } from "@/lib/strip-result";
 import { normalizedTotalScoreForStorage } from "@/lib/safe-analysis-score";
@@ -114,7 +117,8 @@ export default function ProPage() {
   const screenCaptureForProV2Ref = useRef(false);
 
   const backendUrlsRef = useRef<string[]>(["https://stellar1-backend.onrender.com"]);
-  const modalUrlsRef = useRef<string[]>([]);
+  /** Default until /api/pro/precheck returns — avoids skipping Modal if user analyzes before precheck finishes. */
+  const modalUrlsRef = useRef<string[]>([DEFAULT_PRO_V2_MODAL_URL]);
   const cnNetworkHintRef = useRef(false);
 
   useEffect(() => {
