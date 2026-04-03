@@ -35,6 +35,7 @@ def find_swing_window_seconds(
     sample_stride: int | None = None,
     pad_s: float = 0.18,
     min_swing_s: float = 0.55,
+    screen_mode: bool = False,
 ) -> tuple[float, float]:
     """Return (t_start, t_end) using combined score: energy + motion_x/y proxies + setup→swing drop."""
     path = str(Path(analysis_video_path))
@@ -105,6 +106,14 @@ def find_swing_window_seconds(
     DR_n = _norm01(drop)
 
     combined = 0.38 * E_n + 0.22 * MX_n + 0.22 * MY_n + 0.18 * DR_n
+    if screen_mode:
+        # Suppress single-frame refresh spikes from screen recordings.
+        med = float(np.median(combined))
+        mad = float(np.median(np.abs(combined - med)) + 1e-6)
+        z = (combined - med) / (1.4826 * mad)
+        z = np.clip(z, -2.5, 3.0)
+        sustain = _moving_average(np.maximum(z, 0.0), 5)
+        combined = 0.56 * _norm01(combined) + 0.44 * _norm01(sustain)
     k_c = min(5, len(combined) | 1)
     if k_c % 2 == 0:
         k_c = max(1, k_c - 1)
@@ -112,7 +121,8 @@ def find_swing_window_seconds(
 
     p50 = float(np.percentile(comb_sm, 50))
     p78 = float(np.percentile(comb_sm, 78))
-    thresh = p50 + 0.42 * max(p78 - p50, 1e-6)
+    thresh_alpha = 0.48 if screen_mode else 0.42
+    thresh = p50 + thresh_alpha * max(p78 - p50, 1e-6)
     active = comb_sm >= thresh
 
     runs: list[tuple[int, int]] = []
@@ -124,7 +134,8 @@ def find_swing_window_seconds(
         j = i
         while j < len(active) and active[j]:
             j += 1
-        if j - i >= 2:
+        min_run = 3 if screen_mode else 2
+        if j - i >= min_run:
             runs.append((i, j - 1))
         i = j
 

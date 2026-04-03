@@ -86,10 +86,12 @@ async def run_pro_v2_video_analysis(
 
     ffmpeg_input_path = input_video_path
     analysis_input = "raw"
+    screen_cropped_video_path: str | None = None
     if screen_mode:
         try:
             screen = run_pro_v2_screen_preprocess(input_video_path=input_video_path, work_dir=str(work))
             ffmpeg_input_path = str(screen.get("cropped_video_path") or input_video_path)
+            screen_cropped_video_path = ffmpeg_input_path if ffmpeg_input_path != input_video_path else None
             analysis_input = "screen_cropped" if ffmpeg_input_path != input_video_path else "raw"
         except Exception as exc:
             logger.warning("[PRO_V2][SCREEN] fallback_raw_input=true reason=%s", exc)
@@ -109,6 +111,7 @@ async def run_pro_v2_video_analysis(
         ff.analysis_240_path,
         fps=ff.fps,
         duration_s=ff.duration_s,
+        screen_mode=(analysis_input == "screen_cropped"),
     )
 
     dense = dense_scan_swing_region(
@@ -116,11 +119,16 @@ async def run_pro_v2_video_analysis(
         fps=ff.fps,
         t_start_s=t0,
         t_end_s=t1,
+        screen_mode=(analysis_input == "screen_cropped"),
     )
     if len(dense) < 16:
         raise RuntimeError("pro_v2: swing region too short or static — record a clearer swing clip")
 
-    keyframes = pick_eight_keyframes_motion_only(ff.analysis_240_path, dense)
+    keyframes = pick_eight_keyframes_motion_only(
+        ff.analysis_240_path,
+        dense,
+        screen_mode=(analysis_input == "screen_cropped"),
+    )
     keyframes = refine_impact_keyframe_only(ff.analysis_240_path, keyframes)
 
     keyframes, _gate_ok, _gate_issues = run_simple_gate(
@@ -165,7 +173,9 @@ async def run_pro_v2_video_analysis(
         "total_score": total_score_f,
         "keyframes": keyframes,
         "contact_sheet_url": sheet_path,
-        "video_url": ff.playback_path,
+        "video_url": input_video_path,
+        "original_video_url": input_video_path,
+        "playback_video_url": ff.playback_path,
         "issues": issues,
         "issues_zh": issues_zh,
         "suggestions": suggestions,
@@ -173,6 +183,8 @@ async def run_pro_v2_video_analysis(
         "scores": report.get("scores") or {},
         "type": "pro",
     }
+    if screen_cropped_video_path:
+        minimal["screen_cropped_video_url"] = screen_cropped_video_path
 
     logger.info("[PRO_V2] done analysis_id=%s kfs=%s", analysis_id, len(keyframes))
     return minimal

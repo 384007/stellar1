@@ -17,6 +17,14 @@ def _even(v: int) -> int:
     return max(2, int(v) // 2 * 2)
 
 
+def _clamp_box(x: int, y: int, w: int, h: int, fw: int, fh: int) -> tuple[int, int, int, int]:
+    x = max(0, min(x, fw - 2))
+    y = max(0, min(y, fh - 2))
+    w = max(2, min(w, fw - x))
+    h = max(2, min(h, fh - y))
+    return x, y, _even(w), _even(h)
+
+
 def _score_candidate(x: int, y: int, w: int, h: int, fw: int, fh: int, rectangularity: float) -> float:
     area_ratio = (w * h) / float(max(1, fw * fh))
     if area_ratio < 0.18 or area_ratio > 0.99:
@@ -30,7 +38,28 @@ def _score_candidate(x: int, y: int, w: int, h: int, fw: int, fh: int, rectangul
     return area_ratio * 0.55 + rectangularity * 0.35 - center_penalty * 0.20
 
 
-def _detect_screen_box(frame: np.ndarray) -> tuple[int, int, int, int] | None:
+def _trim_inner_noise(gray: np.ndarray, box: tuple[int, int, int, int]) -> tuple[int, int, int, int]:
+    x, y, w, h = box
+    roi = gray[y : y + h, x : x + w]
+    if roi.size == 0:
+        return box
+    row_var = np.var(roi.astype(np.float32), axis=1)
+    col_var = np.var(roi.astype(np.float32), axis=0)
+    r_thr = float(np.percentile(row_var, 25))
+    c_thr = float(np.percentile(col_var, 25))
+    keep_rows = np.where(row_var >= r_thr)[0]
+    keep_cols = np.where(col_var >= c_thr)[0]
+    if len(keep_rows) > 20 and len(keep_cols) > 20:
+        y0, y1 = int(keep_rows[0]), int(keep_rows[-1])
+        x0, x1 = int(keep_cols[0]), int(keep_cols[-1])
+        x = x + x0
+        y = y + y0
+        w = x1 - x0 + 1
+        h = y1 - y0 + 1
+    return x, y, w, h
+
+
+def _detect_screen_box(frame: np.ndarray) -> tuple[int, int, int, int, float] | None:
     fh, fw = frame.shape[:2]
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
     blur = cv2.GaussianBlur(gray, (5, 5), 0)
@@ -58,7 +87,10 @@ def _detect_screen_box(frame: np.ndarray) -> tuple[int, int, int, int] | None:
             best = (score, (x, y, w, h))
 
     if best:
-        return best[1]
+        bx = _trim_inner_noise(gray, best[1])
+        x, y, w, h = _clamp_box(*bx, fw, fh)
+        conf = float(max(0.0, min(1.0, best[0])))
+        return x, y, w, h, conf
 
     # Fallback: remove pure black borders only.
     mask = gray > 12
@@ -71,7 +103,8 @@ def _detect_screen_box(frame: np.ndarray) -> tuple[int, int, int, int] | None:
     h = y1 - y0 + 1
     if _score_candidate(x0, y0, w, h, fw, fh, rectangularity=0.9) < 0:
         return None
-    return (x0, y0, w, h)
+    x0, y0, w, h = _clamp_box(x0, y0, w, h, fw, fh)
+    return (x0, y0, w, h, 0.42)
 
 
 def run_pro_v2_screen_preprocess(input_video_path: str, work_dir: str) -> dict[str, Any]:
@@ -84,10 +117,13 @@ def run_pro_v2_screen_preprocess(input_video_path: str, work_dir: str) -> dict[s
     if not cap.isOpened():
         raise RuntimeError("screen preprocess failed: cannot open input video")
     total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+    frame_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH) or 0) or 1920
+    frame_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0) or 1080
     sample_count = 20
     idxs = np.linspace(0, max(0, total - 1), num=sample_count, dtype=int) if total > 0 else np.array([], dtype=int)
 
     boxes: list[tuple[int, int, int, int]] = []
+    scores: list[float] = []
     for idx in idxs.tolist():
         cap.set(cv2.CAP_PROP_POS_FRAMES, int(idx))
         ok, frame = cap.read()
@@ -95,7 +131,9 @@ def run_pro_v2_screen_preprocess(input_video_path: str, work_dir: str) -> dict[s
             continue
         box = _detect_screen_box(frame)
         if box:
-            boxes.append(box)
+            x, y, w, h, conf = box
+            boxes.append((x, y, w, h))
+            scores.append(conf)
     cap.release()
 
     if len(boxes) < 3:
@@ -103,9 +141,8 @@ def run_pro_v2_screen_preprocess(input_video_path: str, work_dir: str) -> dict[s
 
     arr = np.array(boxes, dtype=np.float32)
     x, y, w, h = np.median(arr, axis=0).astype(int).tolist()
-    x, y = max(0, x), max(0, y)
-    w, h = _even(w), _even(h)
-    confidence = float(min(1.0, max(0.0, len(boxes) / sample_count)))
+    x, y, w, h = _clamp_box(x, y, w, h, fw=frame_w, fh=frame_h)
+    confidence = float(min(1.0, max(0.0, (len(boxes) / sample_count) * 0.6 + (float(np.median(scores)) if scores else 0.0) * 0.4)))
 
     out_path = str(work / "pro_v2_screen_cropped.mp4")
     cmd = [
@@ -122,7 +159,9 @@ def run_pro_v2_screen_preprocess(input_video_path: str, work_dir: str) -> dict[s
     if proc.returncode != 0:
         raise RuntimeError(f"screen preprocess failed: ffmpeg crop failed ({proc.stderr[-300:]})")
 
+    logger.info("[PRO_V2][SCREEN] screen_mode_detected=true")
     logger.info("[PRO_V2][SCREEN] crop_box=%s", {"x": x, "y": y, "w": w, "h": h})
+    logger.info("[PRO_V2][SCREEN] confidence=%.3f", confidence)
     logger.info("[PRO_V2][SCREEN] cropped_video_path=%s", out_path)
     return {
         "screen_mode_detected": True,
@@ -130,4 +169,3 @@ def run_pro_v2_screen_preprocess(input_video_path: str, work_dir: str) -> dict[s
         "crop_box": {"x": x, "y": y, "w": w, "h": h},
         "confidence": round(confidence, 3),
     }
-

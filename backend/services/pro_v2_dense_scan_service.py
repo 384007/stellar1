@@ -40,6 +40,7 @@ def dense_scan_swing_region(
     t_start_s: float,
     t_end_s: float,
     max_frames: int = 2400,
+    screen_mode: bool = False,
 ) -> list[DenseFrame]:
     """Decode swing window only; fill motion, directional proxies, smooth energy, local peak/valley flags."""
     path = str(Path(analysis_video_path))
@@ -71,7 +72,15 @@ def dense_scan_swing_region(
         if not ok or frame is None:
             break
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        small = cv2.resize(gray, (200, 112), interpolation=cv2.INTER_AREA).astype(np.float64)
+        if screen_mode:
+            h, w = gray.shape[:2]
+            mx = max(2, int(w * 0.08))
+            my = max(2, int(h * 0.10))
+            core = gray[my : max(my + 2, h - my), mx : max(mx + 2, w - mx)]
+            gray_roi = core if core.size > 0 else gray
+        else:
+            gray_roi = gray
+        small = cv2.resize(gray_roi, (200, 112), interpolation=cv2.INTER_AREA).astype(np.float64)
         if prev_small is not None:
             d = np.abs(small - prev_small)
             motion = float(np.mean(d))
@@ -131,11 +140,12 @@ def dense_scan_swing_region(
     peak_count = int(np.sum(is_peak))
     valley_count = int(np.sum(is_valley))
     logger.info(
-        "[PRO_V2][DENSE] dense_count=%s motion_peak_count=%s motion_valley_count=%s stride=%s span=%s",
+        "[PRO_V2][DENSE] dense_count=%s motion_peak_count=%s motion_valley_count=%s stride=%s span=%s screen_mode=%s",
         len(out),
         peak_count,
         valley_count,
         stride,
         span,
+        "true" if screen_mode else "false",
     )
     return out

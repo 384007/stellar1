@@ -239,6 +239,8 @@ def _late_strip_gap_dense(o: list[int]) -> tuple[int, int]:
 def pick_eight_keyframes_motion_only(
     analysis_video_path: str,
     dense: list[DenseFrame],
+    *,
+    screen_mode: bool = False,
 ) -> list[dict[str, Any]]:
     """Per-phase motion picks; v2 is frame-driven (no pose indices)."""
     if len(dense) < 16:
@@ -272,15 +274,15 @@ def pick_eight_keyframes_motion_only(
 
     order_idx = [addr, tw, bs, top, ds, imp, ft, fin]
     order_idx = _late_strip_spacing_pass(order_idx, n)
-    late_min_gap = max(3, min(7, n // 34))
+    late_min_gap = max(4, min(9, n // 30)) if screen_mode else max(3, min(7, n // 34))
     gap_if, gap_ff = _late_strip_gap_dense(order_idx)
     if gap_if < late_min_gap:
         repick_ft = _pick_follow_through(dense, E, int(order_idx[5]), n)
-        order_idx[6] = max(int(order_idx[5]) + late_min_gap, min(repick_ft, n - 2))
+        order_idx[6] = max(int(order_idx[5]) + late_min_gap, min(repick_ft + (1 if screen_mode else 0), n - 2))
     gap_if, gap_ff = _late_strip_gap_dense(order_idx)
     if gap_ff < late_min_gap:
         repick_fin = _pick_finish(dense, E, int(order_idx[6]), n)
-        order_idx[7] = max(int(order_idx[6]) + late_min_gap, min(repick_fin, n - 1))
+        order_idx[7] = max(int(order_idx[6]) + late_min_gap, min(repick_fin + (1 if screen_mode else 0), n - 1))
     order_idx = _late_strip_spacing_pass(order_idx, n)
     for i in range(1, 8):
         if order_idx[i] <= order_idx[i - 1]:
@@ -328,5 +330,12 @@ def pick_eight_keyframes_motion_only(
         int(order_idx[6] - order_idx[5]),
         int(order_idx[7] - order_idx[6]),
         [k["frame_index"] for k in keyframes],
+    )
+    logger.info(
+        "[PRO_V2][GATE] screen_mode=%s late_min_gap=%s impact_follow_gap=%s follow_finish_gap=%s",
+        "true" if screen_mode else "false",
+        late_min_gap,
+        int(order_idx[6] - order_idx[5]),
+        int(order_idx[7] - order_idx[6]),
     )
     return keyframes
