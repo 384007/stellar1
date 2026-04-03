@@ -1,0 +1,17 @@
+# Modal image only: same as requirements.txt but omits torch + ultralytics.
+# Torch is installed in tools/modal_install_mmaction2.sh (2.1.x + mmcv 2.1 for mmaction2); omit torch here so
+# base image pip never pulls torch 2.5 vs mmcv conflict. Ultralytics is installed after the shell script in modal_app.py.
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+python-multipart==0.0.20
+pyjwt==2.10.1
+httpx==0.28.1
+google-generativeai==0.8.4
+google-cloud-aiplatform>=1.73.0
+mediapipe==0.10.21
+opencv-python-headless==4.10.0.84
+numpy<2
+Pillow==11.1.0
+python-dotenv==1.0.1
+openai>=1.54.0
+supervision==0.25.1

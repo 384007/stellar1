@@ -1,0 +1,22 @@
+# MMAction2 / OpenMMLab (optional). Install after backend/requirements.txt so PyTorch matches your stack.
+#
+# Why not in requirements.txt: mmcv must match torch+CUDA; many installs use `mim` to resolve wheels.
+#
+# Official model zoo = Kinetics-400 / NTU / etc. There is no published “golf 8-phase” checkpoint in
+# open-mmlab/mmaction2; use a downloaded Kinetics (or custom) config+weights via:
+#   STELLAR_MMACTION2_CONFIG, STELLAR_MMACTION2_CHECKPOINT
+#
+# Recommended Python: 3.10–3.12 (PyTorch wheels for macOS x86_64 often skip cp313).
+#
+# macOS (Intel or Apple Silicon): OpenMMLab does not ship mmcv CPU wheels for torch 2.2 on mac;
+# use the bundled installer (Miniconda + Python 3.11 + torch 2.1.2 + mmcv 2.1.0 universal2 wheel):
+#   chmod +x scripts/setup_mmaction_conda.sh && ./scripts/setup_mmaction_conda.sh
+# Interpreter: backend/.conda-mmaction/envs/stellar-mmaction/bin/python (~2GB+ under .conda-mmaction/, gitignored).
+
+openmim>=0.3.9
+mmengine>=0.10.3
+mmaction2>=1.2.0
+
+# RTMPose / skeleton pose (separate entrypoint; shares mmcv + mmengine with the install above):
+#   pip install -r requirements-mmpose.txt
+# See also: scripts/install_mmpose.sh

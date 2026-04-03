@@ -1,0 +1,75 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" fill="none">
+  <!-- Badge -->
+  <circle cx="50" cy="50" r="48" fill="url(#badgeFill)"/>
+  <circle cx="50" cy="50" r="47" stroke="url(#ringMain)" stroke-width="2.5"/>
+  <circle cx="50" cy="50" r="42" stroke="url(#ringSoft)" stroke-width="0.8" opacity="0.55"/>
+  <circle cx="38" cy="30" r="22" fill="url(#badgeGlow)" opacity="0.28"/>
+
+  <!-- Star sparkle -->
+  <path d="M76 15 L78 20 L84 20 L79 24 L81 30 L76 26 L71 30 L73 24 L68 20 L74 20 Z" fill="url(#sparkle)"/>
+
+  <g transform="translate(0 -7)">
+    <!-- Mascot face (golf ball character) -->
+    <circle cx="50" cy="58" r="18" fill="#f5c518"/>
+    <circle cx="50" cy="58" r="18" stroke="#dc2626" stroke-width="1.1"/>
+    <circle cx="44" cy="57" r="1.7" fill="#5b21b6"/>
+    <circle cx="56" cy="57" r="1.7" fill="#5b21b6"/>
+    <path d="M44 64 C47 67 53 67 56 64" stroke="#9d3b52" stroke-width="1.6" stroke-linecap="round"/>
+    <circle cx="38.5" cy="62.5" r="2.3" fill="#dc2626" opacity="0.32"/>
+    <circle cx="61.5" cy="62.5" r="2.3" fill="#dc2626" opacity="0.32"/>
+
+    <!-- Dimples -->
+    <g fill="#7c3aed">
+      <circle cx="42" cy="50" r="0.8"/>
+      <circle cx="47" cy="48" r="0.8"/>
+      <circle cx="53" cy="48" r="0.8"/>
+      <circle cx="58" cy="50" r="0.8"/>
+      <circle cx="40" cy="56" r="0.8"/>
+      <circle cx="60" cy="56" r="0.8"/>
+      <circle cx="44" cy="69" r="0.8"/>
+      <circle cx="50" cy="70" r="0.8"/>
+      <circle cx="56" cy="69" r="0.8"/>
+    </g>
+
+    <!-- Golf club and motion -->
+    <line x1="67" y1="66" x2="80" y2="54" stroke="url(#club)" stroke-width="2.4" stroke-linecap="round"/>
+    <path d="M79 53 L84 49 Q85 52 83 55 L79 53 Z" fill="#dc2626"/>
+    <path d="M73 34 Q82 38 86 47" stroke="url(#trail)" stroke-width="1.2" stroke-linecap="round" opacity="0.85"/>
+    <path d="M70 30 Q82 34 89 46" stroke="url(#trail)" stroke-width="0.8" stroke-linecap="round" opacity="0.4"/>
+  </g>
+
+  <defs>
+    <linearGradient id="badgeFill" x1="16" y1="14" x2="86" y2="84" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#7c3aed"/>
+      <stop offset="0.52" stop-color="#dc2626"/>
+      <stop offset="1" stop-color="#f5c518"/>
+    </linearGradient>
+    <radialGradient id="badgeGlow" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(38 30) rotate(47.2915) scale(31.7399)">
+      <stop stop-color="#fdf2f8"/>
+      <stop offset="1" stop-color="#fdf2f8" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="ringMain" x1="8" y1="10" x2="92" y2="90" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#f5d0fe"/>
+      <stop offset="0.5" stop-color="#fde68a"/>
+      <stop offset="1" stop-color="#fff7ed"/>
+    </linearGradient>
+    <linearGradient id="ringSoft" x1="20" y1="20" x2="80" y2="80" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#ffffff"/>
+      <stop offset="1" stop-color="#fff7ed"/>
+    </linearGradient>
+    <linearGradient id="club" x1="67" y1="66" x2="84" y2="49" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#7c3aed"/>
+      <stop offset="0.55" stop-color="#ef4444"/>
+      <stop offset="1" stop-color="#f5c518"/>
+    </linearGradient>
+    <linearGradient id="trail" x1="70" y1="30" x2="89" y2="46" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#f5d0fe"/>
+      <stop offset="0.5" stop-color="#f43f5e"/>
+      <stop offset="1" stop-color="#fde68a"/>
+    </linearGradient>
+    <linearGradient id="sparkle" x1="68" y1="15" x2="84" y2="30" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#fdf2f8"/>
+      <stop offset="1" stop-color="#fef08a"/>
+    </linearGradient>
+  </defs>
+</svg>

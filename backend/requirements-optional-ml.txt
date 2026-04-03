@@ -1,0 +1,12 @@
+# Deprecated name — use requirements-mmaction2.txt + scripts/install_mmaction2.sh
+#
+# Quick install (from backend/):
+#   chmod +x scripts/install_mmaction2.sh
+#   ./scripts/install_mmaction2.sh
+#
+# Or manually:
+#   pip install -r requirements-mmaction2.txt
+#   python -m mim install "mmcv>=2.0.0,<2.3.0"
+#
+# “生态”里有的是 MMAction2 + Model Zoo 里的通用视频/骨架行为识别模型（如 Kinetics-400 TSN），
+# 不是 OpenMMLab 官方维护的高尔夫 address…finish 八段专用类别与权重；八段仍需自训或外接专用仓库。

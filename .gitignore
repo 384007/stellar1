@@ -1,0 +1,52 @@
+node_modules/
+frontend/node_modules/
+.next/
+.vercel/
+frontend/.next/
+frontend/.vercel/
+frontend/build/
+frontend/public/mp/
+out/
+__pycache__/
+*.pyc
+backend/__pycache__/
+backend/services/__pycache__/
+backend/routers/__pycache__/
+.venv/
+.venv-mmaction/
+# Local Miniconda + MMAction2 stack (~2GB+); run scripts/setup_mmaction_conda.sh to recreate
+backend/.conda-mmaction/
+# Downloaded MMAction2 checkpoints (keep only .gitkeep)
+backend/mmaction_models/*
+!backend/mmaction_models/.gitkeep
+# Official OpenMMLab wheels downloaded locally (never commit)
+.openmmlab-wheels/
+backend/.openmmlab-wheels/
+.venv_pytest/
+venv/
+.uv/
+.env
+.env.local
+# Local Modal API tokens for tools/deploy_modal.sh — never commit
+.modal.env.local
+backend/.env
+.DS_Store
+*.log
+test-results/
+playwright-report/
+frontend/test-results/
+frontend/playwright-report/
+
+# Local / manual API & video tests — keep tools/*.py scripts committed; ignore outputs only
+e2e-out/
+backend/e2e-out/
+# DeepLabCut local project + weights (bootstrap script creates; never commit)
+backend/deeplabcut_workspace/*
+!backend/deeplabcut_workspace/README.md
+.pytest_cache/
+.coverage
+htmlcov/
+*.cover
+
+# Browser HAR exports (large, accidental check-ins)
+*.har

@@ -1,0 +1,46 @@
+name: Deploy to Modal
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-modal-main
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    name: Deploy stellar-ai to Modal
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Modal CLI
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install modal
+
+      - name: Deploy to Modal
+        env:
+          MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
+          MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
+        run: |
+          # Inline checkout SHA so image bake always matches this push (no stale GITHUB_ENV).
+          export STELLAR_GIT_SHA="${{ github.sha }}"
+          export STELLAR_GIT_BRANCH="${{ github.ref_name }}"
+          export STELLAR_BUILD_TIME="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          echo "[deploy-modal] STELLAR_GIT_SHA=$STELLAR_GIT_SHA STELLAR_GIT_BRANCH=$STELLAR_GIT_BRANCH"
+          python -m modal deploy modal_app.py

@@ -1,0 +1,20 @@
+# DeepLabCut 2.3.x (TensorFlow) — optional research refine backend.
+# Install into the SAME venv as backend/requirements.txt (after torch if any).
+#
+# macOS x86_64: pin numba/llvmlite first so pip does not try to build llvmlite from source (needs cmake).
+# TensorFlow pins protobuf<5. Some other packages (e.g. grpcio-status, jax) may warn — use a dedicated venv
+# if you need a clean split between DLC+TF and the rest of the stack.
+# Extra imports required by DLC 2.3: tensorpack, tf-slim (listed below).
+# After install, force newer ml-dtypes for jax/Vertex compatibility (TF pins 0.3.x):
+#   pip install --no-deps --force-reinstall 'ml-dtypes>=0.5.0,<0.6'
+#
+#   pip install -r requirements-deeplabcut.txt
+#
+# Or:  chmod +x scripts/install_deeplabcut.sh && ./scripts/install_deeplabcut.sh
+
+llvmlite==0.42.0
+numba==0.59.1
+deeplabcut==2.3.11
+tensorflow==2.15.1
+tensorpack>=0.11
+tf-slim>=1.1.0

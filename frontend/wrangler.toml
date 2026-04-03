@@ -1,0 +1,30 @@
+# Pages: `name` must match the Cloudflare Pages project name in the dashboard.
+# If deploy says "Project not found", set the correct name or pass --project-name on the CLI.
+#
+# If deploy shows "Success: Assets published" then "Failed to publish your Function ... unknown error",
+# that is almost never caused by backend/Python commits — it is usually Cloudflare API-side.
+# Common fix: enable R2 on the account (zero-cost tier is fine) and ensure bucket `stellar-golf-media`
+# exists and matches Pages project bindings. Ref: https://github.com/cloudflare/workers-sdk/issues/7538
+name = "stellar-ai"
+compatibility_date = "2025-12-01"
+compatibility_flags = ["nodejs_compat"]
+pages_build_output_dir = ".vercel/output/static"
+
+[vars]
+ENVIRONMENT = "production"
+NEXT_PUBLIC_BACKEND_URL = "https://stellar1-backend.onrender.com"
+GEMINI_MODEL = "gemini-2.5-flash-lite"
+# GEMINI_API_KEY and JWT_SECRET must be set as Cloudflare Pages Secrets in the dashboard
+
+[[d1_databases]]
+binding = "DB"
+database_name = "stellar-golf-db"
+database_id = "db4b6ed8-c063-43da-baf3-7cbebba47309"
+
+[[kv_namespaces]]
+binding = "KV_CACHE"
+id = "e790c531a81c4c2fb9575e7badfa8d05"
+
+[[r2_buckets]]
+binding = "R2_BUCKET"
+bucket_name = "stellar-golf-media"
