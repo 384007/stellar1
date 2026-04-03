@@ -1,9 +1,9 @@
 /**
  * Pro v2 upload targets: primary + optional fallbacks for CN / unstable backends.
  *
- * **China IP (`network_hint: cn`):** the client calls Render/API **before** Modal (modal.run
- * is often blocked); still tries Modal afterward if backends fail. Use `BACKEND_URL_CN_EXTRA` /
- * `MODAL_BACKEND_CN_EXTRA` for mirrors that actually work from mainland.
+ * **China IP (`network_hint: cn`):** the client still sends `X-Stellar-Network-Hint: cn` for Pro v2;
+ * Modal is tried first, then Render. Use `BACKEND_URL_CN_EXTRA` / `MODAL_BACKEND_CN_EXTRA` to prepend
+ * mirrors that work better from mainland.
  *
  * Configure on CF Pages / Worker (same pattern as MODAL_BACKEND_URL):
  * - MODAL_BACKEND_URL           — primary Modal base (no trailing slash)

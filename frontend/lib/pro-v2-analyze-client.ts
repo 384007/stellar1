@@ -135,10 +135,8 @@ async function tryProV2BackendHosts(
 }
 
 /**
- * Pro v2: Modal hosts (GPU) then Render/API fallbacks by default.
- * **China (cnNetworkHint):** Render/API first — modal.run is often blocked or flaky from mainland;
- * Modal is still tried after Render if all backends fail or return retryable errors.
- * Sends `X-Stellar-Network-Hint: cn` so workers can align Gemini / copy even without CF-IPCountry.
+ * Pro v2: always try Modal (GPU) first, then Render/API fallbacks — including mainland China.
+ * `cnNetworkHint` only adds `X-Stellar-Network-Hint: cn` and extra Render connect retries; it does not reorder hosts.
  */
 export async function runProV2AnalyzeMultipart(
   blob: Blob,
@@ -154,39 +152,28 @@ export async function runProV2AnalyzeMultipart(
     ...(opts.cnNetworkHint ? { "X-Stellar-Network-Hint": "cn" } : {}),
   };
 
-  const tryModal = () =>
-    tryProV2ModalHosts(
-      blob,
-      filename,
-      opts.screenMode,
-      headers,
-      modalUrls,
-      opts.modalTimeoutMs,
-      opts.logPrefix,
-    );
-  const tryBackends = () =>
-    tryProV2BackendHosts(
-      blob,
-      filename,
-      opts.screenMode,
-      headers,
-      backendUrls,
-      opts.renderTimeoutMs,
-      maxConn,
-      opts.logPrefix,
-    );
+  const fromModal = await tryProV2ModalHosts(
+    blob,
+    filename,
+    opts.screenMode,
+    headers,
+    modalUrls,
+    opts.modalTimeoutMs,
+    opts.logPrefix,
+  );
+  if (fromModal) return fromModal;
 
-  if (opts.cnNetworkHint) {
-    const fromRender = await tryBackends();
-    if (fromRender) return fromRender;
-    const fromModal = await tryModal();
-    if (fromModal) return fromModal;
-  } else {
-    const fromModal = await tryModal();
-    if (fromModal) return fromModal;
-    const fromRender = await tryBackends();
-    if (fromRender) return fromRender;
-  }
+  const fromRender = await tryProV2BackendHosts(
+    blob,
+    filename,
+    opts.screenMode,
+    headers,
+    backendUrls,
+    opts.renderTimeoutMs,
+    maxConn,
+    opts.logPrefix,
+  );
+  if (fromRender) return fromRender;
 
   if (backendUrls.length === 0 && modalUrls.length === 0) {
     throw new Error("Pro 分析失败：未配置可用后端地址");

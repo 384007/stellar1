@@ -190,7 +190,7 @@ export default function AnalyzePage() {
       const authHeaders: Record<string, string> = {};
       if (token && token.includes(".")) authHeaders["Authorization"] = `Bearer ${token}`;
 
-      // ① Precheck — Modal / Render URL lists; CN: client tries Render before Modal
+      // ① Precheck — Modal / Render URL lists (analyze: Modal first, then Render, all regions)
       const defaultBackend =
         process.env.NEXT_PUBLIC_BACKEND_URL || "https://stellar1-backend.onrender.com";
       let proNetworkHint = "";
