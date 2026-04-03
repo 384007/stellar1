@@ -59,3 +59,34 @@ export function rewriteGoogleUrl(url: string, proxyHost: string): string {
   if (proxyHost === GEMINI_DIRECT) return url;
   return url.replace(GEMINI_DIRECT, proxyHost);
 }
+
+/** Safe log label for a Gemini Files `fileUri` (no secrets). */
+export function redactGeminiFileRefForLog(fileUri: string): string {
+  const s = (fileUri || "").trim();
+  if (!s) return "(empty)";
+  try {
+    const noQuery = s.split("?")[0] || s;
+    const parts = noQuery.split("/").filter(Boolean);
+    const last = parts[parts.length - 1] ?? s;
+    return last.length > 40 ? `${last.slice(0, 14)}…${last.slice(-12)}` : last;
+  } catch {
+    return "(redacted)";
+  }
+}
+
+/**
+ * True when a Files API reference should be abandoned and bytes re-uploaded:
+ * wrong key, deleted/expired file, PERMISSION_DENIED, etc.
+ */
+export function isStaleGeminiFileReference(httpStatus: number, responseBody: string): boolean {
+  if (httpStatus === 404) return true;
+  if (httpStatus !== 403) return false;
+  const t = (responseBody || "").toLowerCase();
+  if (t.includes("permission_denied")) return true;
+  if (t.includes("do not have permission")) return true;
+  if (t.includes("may not exist")) return true;
+  if (t.includes("access denied")) return true;
+  if (t.includes("not found") && t.includes("file")) return true;
+  if (t.includes("invalid") && (t.includes("file") || t.includes("resource"))) return true;
+  return false;
+}

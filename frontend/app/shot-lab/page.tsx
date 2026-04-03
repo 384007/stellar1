@@ -453,6 +453,7 @@ export default function ShotLabPage() {
           const fd = new FormData();
           fd.append("file_uri", up.file_uri);
           fd.append("mime_type", up.mime_type);
+          fd.append("file", file, file.name);
           if (typeof up.gemini_key_index === "number") {
             fd.append("gemini_key_index", String(up.gemini_key_index));
           }

@@ -237,7 +237,7 @@ export default function AnalyzePage() {
       return expandStellarProForUi(rawPro) as AnalysisResult;
     }
 
-    // Lite: /api/analyze on Edge. Video: /api/upload-video → file_uri (no huge multipart to Worker).
+    // Lite: /api/analyze on Edge. Video: upload-video → file_uri (fast path) + same File in FormData so Edge can re-upload if URI is stale (403).
     const headers: Record<string, string> = {};
     const token = localStorage.getItem("stellar_token");
     if (token && token.includes(".")) headers["Authorization"] = `Bearer ${token}`;
@@ -258,6 +258,7 @@ export default function AnalyzePage() {
           const fd = new FormData();
           fd.append("file_uri", up.file_uri);
           fd.append("mime_type", up.mime_type);
+          fd.append("file", file as File, filename);
           if (typeof up.gemini_key_index === "number") {
             fd.append("gemini_key_index", String(up.gemini_key_index));
           }

@@ -1,6 +1,8 @@
 /**
  * Client-side helper: upload video to Gemini via the streaming proxy,
- * poll until processed, return file_uri for use in analysis endpoints.
+ * poll until processed, return file_uri for the analysis request.
+ * Callers should also attach the same `File` to `/api/analyze` or `/api/lab` so the server can
+ * re-upload to Gemini if that URI is stale (403 / PERMISSION_DENIED).
  *
  * Each step is a lightweight Edge Worker call (<30 s each), so the
  * combined pipeline supports files up to 100 MB+ without hitting

@@ -1,7 +1,13 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getRequestContext } from "@cloudflare/next-on-pages";
 import { jwtVerify } from "jose";
-import { getGeminiHosts, getGeminiKeys, rewriteGoogleUrl } from "@/lib/gemini-proxy";
+import {
+  getGeminiHosts,
+  getGeminiKeys,
+  isStaleGeminiFileReference,
+  redactGeminiFileRefForLog,
+  rewriteGoogleUrl,
+} from "@/lib/gemini-proxy";
 
 export const runtime = "edge";
 
@@ -435,6 +441,37 @@ async function geminiAnalysisWithUri(fileUri: string, mimeType: string, host: st
   }
 }
 
+/** Fresh upload + generate in-process (same request). Used when Files API `file_uri` is stale. */
+async function runGeminiMultipartThenQwen(file: File, hosts: string[], keys: string[]): Promise<NextResponse> {
+  let geminiResult: NextResponse | null = null;
+  for (const host of hosts) {
+    for (let ki = 0; ki < keys.length; ki++) {
+      geminiResult = await geminiAnalysis(file, host, keys[ki]!, ki);
+      if (geminiResult.status < 400) {
+        try {
+          console.log(
+            `[AI][FILE] analyze_with_new_file_id ok host=${new URL(host).hostname} key_slot=${ki + 1}`,
+          );
+        } catch {
+          console.log(`[AI][FILE] analyze_with_new_file_id ok key_slot=${ki + 1}`);
+        }
+        return geminiResult;
+      }
+      if (shouldRetryNextGeminiKey(geminiResult.status)) {
+        console.log(`[AI][FILE] gemini_multipart key_slot=${ki + 1} http=${geminiResult.status}`);
+        continue;
+      }
+      break;
+    }
+  }
+  const qwenKey = getCfEnv("QWEN_API_KEY");
+  if (qwenKey) {
+    console.log("[AI][FILE] multipart path exhausted → Qwen fallback");
+    return qwenAnalysis(file);
+  }
+  return geminiResult || NextResponse.json({ detail: "AI 服务不可用" }, { status: 503 });
+}
+
 // ── Main handler ──
 
 export async function POST(request: NextRequest) {
@@ -471,13 +508,15 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ detail: "AI 服务密钥未配置 (GEMINI_API_KEY)" }, { status: 503 });
     }
 
-    // Pre-uploaded video: host × key loop (prefer key that created the Files API object — avoids 403)
+    // Pre-uploaded video: try Files API URI first (fast path); on failure, re-upload bytes in-request if `file` present.
     if (fileUri) {
+      console.log(`[AI][FILE] using_existing_file_id=${redactGeminiFileRefForLog(fileUri)}`);
       const keysOrdered =
         !Number.isNaN(keyHintParsed) && keyHintParsed >= 0 && keyHintParsed < keys.length
           ? [...keys.slice(keyHintParsed), ...keys.slice(0, keyHintParsed)]
           : keys;
       let uriResult: NextResponse | null = null;
+      let sawStaleFileRef = false;
       for (const host of hosts) {
         for (let ki = 0; ki < keysOrdered.length; ki++) {
           const apiKey = keysOrdered[ki]!;
@@ -495,6 +534,13 @@ export async function POST(request: NextRequest) {
             );
             return uriResult;
           }
+          const errBody = await uriResult.clone().text().catch(() => "");
+          if (isStaleGeminiFileReference(uriResult.status, errBody)) {
+            sawStaleFileRef = true;
+            console.log(
+              `[AI][FILE] existing_file_id_failed code=${uriResult.status} snippet=${errBody.substring(0, 160).replace(/\s+/g, " ")}`,
+            );
+          }
           if (shouldRetryNextGeminiKey(uriResult.status)) {
             console.log(
               `[analyze] key retry HTTP ${uriResult.status} on ${new URL(host).hostname} → try next key`,
@@ -504,33 +550,37 @@ export async function POST(request: NextRequest) {
           break;
         }
       }
-      return uriResult || NextResponse.json({ detail: "AI 服务不可用" }, { status: 503 });
-    }
 
-    // Gemini: host × key loop → Qwen final fallback
-    let geminiResult: NextResponse | null = null;
-    for (const host of hosts) {
-      for (let ki = 0; ki < keys.length; ki++) {
-        geminiResult = await geminiAnalysis(file!, host, keys[ki], ki);
-        if (geminiResult.status < 400) {
-          console.log(`[analyze] ✓ Gemini via ${new URL(host).hostname} key${ki + 1}`);
-          return geminiResult;
+      const hasBody = !!(file && file.size > 0);
+      if (hasBody) {
+        console.log(
+          `[AI][FILE] fallback_from_stale_file_reference=${sawStaleFileRef} reupload_started bytes=${file!.size}`,
+        );
+        const fresh = await runGeminiMultipartThenQwen(file!, hosts, keys);
+        if (fresh.status < 400) {
+          console.log("[AI][FILE] reupload_success");
         }
-        if (shouldRetryNextGeminiKey(geminiResult.status)) {
-          console.log(`[analyze] key${ki + 1} HTTP ${geminiResult.status} on ${new URL(host).hostname} → try next key`);
-          continue;
-        }
-        console.log(`[analyze] Gemini via ${new URL(host).hostname} key${ki + 1} → ${geminiResult.status}`);
-        break;
+        return fresh;
       }
+
+      if (sawStaleFileRef) {
+        console.log("[AI][FILE] stale_file_reference_no_bytes_in_request — client must send `file` with `file_uri` for auto reupload");
+      }
+      return (
+        uriResult ||
+        NextResponse.json(
+          {
+            detail:
+              "视频临时标识已失效或无权访问，请重新选择视频再分析；若持续出现，请更新应用后重试。",
+            code: "GEMINI_FILE_STALE",
+          },
+          { status: 503 },
+        )
+      );
     }
 
-    const qwenKey = getCfEnv("QWEN_API_KEY");
-    if (qwenKey) {
-      console.log("[analyze] All Gemini hosts/keys failed → Qwen fallback");
-      return qwenAnalysis(file!);
-    }
-    return geminiResult || NextResponse.json({ detail: "AI 服务不可用" }, { status: 503 });
+    // Gemini: host × key loop → Qwen final fallback (multipart / image inline)
+    return runGeminiMultipartThenQwen(file!, hosts, keys);
   } catch (err) {
     return NextResponse.json(
       { detail: err instanceof Error ? err.message : "分析错误" },

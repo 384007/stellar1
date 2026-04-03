@@ -32,7 +32,13 @@ import {
   buildQuota,
   labError,
 } from "@/lib/lab-auth";
-import { getGeminiHosts, getGeminiKeys, rewriteGoogleUrl } from "@/lib/gemini-proxy";
+import {
+  getGeminiHosts,
+  getGeminiKeys,
+  isStaleGeminiFileReference,
+  redactGeminiFileRefForLog,
+  rewriteGoogleUrl,
+} from "@/lib/gemini-proxy";
 
 export const runtime = "edge";
 
@@ -459,12 +465,13 @@ export async function POST(request: NextRequest) {
       keyHintParsed < keys.length
         ? [...keys.slice(keyHintParsed), ...keys.slice(0, keyHintParsed)]
         : keys;
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    let parsed: Record<string, unknown> = null as any;
+    let parsed: Record<string, unknown> | null = null;
     let aiProvider: "gemini" | "qwen" = "gemini";
+    let usedUriThenMultipart = false;
     try {
       if (fileUri) {
-        let lastErr: Error | null = null;
+        console.log(`[AI][FILE] using_existing_file_id=${redactGeminiFileRefForLog(fileUri)}`);
+        let lastUriErr: Error | null = null;
         let done = false;
         for (const host of hosts) {
           for (const key of keysOrderedForUri) {
@@ -473,36 +480,56 @@ export async function POST(request: NextRequest) {
               done = true;
               break;
             } catch (e) {
-              lastErr = e as Error;
-              // 429 quota; 403 often = Files API object bound to another key
-              const retryNextKey =
-                lastErr.message.includes("[429]") || lastErr.message.includes("[403]");
+              lastUriErr = e as Error;
+              const em = lastUriErr.message;
+              const st = em.includes("[404]") ? 404 : em.includes("[403]") ? 403 : 0;
+              if (st && isStaleGeminiFileReference(st, em)) {
+                console.log(
+                  `[AI][FILE] existing_file_id_failed code=${st} snippet=${em.substring(0, 160).replace(/\s+/g, " ")}`,
+                );
+              }
+              const retryNextKey = em.includes("[429]") || em.includes("[403]");
               if (retryNextKey) {
-                console.log(`[lab] Gemini URI key retry on ${host}: ${lastErr.message.substring(0, 120)}`);
+                console.log(`[lab] Gemini URI key retry on ${host}: ${em.substring(0, 120)}`);
                 continue;
               }
-              console.log(`[lab] Gemini URI via ${host} failed: ${lastErr.message}`);
-              break; // network/server error → next host
+              console.log(`[lab] Gemini URI via ${host} failed: ${em}`);
+              break;
             }
           }
           if (done) break;
         }
-        if (!done) throw lastErr || new Error("AI 服务不可用");
-      } else {
+        if (!done && !file) {
+          throw lastUriErr || new Error("AI 服务不可用");
+        }
+        if (!done && file) {
+          usedUriThenMultipart = true;
+          console.log(
+            `[AI][FILE] fallback_from_stale_file_reference=true reupload_started bytes=${file.size}`,
+          );
+          parsed = null;
+        }
+      }
+
+      if (!parsed && file) {
         let geminiOk = false;
         let lastGeminiErr: Error | null = null;
         for (const host of hosts) {
           for (const key of keys) {
             try {
-              parsed = await labGeminiAnalysis(file!, host, key);
+              parsed = await labGeminiAnalysis(file, host, key);
               geminiOk = true;
+              console.log("[AI][FILE] analyze_with_new_file_id ok (lab multipart path)");
               break;
             } catch (e) {
               lastGeminiErr = e as Error;
               const is429 = lastGeminiErr.message.includes("[429]");
-              if (is429) { console.log(`[lab] key quota hit on ${host}`); continue; }
+              if (is429) {
+                console.log(`[lab] key quota hit on ${host}`);
+                continue;
+              }
               console.log(`[lab] Gemini via ${host} failed: ${lastGeminiErr.message}`);
-              break; // network/server error → next host
+              break;
             }
           }
           if (geminiOk) break;
@@ -510,12 +537,19 @@ export async function POST(request: NextRequest) {
         if (!geminiOk) {
           if (getCfEnvVal("QWEN_API_KEY")) {
             console.log("[lab] All Gemini hosts/keys failed, falling back to Qwen");
-            parsed = await labQwenAnalysis(file!);
+            parsed = await labQwenAnalysis(file);
             aiProvider = "qwen";
           } else {
             throw lastGeminiErr || new Error("AI 服务不可用");
           }
         }
+        if (usedUriThenMultipart && parsed) {
+          console.log("[AI][FILE] reupload_success");
+        }
+      }
+
+      if (!parsed) {
+        throw new Error("AI 服务不可用");
       }
     } catch (aiErr) {
       if (db && dbReady) {
