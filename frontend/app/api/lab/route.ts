@@ -361,6 +361,7 @@ export async function POST(request: NextRequest) {
     const file = formData.get("file") as File | null;
     const fileUri = formData.get("file_uri") as string | null;
     const fileMimeType = formData.get("mime_type") as string | null;
+    const geminiKeyHintRaw = formData.get("gemini_key_index");
     const clientJobId = formData.get("job_id") as string | null;
     const unifiedPredictionRaw = formData.get("unified_prediction") as string | null;
 
@@ -447,6 +448,17 @@ export async function POST(request: NextRequest) {
     const countryLab = (request.headers.get("cf-ipcountry") || "").toUpperCase();
     const hosts = getGeminiHosts(getCfEnvVal, countryLab === "CN");
     const keys = getGeminiKeys(getCfEnvVal);
+    const keyHintParsed =
+      geminiKeyHintRaw !== null && String(geminiKeyHintRaw) !== ""
+        ? parseInt(String(geminiKeyHintRaw), 10)
+        : NaN;
+    const keysOrderedForUri =
+      !!fileUri &&
+      !Number.isNaN(keyHintParsed) &&
+      keyHintParsed >= 0 &&
+      keyHintParsed < keys.length
+        ? [...keys.slice(keyHintParsed), ...keys.slice(0, keyHintParsed)]
+        : keys;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     let parsed: Record<string, unknown> = null as any;
     let aiProvider: "gemini" | "qwen" = "gemini";
@@ -455,15 +467,20 @@ export async function POST(request: NextRequest) {
         let lastErr: Error | null = null;
         let done = false;
         for (const host of hosts) {
-          for (const key of keys) {
+          for (const key of keysOrderedForUri) {
             try {
               parsed = await labGeminiAnalysisWithUri(fileUri, fileMimeType || "video/mp4", host, key);
               done = true;
               break;
             } catch (e) {
               lastErr = e as Error;
-              const is429 = lastErr.message.includes("[429]");
-              if (is429) { console.log(`[lab] key quota hit on ${host}`); continue; }
+              // 429 quota; 403 often = Files API object bound to another key
+              const retryNextKey =
+                lastErr.message.includes("[429]") || lastErr.message.includes("[403]");
+              if (retryNextKey) {
+                console.log(`[lab] Gemini URI key retry on ${host}: ${lastErr.message.substring(0, 120)}`);
+                continue;
+              }
               console.log(`[lab] Gemini URI via ${host} failed: ${lastErr.message}`);
               break; // network/server error → next host
             }

@@ -248,7 +248,7 @@ export default function AnalyzePage() {
         const uploadCtrl = new AbortController();
         const uploadTimer = setTimeout(() => uploadCtrl.abort(), 360_000);
         try {
-          const { file_uri, mime_type } = await uploadVideoToGemini(
+          const up = await uploadVideoToGemini(
             file as File,
             filename,
             headers,
@@ -256,8 +256,11 @@ export default function AnalyzePage() {
             uploadCtrl.signal,
           );
           const fd = new FormData();
-          fd.append("file_uri", file_uri);
-          fd.append("mime_type", mime_type);
+          fd.append("file_uri", up.file_uri);
+          fd.append("mime_type", up.mime_type);
+          if (typeof up.gemini_key_index === "number") {
+            fd.append("gemini_key_index", String(up.gemini_key_index));
+          }
           const analyzeCtrl = new AbortController();
           const analyzeTimer = setTimeout(() => analyzeCtrl.abort(), 180_000);
           try {

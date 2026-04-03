@@ -73,7 +73,8 @@ export async function POST(request: NextRequest) {
     const hosts = getGeminiHosts(getCfEnv, isCN);
     let lastErr = "";
     for (const host of hosts) {
-     for (const apiKey of keys) {
+     for (let keyIndex = 0; keyIndex < keys.length; keyIndex++) {
+      const apiKey = keys[keyIndex]!;
       try {
         const initRes = await fetch(
           `${host}/upload/v1beta/files?key=${apiKey}`,
@@ -132,6 +133,8 @@ export async function POST(request: NextRequest) {
           file_uri: data.file?.uri || null,
           file_name: data.file?.name || null,
           mime_type: mimeType,
+          /** Same index as GEMINI_API_KEY (0) / GEMINI_API_KEY_2 (1). Analyze must use this key for file_uri. */
+          gemini_key_index: keyIndex,
         });
       } catch (e) {
         lastErr = e instanceof Error ? e.message : "网络错误";
@@ -165,10 +168,17 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ detail: "缺少 name 参数" }, { status: 400 });
     }
 
+    const keyHintRaw = request.nextUrl.searchParams.get("key_index");
+    const keyHint = keyHintRaw !== null ? parseInt(keyHintRaw, 10) : NaN;
+    const keysOrdered =
+      !Number.isNaN(keyHint) && keyHint >= 0 && keyHint < keys.length
+        ? [...keys.slice(keyHint), ...keys.slice(0, keyHint)]
+        : keys;
+
     const countryGet = (request.headers.get("cf-ipcountry") || "").toUpperCase();
     const hostsGet = getGeminiHosts(getCfEnv, countryGet === "CN");
     for (const host of hostsGet) {
-      for (const key of keys) {
+      for (const key of keysOrdered) {
         try {
           const res = await fetch(
             `${host}/v1beta/${fileName}?key=${key}`,
@@ -181,7 +191,7 @@ export async function GET(request: NextRequest) {
               uri: info.uri || null,
             });
           }
-          if (res.status === 429) continue;
+          if (res.status === 429 || res.status === 403 || res.status === 404) continue;
           break;
         } catch { break; }
       }

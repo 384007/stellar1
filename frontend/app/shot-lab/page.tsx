@@ -443,7 +443,7 @@ export default function ShotLabPage() {
       let res: Response;
       try {
         if (video) {
-          const { file_uri, mime_type } = await uploadVideoToGemini(
+          const up = await uploadVideoToGemini(
             file, file.name, headers,
             (pct) => { phaseTarget = pct; },
             controller.signal,
@@ -451,8 +451,11 @@ export default function ShotLabPage() {
           phaseTarget = 95;
           const unifiedPrediction = await unifiedPromise;
           const fd = new FormData();
-          fd.append("file_uri", file_uri);
-          fd.append("mime_type", mime_type);
+          fd.append("file_uri", up.file_uri);
+          fd.append("mime_type", up.mime_type);
+          if (typeof up.gemini_key_index === "number") {
+            fd.append("gemini_key_index", String(up.gemini_key_index));
+          }
           fd.append("job_id", jobId);
           if (unifiedPrediction) fd.append("unified_prediction", JSON.stringify(unifiedPrediction));
           res = await fetch("/api/lab", { method: "POST", headers, body: fd, signal: controller.signal });

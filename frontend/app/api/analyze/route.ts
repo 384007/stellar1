@@ -455,6 +455,11 @@ export async function POST(request: NextRequest) {
     const isCN = country === "CN";
     const hosts = getGeminiHosts(getCfEnv, isCN);
     const keys = getGeminiKeys(getCfEnv);
+    const keyHintRaw = formData.get("gemini_key_index");
+    const keyHintParsed =
+      keyHintRaw !== null && String(keyHintRaw) !== ""
+        ? parseInt(String(keyHintRaw), 10)
+        : NaN;
     console.log(`[analyze] country=${country} isCN=${isCN} hosts=${hosts.map(h => new URL(h).hostname).join(",")} keys=${keys.length}`);
 
     if (keys.length === 0) {
@@ -466,18 +471,34 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ detail: "AI 服务密钥未配置 (GEMINI_API_KEY)" }, { status: 503 });
     }
 
-    // Pre-uploaded video: host × key loop
+    // Pre-uploaded video: host × key loop (prefer key that created the Files API object — avoids 403)
     if (fileUri) {
+      const keysOrdered =
+        !Number.isNaN(keyHintParsed) && keyHintParsed >= 0 && keyHintParsed < keys.length
+          ? [...keys.slice(keyHintParsed), ...keys.slice(0, keyHintParsed)]
+          : keys;
       let uriResult: NextResponse | null = null;
       for (const host of hosts) {
-        for (let ki = 0; ki < keys.length; ki++) {
-          uriResult = await geminiAnalysisWithUri(fileUri, fileMimeType || "video/mp4", host, keys[ki], ki);
+        for (let ki = 0; ki < keysOrdered.length; ki++) {
+          const apiKey = keysOrdered[ki]!;
+          const originalKeyIndex = keys.indexOf(apiKey);
+          uriResult = await geminiAnalysisWithUri(
+            fileUri,
+            fileMimeType || "video/mp4",
+            host,
+            apiKey,
+            originalKeyIndex >= 0 ? originalKeyIndex : ki,
+          );
           if (uriResult.status < 400) {
-            console.log(`[analyze] ✓ Gemini via ${new URL(host).hostname} key${ki + 1}`);
+            console.log(
+              `[analyze] ✓ Gemini via ${new URL(host).hostname} key${(originalKeyIndex >= 0 ? originalKeyIndex : ki) + 1}`,
+            );
             return uriResult;
           }
           if (shouldRetryNextGeminiKey(uriResult.status)) {
-            console.log(`[analyze] key${ki + 1} HTTP ${uriResult.status} on ${new URL(host).hostname} → try next key`);
+            console.log(
+              `[analyze] key retry HTTP ${uriResult.status} on ${new URL(host).hostname} → try next key`,
+            );
             continue;
           }
           break;

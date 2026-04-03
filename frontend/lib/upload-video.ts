@@ -15,6 +15,8 @@ export function isVideoFile(file: File | Blob, filename: string): boolean {
 export interface UploadResult {
   file_uri: string;
   mime_type: string;
+  /** 0 = GEMINI_API_KEY, 1 = GEMINI_API_KEY_2 — must match /api/analyze when using file_uri. */
+  gemini_key_index?: number;
 }
 
 export async function uploadVideoToGemini(
@@ -56,18 +58,25 @@ export async function uploadVideoToGemini(
     );
   }
 
-  const { file_uri, file_name, mime_type } = await uploadRes.json();
+  const raw = await uploadRes.json() as Record<string, unknown>;
+  const file_uri = raw.file_uri as string;
+  const file_name = raw.file_name as string | null;
+  const mime_type = raw.mime_type as string | undefined;
+  const gemini_key_index =
+    typeof raw.gemini_key_index === "number" ? raw.gemini_key_index : 0;
+
   if (!file_uri) throw new Error("上传成功但未获取文件标识");
 
   onProgress?.(55);
 
   // Phase 2: Poll until Gemini finishes processing the video
   if (file_name) {
+    const pollQs = `name=${encodeURIComponent(file_name)}&key_index=${gemini_key_index}`;
     for (let i = 0; i < 90; i++) {
-      const sr = await fetch(
-        `/api/upload-video?name=${encodeURIComponent(file_name)}`,
-        { headers: authHeaders, signal },
-      );
+      const sr = await fetch(`/api/upload-video?${pollQs}`, {
+        headers: authHeaders,
+        signal,
+      });
       if (sr.ok) {
         const info = await sr.json();
         if (info.state === "ACTIVE") break;
@@ -80,5 +89,9 @@ export async function uploadVideoToGemini(
   }
 
   onProgress?.(88);
-  return { file_uri, mime_type: mime_type || mimeType };
+  return {
+    file_uri,
+    mime_type: mime_type || mimeType,
+    gemini_key_index,
+  };
 }
