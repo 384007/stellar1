@@ -1,7 +1,7 @@
 """Pro v2 — single orchestrator (240fps → swing window → dense scan → keyframes → impact → gate → sheet → AI).
 
 Does **not** use MMAction2 / TSN or any legacy Pro pose chain — FFmpeg + OpenCV motion + Gemini text only.
-Gemini uses ``PRO_V2_REPORT_PROMPT``: one-line summaries; 3 phase-tagged issues; 3 actionable suggestions.
+Gemini uses ``PRO_V2_REPORT_PROMPT`` (pass-2 + local fallback); full summaries; up to 3 phase-tagged issues/suggestions in API payload.
 """
 
 from __future__ import annotations
@@ -18,7 +18,7 @@ from services.pro_v2_dense_scan_service import DenseFrame, dense_scan_swing_regi
 from services.pro_v2_ffmpeg_service import run_pro_v2_ffmpeg_preprocess
 from services.pro_v2_impact_refine_service import refine_impact_keyframe_only
 from services.pro_v2_keyframe_picker_service import pick_eight_keyframes_motion_only
-from services.pro_v2_report_service import write_pro_v2_ai_report
+from services.pro_v2_report_service import pop_pro_v2_report_meta, write_pro_v2_ai_report
 from services.pro_v2_screen_preprocess_service import run_pro_v2_screen_preprocess
 from services.pro_v2_simple_gate_service import run_simple_gate
 from services.pro_v2_swing_window_service import find_swing_window_seconds
@@ -209,6 +209,14 @@ async def run_pro_v2_video_analysis(
         keyframes=keyframes,
     )
     report = await write_pro_v2_ai_report(motion_context, region=region)
+    rmeta = pop_pro_v2_report_meta(report)
+    logger.info(
+        "[PRO_V2][REPORT] first_pass_weak=%s second_pass_used=%s second_pass_weak=%s fallback_used=%s",
+        rmeta.get("pass1_weak"),
+        rmeta.get("pass2_used"),
+        rmeta.get("pass2_weak"),
+        rmeta.get("fallback_used"),
+    )
 
     issues = list(report.get("issues") or [])[:3]
     issues_zh = list(report.get("issues_zh") or [])[:3]

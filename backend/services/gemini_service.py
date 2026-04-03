@@ -528,31 +528,34 @@ PRO_V2_REPORT_PROMPT = """You are an elite PGA-level coach writing a truthful co
 
 No image selection task. Do NOT choose frames. Do NOT mention contact sheets, "image 1-8", or any AI frame picking.
 
+SCREEN / NO-IMAGES MODE: There are NO attached photos. That is expected. MOTION_CONTEXT alone (phase timestamps + dense motion proxy per phase + swing window) is ENOUGH to write a full phase-based coaching report. Do NOT shorten the report or refuse depth because of "no images". Never output a trivial one-paragraph reply.
+
 You are given MOTION_CONTEXT for fixed 8 phases at 240fps:
 Address, Takeaway, Backswing, Top, Downswing, Impact, Follow-through, Finish.
 Treat these phases and their order/timing as ground truth.
 
 Coaching style requirements:
-1) Write like a real PGA coach: specific, technical, direct, no marketing language.
-2) Be factual: do NOT invent invisible visual details.
-3) If evidence is limited, explicitly hedge with wording like:
-   - "Based on the current motion summary..."
-   - "根据当前 motion summary 判断..."
-4) Prioritize late-strip truthfulness: if Impact or Follow-through timing looks compressed, call it out clearly.
+1) Write like a real PGA coach: specific, technical, direct, no marketing language or vague filler ("整体不错", "需要多练习" alone is NOT acceptable).
+2) Be factual: do NOT invent invisible visual details (clubface, ball flight, exact spine angle). Infer only from timing, spacing, and dense_motion_proxy trends in MOTION_CONTEXT.
+3) If evidence is limited, you MUST still write a full report: hedge with "Based on the current motion summary..." / "根据当前 motion summary 判断..." but continue with concrete phase-by-phase coaching — not excuses for brevity.
+4) Late-strip honesty: if Impact, Follow-through, or Finish timing looks compressed or weak in the data, name **Impact**, **Follow-through**, or **Finish** explicitly in prose and in issues — not generic "swing unstable".
+
+Phase binding (mandatory in issues and in summary narrative):
+- If the problem is around strike timing vs downswing burst → say **Impact** explicitly.
+- If post-impact release or spacing is tight → say **Follow-through** explicitly.
+- If exit / settle looks weak vs earlier phases → say **Finish** explicitly.
+- Avoid vague labels like "动作不稳定" without naming the phase.
 
 Content requirements:
-- issues / issues_zh: phase-specific and concrete; each item must start with a phase name.
-  English phase prefix must be one of:
-  Address, Takeaway, Backswing, Top, Downswing, Impact, Follow-through, Finish.
-  Chinese issues must use corresponding Chinese phase names.
-- suggestions / suggestions_zh: each item must be a drill/cue the player can practice this week.
+- issues / issues_zh: phase-specific and concrete; EACH item must START with a phase name (English list: Address, Takeaway, Backswing, Top, Downswing, Impact, Follow-through, Finish — Chinese: 站姿, 起杆, 上杆, 顶点, 下杆, 触球, 送杆, 收杆).
+- suggestions / suggestions_zh: each item must be a drill/cue the player can practice this week; start with the same phase naming rule.
+- Minimum length: **at least 3** items in EACH of issues, issues_zh, suggestions, suggestions_zh (prefer 4–5 if data supports it).
 - summary:
-  - English: 450-700 words, multi-paragraph.
-  - Must discuss phase flow and explicitly cover at least 4 of these: Address, Takeaway, Top, Impact, Follow-through, Finish.
-  - If Impact or Follow-through has timing concern, discuss it in detail.
+  - English: **450-700 words**, multiple paragraphs, clear phase flow.
+  - Must explicitly discuss at least 4 of: Address, Takeaway, Top, Impact, Follow-through, Finish (Downswing/Backswing as needed from data).
+  - If Impact / Follow-through / Finish show timing concerns in MOTION_CONTEXT, dedicate a full paragraph to each affected phase.
 - summary_zh:
-  - 中文 500-900 字，多段落。
-  - 至少覆盖上述关键阶段中的 4 个，并明确讲到触球/送杆（若有问题需重点展开）。
+  - **500-900 汉字**（不含空白），多段落，同样覆盖至少 4 个关键阶段；触球/送杆/收杆有问题时必须分段展开，不得只用两三句敷衍。
 
 MOTION_CONTEXT (JSON):
 {motion_context}
@@ -561,10 +564,10 @@ Return ONLY valid JSON:
 {{
   "total_score": <0-100>,
   "scores": {{"grip": <0-100>, "stance": <0-100>, "backswing": <0-100>, "downswing": <0-100>, "follow_through": <0-100>}},
-  "issues": ["Phase: specific issue", "...", "...", "..."],
-  "issues_zh": ["阶段：具体问题", "...", "...", "..."],
-  "suggestions": ["Phase: actionable drill/cue", "...", "...", "..."],
-  "suggestions_zh": ["阶段：可执行练习或口令", "...", "...", "..."],
+  "issues": ["Phase: specific issue", "...", "..."],
+  "issues_zh": ["阶段：具体问题", "...", "..."],
+  "suggestions": ["Phase: actionable drill/cue", "...", "..."],
+  "suggestions_zh": ["阶段：可执行练习或口令", "...", "..."],
   "summary": "450-700 words English coaching report",
   "summary_zh": "500-900字中文教练报告",
   "training_plan": {{
@@ -578,8 +581,26 @@ Return ONLY valid JSON:
   }}
 }}
 
-Minimum list length: 4 items for each of issues, issues_zh, suggestions, suggestions_zh.
 training_plan MUST include day1 through day7; focus can be Chinese; drills concrete and short.
+"""
+
+PRO_V2_REPORT_PROMPT_PASS2 = """PASS 2 — Your previous output was REJECTED for being too thin, empty, or non-phase-specific.
+
+You are an elite PGA coach. MOTION_CONTEXT JSON is the ONLY source. No images. Do NOT choose frames.
+
+STRICT OUTPUT RULES:
+1) issues, issues_zh, suggestions, suggestions_zh: **minimum 4 items each** (not 2, not 3). Every line MUST start with a phase name (English: Address, Takeaway, Backswing, Top, Downswing, Impact, Follow-through, Finish / Chinese: 站姿, 起杆, 上杆, 顶点, 下杆, 触球, 送杆, 收杆).
+2) NO vague filler. Each issue names a phase + a concrete timing/motion-proxy observation from the JSON.
+3) If Impact timing looks tight vs the downswing burst, write "**Impact**: ..." explicitly. Same for **Follow-through** and **Finish** when post-impact spacing or exit proxy is weak.
+4) summary: **500-750 English words**, multiple paragraphs, phase-ordered narrative (Address → … → Finish), honest hedging only as a phrase — not as a substitute for content.
+5) summary_zh: **600-950 汉字**，多段落，阶段清晰；禁止仅用两三句概括。
+
+Do not claim you lack information because there are no pictures — the numeric phase timeline is sufficient.
+
+MOTION_CONTEXT (JSON):
+{motion_context}
+
+Return ONLY the same JSON schema as before (total_score, scores, issues, issues_zh, suggestions, suggestions_zh, summary, summary_zh, training_plan day1-day7).
 """
 
 IMAGE_ONLY_PROMPT = """You are an expert PGA-level golf coach and biomechanics analyst.
@@ -881,15 +902,20 @@ async def analyze_stellar_pro_report_only(
 async def analyze_pro_v2_report_only(
     motion_context: dict,
     region: str = "global",
+    *,
+    use_strong_prompt: bool = False,
+    max_tokens: int = 10240,
+    call_label: str = "pro_v2_report",
 ) -> dict:
     """Pro v2: text-only report from motion keyframe metadata — no images (no AI frame picking)."""
     _ = region
-    prompt = PRO_V2_REPORT_PROMPT.format(
+    template = PRO_V2_REPORT_PROMPT_PASS2 if use_strong_prompt else PRO_V2_REPORT_PROMPT
+    prompt = template.format(
         motion_context=json.dumps(motion_context, indent=2, ensure_ascii=False),
     )
     try:
         text, provider, key_slot = await _call_vision_ai(
-            prompt, [], 8192, 0.2, "pro_v2_report", timeout_s=PRO_AI_TIMEOUT_S,
+            prompt, [], max_tokens, 0.2 if not use_strong_prompt else 0.15, call_label, timeout_s=PRO_AI_TIMEOUT_S,
         )
         out = extract_json_from_response(text)
         out["ai_provider"] = provider
