@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getRequestContext } from "@cloudflare/next-on-pages";
-import { getGeminiHosts, getGeminiKeys } from "@/lib/gemini-proxy";
+import { getGeminiHosts, getGeminiKeys, shouldRetryNextGeminiKey } from "@/lib/gemini-proxy";
 
 export const runtime = "edge";
 
@@ -145,7 +145,7 @@ export async function POST(request: NextRequest) {
               const text = data.candidates?.[0]?.content?.parts?.[0]?.text || "";
               return NextResponse.json({ ...parseClubResponse(text), ai_provider: "gemini" as const });
             }
-            if (res.status === 429) continue;
+            if (shouldRetryNextGeminiKey(res.status)) continue;
             break; // other error → next host
           } catch { break; }
         }

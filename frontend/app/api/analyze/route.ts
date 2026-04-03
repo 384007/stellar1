@@ -7,6 +7,7 @@ import {
   isStaleGeminiFileReference,
   redactGeminiFileRefForLog,
   rewriteGoogleUrl,
+  shouldRetryNextGeminiKey,
 } from "@/lib/gemini-proxy";
 
 export const runtime = "edge";
@@ -29,10 +30,6 @@ function statusFromGeminiUpstream(upstreamStatus: number): number {
     return upstreamStatus;
   }
   return 502;
-}
-
-function shouldRetryNextGeminiKey(responseStatus: number): boolean {
-  return responseStatus === 429 || responseStatus === 401 || responseStatus === 403;
 }
 
 const ANALYSIS_PROMPT = `You are an expert PGA-level golf coach and biomechanics analyst.

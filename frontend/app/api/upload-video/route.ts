@@ -10,7 +10,12 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getRequestContext } from "@cloudflare/next-on-pages";
 import { jwtVerify } from "jose";
-import { getGeminiHosts, getGeminiKeys, rewriteGoogleUrl } from "@/lib/gemini-proxy";
+import {
+  getGeminiHosts,
+  getGeminiKeys,
+  rewriteGoogleUrl,
+  shouldRetryNextGeminiKey,
+} from "@/lib/gemini-proxy";
 
 export const runtime = "edge";
 
@@ -94,7 +99,10 @@ export async function POST(request: NextRequest) {
 
         if (!initRes.ok) {
           lastErr = `上传初始化失败 [${initRes.status}]`;
-          if (initRes.status === 429) { console.log(`[upload-video] key quota on ${host}`); continue; }
+          if (shouldRetryNextGeminiKey(initRes.status)) {
+            console.log(`[upload-video] init key retry HTTP ${initRes.status} on ${host}`);
+            continue;
+          }
           if (initRes.status < 500) {
             const err = await initRes.text().catch(() => "");
             return NextResponse.json(
@@ -191,7 +199,11 @@ export async function GET(request: NextRequest) {
               uri: info.uri || null,
             });
           }
-          if (res.status === 429 || res.status === 403 || res.status === 404) continue;
+          if (
+            shouldRetryNextGeminiKey(res.status) ||
+            res.status === 404
+          )
+            continue;
           break;
         } catch { break; }
       }

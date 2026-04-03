@@ -51,6 +51,11 @@ export function getGeminiKeys(getCfEnv: (key: string) => string): string[] {
   return keys;
 }
 
+/** When Gemini returns these HTTP statuses, try the next key (quota / auth / wrong key). */
+export function shouldRetryNextGeminiKey(status: number): boolean {
+  return status === 429 || status === 401 || status === 403;
+}
+
 /**
  * Rewrite an absolute Google URL (e.g. upload URI in x-goog-upload-url header)
  * so it routes through the current proxy host instead of direct Google.

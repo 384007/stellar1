@@ -38,6 +38,7 @@ import {
   isStaleGeminiFileReference,
   redactGeminiFileRefForLog,
   rewriteGoogleUrl,
+  shouldRetryNextGeminiKey,
 } from "@/lib/gemini-proxy";
 
 export const runtime = "edge";
@@ -124,6 +125,14 @@ function stripThinkingBlocks(text: string): string {
 
 function toNum(value: unknown, fallback = 0): number {
   return typeof value === "number" && Number.isFinite(value) ? value : fallback;
+}
+
+/** Parse `[503]`-style status from `labGeminiAnalysis*` error messages. */
+function httpStatusFromBracketMessage(message: string): number {
+  const m = message.match(/\[(\d{3})\]/);
+  if (!m) return 0;
+  const n = parseInt(m[1]!, 10);
+  return Number.isFinite(n) ? n : 0;
 }
 
 function applyUnifiedPrediction(
@@ -482,14 +491,13 @@ export async function POST(request: NextRequest) {
             } catch (e) {
               lastUriErr = e as Error;
               const em = lastUriErr.message;
-              const st = em.includes("[404]") ? 404 : em.includes("[403]") ? 403 : 0;
-              if (st && isStaleGeminiFileReference(st, em)) {
+              const httpSt = httpStatusFromBracketMessage(em);
+              if (httpSt && isStaleGeminiFileReference(httpSt, em)) {
                 console.log(
-                  `[AI][FILE] existing_file_id_failed code=${st} snippet=${em.substring(0, 160).replace(/\s+/g, " ")}`,
+                  `[AI][FILE] existing_file_id_failed code=${httpSt} snippet=${em.substring(0, 160).replace(/\s+/g, " ")}`,
                 );
               }
-              const retryNextKey = em.includes("[429]") || em.includes("[403]");
-              if (retryNextKey) {
+              if (shouldRetryNextGeminiKey(httpSt)) {
                 console.log(`[lab] Gemini URI key retry on ${host}: ${em.substring(0, 120)}`);
                 continue;
               }
@@ -523,9 +531,9 @@ export async function POST(request: NextRequest) {
               break;
             } catch (e) {
               lastGeminiErr = e as Error;
-              const is429 = lastGeminiErr.message.includes("[429]");
-              if (is429) {
-                console.log(`[lab] key quota hit on ${host}`);
+              const httpSt = httpStatusFromBracketMessage(lastGeminiErr.message);
+              if (shouldRetryNextGeminiKey(httpSt)) {
+                console.log(`[lab] Gemini multipart key retry HTTP ${httpSt} on ${host}`);
                 continue;
               }
               console.log(`[lab] Gemini via ${host} failed: ${lastGeminiErr.message}`);

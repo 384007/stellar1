@@ -14,7 +14,10 @@ pages_build_output_dir = ".vercel/output/static"
 ENVIRONMENT = "production"
 NEXT_PUBLIC_BACKEND_URL = "https://stellar1-backend.onrender.com"
 GEMINI_MODEL = "gemini-2.5-flash-lite"
-# GEMINI_API_KEY and JWT_SECRET must be set as Cloudflare Pages Secrets in the dashboard
+# Secrets (dashboard): GEMINI_API_KEY, JWT_SECRET — required for Lite analyze + auth.
+# Optional Lite / Edge multi-key failover (same names as backend): GEMINI_API_KEY_2 … GEMINI_API_KEY_10.
+# Optional CN egress: GEMINI_PROXY_ALI, GEMINI_PROXY_JD (full URL base, no trailing slash).
+# Optional fallback when no Gemini keys: QWEN_API_KEY.
 
 [[d1_databases]]
 binding = "DB"
