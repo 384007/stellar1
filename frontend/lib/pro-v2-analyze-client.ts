@@ -5,7 +5,7 @@ export type RunProV2AnalyzeOptions = {
   backendUrls: string[];
   cnNetworkHint: boolean;
   screenMode: boolean;
-  /** Modal attempt timeout — align with Render (e.g. 360s) so cold start is not aborted early. */
+  /** Modal attempt timeout (analyze page uses shorter cold-start budget). */
   modalTimeoutMs: number;
   renderTimeoutMs: number;
   logPrefix: string;
@@ -16,12 +16,25 @@ export type ProV2AnalyzeResult = {
   route: "modal" | "render";
 };
 
+/** Opt-in only: default is Modal-only so traffic and errors stay on Modal (Render skipped). */
+export function proV2RenderFallbackEnabled(): boolean {
+  return process.env.NEXT_PUBLIC_PRO_V2_RENDER_FALLBACK === "true";
+}
+
 function makeProV2FormData(blob: Blob, filename: string, screenMode: boolean): FormData {
   const fd = makeFormData(blob, filename);
   fd.append("screen_mode", screenMode ? "true" : "false");
   return fd;
 }
 
+function shouldRetryModalHttp(status: number): boolean {
+  return status === 422 || status === 429 || status >= 500;
+}
+
+/**
+ * Hit Modal only; retry transient HTTP statuses on the same host before trying the next Modal URL.
+ * Returns the last Modal response when exhausted so the UI shows Modal's error instead of silently using Render.
+ */
 async function tryProV2ModalHosts(
   blob: Blob,
   filename: string,
@@ -31,43 +44,59 @@ async function tryProV2ModalHosts(
   modalTimeoutMs: number,
   logPrefix: string,
 ): Promise<ProV2AnalyzeResult | null> {
+  let lastResponse: Response | null = null;
+
   for (const mUrl of modalUrls) {
-    for (let mAttempt = 0; mAttempt < 2; mAttempt++) {
-      try {
-        if (mAttempt > 0) {
-          console.log(`${logPrefix} Modal retry (${mUrl}) after connection failure, waiting 8s…`);
+    hrLoop: for (let hr = 0; hr < 5; hr++) {
+      if (hr > 0) {
+        await new Promise((r) => setTimeout(r, 5_000));
+        console.log(`${logPrefix} Modal HTTP retry round ${hr + 1}/5 → ${mUrl}`);
+      }
+      for (let connAttempt = 0; connAttempt < 2; connAttempt++) {
+        if (connAttempt > 0) {
+          console.log(`${logPrefix} Modal connection retry (${mUrl}), waiting 8s…`);
           await new Promise((r) => setTimeout(r, 8_000));
         }
-        const ctrl = new AbortController();
-        const t = setTimeout(() => ctrl.abort(), modalTimeoutMs);
-        console.log(`${logPrefix} Pro Modal → ${mUrl}/pro-v2/analyze (attempt ${mAttempt + 1})`);
-        const mRes = await fetch(`${mUrl}/pro-v2/analyze`, {
-          method: "POST",
-          headers,
-          body: makeProV2FormData(blob, filename, screenMode),
-          signal: ctrl.signal,
-        });
-        clearTimeout(t);
-        if (mRes.ok) {
+        try {
+          const ctrl = new AbortController();
+          const t = setTimeout(() => ctrl.abort(), modalTimeoutMs);
+          console.log(`${logPrefix} Pro Modal → ${mUrl}/pro-v2/analyze (round ${hr + 1}, conn ${connAttempt + 1})`);
+          const mRes = await fetch(`${mUrl}/pro-v2/analyze`, {
+            method: "POST",
+            headers,
+            body: makeProV2FormData(blob, filename, screenMode),
+            signal: ctrl.signal,
+          });
+          clearTimeout(t);
+
+          lastResponse = mRes;
+          if (mRes.ok) {
+            return { response: mRes, route: "modal" };
+          }
+          if (shouldRetryModalHttp(mRes.status) && hr < 4) {
+            console.warn(
+              `${logPrefix} Modal ${mRes.status} on ${mUrl} — retrying same host (${hr + 1}/5)`,
+            );
+            continue hrLoop;
+          }
           return { response: mRes, route: "modal" };
+        } catch (e) {
+          const isAbort = e instanceof DOMException && e.name === "AbortError";
+          const isConnect = !isAbort && e instanceof TypeError;
+          console.warn(
+            `${logPrefix} Modal ${isAbort ? "timed out" : "unreachable"} (${mUrl}): ${e instanceof Error ? e.message : e}`,
+          );
+          if (isConnect && connAttempt === 0) continue;
+          if (!isConnect) break;
         }
-        if (mRes.status === 422 || mRes.status >= 500) {
-          console.warn(`${logPrefix} Modal ${mRes.status} on ${mUrl}, try next host or fallback tier`);
-        } else {
-          return { response: mRes, route: "modal" };
-        }
-        break;
-      } catch (e) {
-        const isAbort = e instanceof DOMException && e.name === "AbortError";
-        const isConnect = !isAbort && e instanceof TypeError;
-        console.warn(
-          `${logPrefix} Modal ${isAbort ? "timed out" : "unreachable"} (${mUrl}): ${e instanceof Error ? e.message : e}`,
-        );
-        if (!isConnect) break;
       }
     }
+    if (lastResponse && !lastResponse.ok) {
+      console.warn(`${logPrefix} Modal host exhausted: ${mUrl} (last HTTP ${lastResponse.status})`);
+    }
   }
-  return null;
+
+  return lastResponse ? { response: lastResponse, route: "modal" } : null;
 }
 
 async function tryProV2BackendHosts(
@@ -135,8 +164,9 @@ async function tryProV2BackendHosts(
 }
 
 /**
- * Pro v2: always try Modal (GPU) first, then Render/API fallbacks — including mainland China.
- * `cnNetworkHint` only adds `X-Stellar-Network-Hint: cn` and extra Render connect retries; it does not reorder hosts.
+ * Pro v2: Modal only by default (all regions). Same host is retried on 422/429/5xx before giving up.
+ * Set NEXT_PUBLIC_PRO_V2_RENDER_FALLBACK=true to opt into Render after Modal fails.
+ * `cnNetworkHint` adds `X-Stellar-Network-Hint: cn` and extra Render connect retries when fallback is on.
  */
 export async function runProV2AnalyzeMultipart(
   blob: Blob,
@@ -163,20 +193,29 @@ export async function runProV2AnalyzeMultipart(
   );
   if (fromModal) return fromModal;
 
-  const fromRender = await tryProV2BackendHosts(
-    blob,
-    filename,
-    opts.screenMode,
-    headers,
-    backendUrls,
-    opts.renderTimeoutMs,
-    maxConn,
-    opts.logPrefix,
-  );
-  if (fromRender) return fromRender;
-
-  if (backendUrls.length === 0 && modalUrls.length === 0) {
-    throw new Error("Pro 分析失败：未配置可用后端地址");
+  if (proV2RenderFallbackEnabled() && backendUrls.length > 0) {
+    console.log(`${opts.logPrefix} Modal gave no usable response; Render fallback enabled via env`);
+    const fromRender = await tryProV2BackendHosts(
+      blob,
+      filename,
+      opts.screenMode,
+      headers,
+      backendUrls,
+      opts.renderTimeoutMs,
+      maxConn,
+      opts.logPrefix,
+    );
+    if (fromRender) return fromRender;
+  } else if (backendUrls.length > 0) {
+    console.log(
+      `${opts.logPrefix} Modal-only mode (set NEXT_PUBLIC_PRO_V2_RENDER_FALLBACK=true to use Render after Modal fails)`,
+    );
   }
-  throw new Error("Pro 分析失败：所有可用后端均无可用响应，请稍后重试");
+
+  if (modalUrls.length === 0) {
+    throw new Error("Pro 分析失败：未配置 Modal 地址（检查 precheck / MODAL_BACKEND_URL）");
+  }
+  throw new Error(
+    "Pro 分析失败：Modal 不可用。请稍后重试；若需临时走 Render，设置 NEXT_PUBLIC_PRO_V2_RENDER_FALLBACK=true 并重新部署。",
+  );
 }

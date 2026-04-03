@@ -1,9 +1,8 @@
 /**
  * Pro v2 upload targets: primary + optional fallbacks for CN / unstable backends.
  *
- * **China IP (`network_hint: cn`):** the client still sends `X-Stellar-Network-Hint: cn` for Pro v2;
- * Modal is tried first, then Render. Use `BACKEND_URL_CN_EXTRA` / `MODAL_BACKEND_CN_EXTRA` to prepend
- * mirrors that work better from mainland.
+ * **China IP (`network_hint: cn`):** adds `X-Stellar-Network-Hint: cn` for Pro v2. Pro analysis is
+ * Modal-only unless `NEXT_PUBLIC_PRO_V2_RENDER_FALLBACK=true`. Use `MODAL_BACKEND_CN_EXTRA` / etc. for mirrors.
  *
  * Configure on CF Pages / Worker (same pattern as MODAL_BACKEND_URL):
  * - MODAL_BACKEND_URL           — primary Modal base (no trailing slash)
@@ -42,15 +41,13 @@ export function buildProV2ModalUrlList(
   isCn: boolean,
   processEnv: Record<string, string | undefined> = process.env,
 ): string[] {
-  let primary = (
+  const primary = (
     getCfEnv("MODAL_BACKEND_URL") ||
     processEnv.MODAL_BACKEND_URL ||
     DEFAULT_PRO_V2_MODAL_URL
   )
     .trim()
     .replace(/\/+$/, "");
-  // Whitespace-only secret would otherwise yield [] and skip Modal entirely.
-  if (!primary) primary = DEFAULT_PRO_V2_MODAL_URL;
   const globalFb = splitCsv(getCfEnv("MODAL_BACKEND_FALLBACKS") || processEnv.MODAL_BACKEND_FALLBACKS || "");
   const cnExtra = isCn
     ? splitCsv(getCfEnv("MODAL_BACKEND_CN_EXTRA") || processEnv.MODAL_BACKEND_CN_EXTRA || "")
@@ -64,14 +61,13 @@ export function buildProV2BackendUrlList(
   primaryFallback: string,
   processEnv: Record<string, string | undefined> = process.env,
 ): string[] {
-  let primary = (
+  const primary = (
     getCfEnv("NEXT_PUBLIC_BACKEND_URL") ||
     processEnv.NEXT_PUBLIC_BACKEND_URL ||
     primaryFallback
   )
     .trim()
     .replace(/\/+$/, "");
-  if (!primary) primary = primaryFallback;
   const globalFb = splitCsv(getCfEnv("BACKEND_URL_FALLBACKS") || processEnv.BACKEND_URL_FALLBACKS || "");
   const cnExtra = isCn
     ? splitCsv(getCfEnv("BACKEND_URL_CN_EXTRA") || processEnv.BACKEND_URL_CN_EXTRA || "")
@@ -107,9 +103,6 @@ export function normalizeProV2UrlListsFromPrecheck(data: {
   );
   if (backendUrls.length === 0) {
     backendUrls = [DEFAULT_RENDER];
-  }
-  if (modalUrls.length === 0) {
-    modalUrls.push(DEFAULT_PRO_V2_MODAL_URL);
   }
   return { modalUrls, backendUrls };
 }
