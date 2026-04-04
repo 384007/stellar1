@@ -387,6 +387,8 @@ _safe_load("routers.prov3_keyframes", "", ["prov3-keyframes"])
 
 @app.get("/health")
 async def health_check():
+    from services.golfdb_swingnet_paths import resolve_swingnet_checkpoint_path
+
     gemini_key = os.getenv("GEMINI_API_KEY", "")
     jwt_secret = os.getenv("JWT_SECRET", "")
     frontend_url = os.getenv("FRONTEND_URL", "")
@@ -397,6 +399,7 @@ async def health_check():
         or (os.getenv("HTTPS_PROXY") or "").strip()
         or (os.getenv("https_proxy") or "").strip()
     )
+    _sw_ck = resolve_swingnet_checkpoint_path()
     payload = {
         "status": "healthy",
         "service": "stellar-ai",
@@ -405,6 +408,13 @@ async def health_check():
         "plus_pipeline": {"code_marker": "plus_degradation_v1", "degraded_http_200": True},
         "routers_loaded": _EXPECTED_ROUTER_LOADS - len(_load_errors),
         "load_errors": _load_errors or None,
+        "prov3": {
+            "pro_http": "POST /pro-v2/analyze -> Pro v3 keyframe pipeline",
+            "api": "POST /api/prov3/keyframes/analyze",
+            "swingnet_engine": "wmcnally/golfdb:SwingNet",
+            "swingnet_weights_present": bool(_sw_ck),
+            "swingnet_checkpoint": _sw_ck or None,
+        },
         "env": {
             "GEMINI_API_KEY": "set" if gemini_key else "missing",
             "GEMINI_BACKEND": gemini_backend,

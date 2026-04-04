@@ -187,6 +187,8 @@ app = modal.App(
 # Persistent model storage: mount `stellar-models` at /models.
 # - YOLO: optional override `/models/yolo11n.pt` (wins over image-baked `/opt/stellar-weights/yolo11n.pt`).
 # - MotionBERT (optional): TorchScript JIT at `/models/motionbert.pt` upgrades 3D lift; otherwise Plus uses MediaPipe world landmarks automatically.
+# - Pro v3 / SwingNet (wmcnally/golfdb): upload `swingnet_1800.pth.tar` to the volume as `/models/swingnet_1800.pth.tar`
+#   (backend resolves this path automatically; optional `STELLAR_SWINGNET_CHECKPOINT` override).
 stellar_models_volume = modal.Volume.from_name("stellar-models", create_if_missing=True)
 
 
@@ -239,6 +241,20 @@ def _wire_stellar_model_paths() -> None:
             return
 
 
+def _wire_swingnet_paths() -> None:
+    """Pro v3 A-path: SwingNet weights on Modal volume ``/models`` (see module docstring)."""
+    from pathlib import Path
+
+    if (os.getenv("STELLAR_SWINGNET_CHECKPOINT") or "").strip():
+        return
+    for name in ("swingnet_1800.pth.tar", "swingnet_1800.pth"):
+        p = Path("/models") / name
+        if p.is_file():
+            os.environ["STELLAR_SWINGNET_CHECKPOINT"] = str(p)
+            print(f"[modal] Pro v3 SwingNet checkpoint={p}", flush=True)
+            return
+
+
 # Scaling: no keep_warm / min_containers — idle workers scale to zero (cold start on next request).
 # Do not add warm pools here without an explicit product decision.
 @app.function(
@@ -257,6 +273,7 @@ def fastapi_app():
     os.environ["STELLAR_MODAL_PRO_V2_ONLY"] = "1"
     _wire_stellar_model_paths()
     _wire_mmaction2_paths()
+    _wire_swingnet_paths()
 
     _sha = os.environ.get("STELLAR_GIT_SHA", "unknown")
     _branch = os.environ.get("STELLAR_GIT_BRANCH", "unknown")

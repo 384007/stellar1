@@ -18,7 +18,6 @@ from __future__ import annotations
 import logging
 import os
 import threading
-from pathlib import Path
 from typing import Any
 
 import cv2
@@ -28,6 +27,7 @@ import torch.nn.functional as F
 
 from lib.prov3.keyframes.constants import EVENT_SEQUENCE, TOP_K
 from lib.golfdb_swingnet.event_detector import EventDetector
+from services.golfdb_swingnet_paths import resolve_swingnet_checkpoint_path
 
 logger = logging.getLogger(__name__)
 
@@ -44,28 +44,9 @@ _MODEL_DEVICE: torch.device | None = None
 _MODEL_LOCK = threading.Lock()
 
 
-def _backend_root() -> Path:
-    return Path(__file__).resolve().parents[1]
-
-
 def swingnet_checkpoint_path() -> str:
-    """First existing file: env path, then ``backend/models/swingnet_1800.pth.tar``."""
-    env = (os.getenv("STELLAR_SWINGNET_CHECKPOINT") or "").strip()
-    defaults = [
-        _backend_root() / "models" / "swingnet_1800.pth.tar",
-        _backend_root() / "models" / "swingnet_1800.pth",
-    ]
-    if env:
-        if os.path.isfile(env):
-            return os.path.abspath(env)
-        logger.warning(
-            "[SwingNet] STELLAR_SWINGNET_CHECKPOINT missing on disk (%s) — trying backend/models/",
-            env,
-        )
-    for p in defaults:
-        if p.is_file():
-            return str(p.resolve())
-    return ""
+    """Resolved weight file (env → ``backend/models`` → ``/models`` on Modal)."""
+    return resolve_swingnet_checkpoint_path()
 
 
 def swingnet_enabled() -> bool:
