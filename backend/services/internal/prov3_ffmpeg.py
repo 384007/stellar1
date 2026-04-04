@@ -15,7 +15,9 @@ import json
 import logging
 import os
 import shutil
+import signal
 import subprocess
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -221,16 +223,82 @@ def ffprobe_video_meta(path: str) -> dict[str, Any]:
     }
 
 
+_ffmpeg_active: set[subprocess.Popen[Any]] = set()
+_ffmpeg_active_lock = threading.Lock()
+_sigterm_hook_installed = False
+_previous_sigterm: Any = None
+
+
+def _kill_tracked_ffmpeg() -> None:
+    with _ffmpeg_active_lock:
+        procs = list(_ffmpeg_active)
+    for p in procs:
+        if p.poll() is None:
+            try:
+                p.terminate()
+            except OSError:
+                pass
+    for p in procs:
+        if p.poll() is None:
+            try:
+                p.kill()
+            except OSError:
+                pass
+
+
+def _sigterm_forward(signum: int, frame: Any) -> None:
+    _kill_tracked_ffmpeg()
+    prev = _previous_sigterm
+    if callable(prev):
+        prev(signum, frame)
+        return
+    if prev == signal.SIG_IGN:
+        return
+    signal.signal(signal.SIGTERM, signal.SIG_DFL)
+    os.kill(os.getpid(), signum)
+
+
+def _ensure_sigterm_kills_ffmpeg() -> None:
+    """Modal / container cancel often sends SIGTERM; kill blocking ffmpeg so worker threads can exit."""
+    global _sigterm_hook_installed, _previous_sigterm
+    if _sigterm_hook_installed or os.name == "nt":
+        return
+    _sigterm_hook_installed = True
+    _previous_sigterm = signal.signal(signal.SIGTERM, _sigterm_forward)
+
+
 def run_ffmpeg(
     args: list[str],
     *,
     timeout_s: int = 900,
     label: str = "ffmpeg",
 ) -> None:
+    _ensure_sigterm_kills_ffmpeg()
     cmd = [ffmpeg_bin(), "-hide_banner", "-loglevel", "error", "-y", *args]
-    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout_s, check=False)
+    proc = subprocess.Popen(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    with _ffmpeg_active_lock:
+        _ffmpeg_active.add(proc)
+    stdout = stderr = ""
+    try:
+        stdout, stderr = proc.communicate(timeout=timeout_s)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        try:
+            stdout, stderr = proc.communicate(timeout=60)
+        except Exception:
+            stdout, stderr = "", ""
+        err = (stderr or stdout or "").strip()
+        raise RuntimeError(f"{label} timed out after {timeout_s}s: {err[:2000]}")
+    finally:
+        with _ffmpeg_active_lock:
+            _ffmpeg_active.discard(proc)
     if proc.returncode != 0:
-        err = (proc.stderr or proc.stdout or "").strip()
+        err = (stderr or stdout or "").strip()
         raise RuntimeError(f"{label} failed (exit {proc.returncode}): {err[:2000]}")
 
 

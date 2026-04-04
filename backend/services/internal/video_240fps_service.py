@@ -35,6 +35,7 @@ def build_analysis_timeline(video_path: str, work_dir: str) -> Dict[str, object]
 
     * ``STELLAR_PROV3_USE_FAST_240FPS=1`` — always use ``fps=240`` (no minterpolate).
     * ``STELLAR_PROV3_MINTERPOLATE_MAX_DURATION_S`` — above this input duration, skip minterpolate (default 45).
+    * ``STELLAR_RUNTIME=modal`` — skip minterpolate unless ``STELLAR_PROV3_ALLOW_MINTERPOLATE_ON_MODAL=1``.
     """
     Path(work_dir).mkdir(parents=True, exist_ok=True)
     out_path = str(Path(work_dir) / "analysis_240fps.mp4")
@@ -60,9 +61,19 @@ def build_analysis_timeline(video_path: str, work_dir: str) -> Dict[str, object]
             "[prov3] 240fps: input duration unknown — using fps=%s fast path (avoid long minterpolate stall)",
             TARGET_FPS,
         )
+    # Modal: minterpolate on 1 CPU exceeds typical 300s wall and survives cancel — forbid unless explicitly allowed.
+    _on_modal = (os.getenv("STELLAR_RUNTIME") or "").strip().lower() == "modal"
+    _allow_mci_on_modal = _env_truthy("STELLAR_PROV3_ALLOW_MINTERPOLATE_ON_MODAL")
+    _modal_skip_mci = _on_modal and not _allow_mci_on_modal
+    if _modal_skip_mci and ffmpeg_has_filter("minterpolate"):
+        logger.warning(
+            "[prov3] 240fps: STELLAR_RUNTIME=modal — skipping minterpolate "
+            "(set STELLAR_PROV3_ALLOW_MINTERPOLATE_ON_MODAL=1 to force MCI; not recommended on 1 CPU).",
+        )
     use_mci = (
         ffmpeg_has_filter("minterpolate")
         and not _env_truthy("STELLAR_PROV3_USE_FAST_240FPS")
+        and not _modal_skip_mci
         and not unknown_dur
         and dur <= _MINTERPOLATE_MAX_DURATION_S
     )
