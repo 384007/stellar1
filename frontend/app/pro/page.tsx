@@ -190,7 +190,9 @@ export default function ProPage() {
         );
         return;
       }
-      processBlob(blob, reanalyzeHistoryFilename(blob), false);
+      const sm = Boolean(p.proV2ScreenMode);
+      if (sm) setInputMode("screen");
+      processBlob(blob, reanalyzeHistoryFilename(blob), sm);
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);

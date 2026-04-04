@@ -8,6 +8,11 @@ export type ReanalyzeFromHistoryPayload = {
   /** 仅 `/analyze`：与历史记录类型对应的模式（Pro 记录走 `/pro`，此处一般为 lite） */
   analysisMode?: "lite" | "pro";
   videoUrl?: string;
+  /**
+   * 原分析为 Pro V2 屏幕模式时保留；再次分析时传给 `processBlob` / `screen_mode` 表单字段。
+   * 缺省或未存则按非屏幕处理（与旧版 session 行为一致）。
+   */
+  proV2ScreenMode?: boolean;
 };
 
 export function queueReanalyzeFromHistory(p: ReanalyzeFromHistoryPayload): void {

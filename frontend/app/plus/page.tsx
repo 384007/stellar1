@@ -114,6 +114,7 @@ export default function PlusPage() {
         );
         return;
       }
+      if (p.proV2ScreenMode) setInputMode("screen");
       processBlob(blob, reanalyzeHistoryFilename(blob));
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps

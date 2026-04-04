@@ -184,7 +184,9 @@ export default function AnalyzePage() {
         return;
       }
       const mode: AnalysisMode = p.analysisMode === "pro" ? "pro" : "lite";
-      processBlob(blob, reanalyzeHistoryFilename(blob), false, mode);
+      const screenTag = Boolean(p.proV2ScreenMode);
+      if (screenTag) setInputMode("screen");
+      processBlob(blob, reanalyzeHistoryFilename(blob), screenTag, mode);
     })();
     // processBlob 为稳定闭包即可；仅依赖登录就绪与语言（错误文案）
     // eslint-disable-next-line react-hooks/exhaustive-deps

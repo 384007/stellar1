@@ -44,6 +44,17 @@ function recordHasFiniteTotalScore(r: AnalysisRecord): r is AnalysisRecord & { t
   return isFiniteAnalysisScore(r.total_score);
 }
 
+/** Pro V2：历史 `result_json` 是否标记为屏幕模式（再次分析时回传 `screen_mode`）。 */
+function proV2ScreenModeFromHistoryRecord(rec: AnalysisRecord): boolean {
+  if (rec.type === "lab") return false;
+  try {
+    const p = JSON.parse(rec.result_json || "{}") as { screen_mode?: unknown };
+    return p.screen_mode === true || p.screen_mode === "true";
+  } catch {
+    return false;
+  }
+}
+
 /** D1 list rows are compacted (~90k cap); keyframe JPEGs often live only in R2. Detect stripped/poisoned cache. */
 function plusKeyframesMissingImages(parsed: ParsedResult): boolean {
   const kfs = parsed.keyframes;
@@ -126,6 +137,8 @@ interface ParsedResult {
     distance_debug?: Record<string, unknown>;
   };
   training_plan?: Record<string, { focus: string; drills: string[]; duration: string }>;
+  /** Pro v2 / PlusResultView：屏幕模式分析 */
+  screen_mode?: boolean;
 }
 
 interface UserInfo {
@@ -650,6 +663,7 @@ export default function HistoryPage() {
       page,
       analysisMode,
       videoUrl: vu && /^https?:\/\//i.test(vu) ? vu : undefined,
+      proV2ScreenMode: proV2ScreenModeFromHistoryRecord(rec),
     });
     router.push(page === "plus" ? "/plus" : page === "pro" ? "/pro" : "/analyze");
   }
