@@ -29,7 +29,7 @@ fi
 python3 -m pip install -q -U modal
 
 # Baked into the Modal image and printed at worker startup (`modal_app.fastapi_app`).
-# Modal Pro: STELLAR_MODAL_PRO_V2_ONLY=1 in worker — only POST /pro-v2/analyze (no /stellar-pro/analyze).
+# Modal Pro: STELLAR_MODAL_PRO_V3_ONLY=1 in worker — POST /pro-v3/analyze (alias /pro-v2); no /stellar-pro/analyze.
 export STELLAR_GIT_SHA="$(git -C "$ROOT" rev-parse HEAD 2>/dev/null || echo unknown)"
 export STELLAR_GIT_BRANCH="$(git -C "$ROOT" rev-parse --abbrev-ref HEAD 2>/dev/null || echo unknown)"
 export STELLAR_BUILD_TIME="$(date -u +%Y-%m-%dT%H:%M:%SZ)"

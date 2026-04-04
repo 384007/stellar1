@@ -1,4 +1,4 @@
-"""Pro HTTP API — primary ``/pro-v3/*``; ``/pro-v2/*`` kept as legacy aliases (same handler, same disk)."""
+"""Pro HTTP API — ``/pro-v3/*`` (primary). ``/pro-v2/*`` is registered only when **not** on Modal (``STELLAR_RUNTIME=modal`` skips it)."""
 
 from __future__ import annotations
 
@@ -20,7 +20,11 @@ from services.pro_prov3_gemini_enrich import enrich_pro_prov3_response
 
 logger = logging.getLogger(__name__)
 
-_PRO_MEDIA_ROOT = Path(os.getenv("STELLAR_PRO_V2_MEDIA_ROOT", "/tmp/stellar_pro_v2_media")).resolve()
+_PRO_MEDIA_ROOT = Path(
+    os.getenv("STELLAR_PRO_V3_MEDIA_ROOT")
+    or os.getenv("STELLAR_PRO_V2_MEDIA_ROOT")
+    or "/tmp/stellar_pro_v2_media",
+).resolve()
 
 # Modal GPU workers: only one in-flight Pro video analyze per process (reject overlap with 409).
 _MODAL_PRO_ANALYZE_LOCK = asyncio.Lock()
@@ -31,16 +35,23 @@ def _modal_pro_single_flight_enabled() -> bool:
         return True
     if (os.getenv("MODAL_REGION") or "").strip():
         return True
-    v = (os.getenv("STELLAR_MODAL_PRO_V2_ONLY") or "").strip().lower()
-    return v in ("1", "true", "yes")
+    v3 = (os.getenv("STELLAR_MODAL_PRO_V3_ONLY") or "").strip().lower()
+    v2 = (os.getenv("STELLAR_MODAL_PRO_V2_ONLY") or "").strip().lower()
+    return v3 in ("1", "true", "yes") or v2 in ("1", "true", "yes")
+
+
+def _expose_pro_v2_http_alias() -> bool:
+    """Modal workers use ``/pro-v3`` only; Render/local may keep ``/pro-v2`` for older clients."""
+    return (os.getenv("STELLAR_RUNTIME") or "").strip().lower() != "modal"
+
 
 router_pro_v3 = APIRouter(prefix="/pro-v3", tags=["pro-v3"])
 router_pro_v2_legacy = APIRouter(prefix="/pro-v2", tags=["pro-v2-legacy"])
 
-# Single include from main.py — mounts both /pro-v3 and /pro-v2.
 router = APIRouter()
 router.include_router(router_pro_v3)
-router.include_router(router_pro_v2_legacy)
+if _expose_pro_v2_http_alias():
+    router.include_router(router_pro_v2_legacy)
 
 
 def _pro_analyze_ingress_echo(route: str, request: Request) -> None:

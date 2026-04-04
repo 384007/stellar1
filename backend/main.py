@@ -360,14 +360,18 @@ app.add_middleware(_RuntimeHeaderMiddleware)
 
 _load_errors: list[str] = []
 
-# Modal workers set STELLAR_MODAL_PRO_V2_ONLY=1 before importing this module — skip legacy /stellar-pro.
-_MODAL_PRO_V2_ONLY = (os.getenv("STELLAR_MODAL_PRO_V2_ONLY") or "").strip().lower() in (
-    "1",
-    "true",
-    "yes",
-    "on",
-)
-_EXPECTED_ROUTER_LOADS = 7 if _MODAL_PRO_V2_ONLY else 8
+def _env_truthy(*keys: str) -> bool:
+    for k in keys:
+        v = (os.getenv(k) or "").strip().lower()
+        if v in ("1", "true", "yes", "on"):
+            return True
+    return False
+
+
+# Modal GPU image: skip legacy ``/stellar-pro`` router (smaller surface). Prefer STELLAR_MODAL_PRO_V3_ONLY;
+# STELLAR_MODAL_PRO_V2_ONLY is still read here as a legacy alias for the same slim-Modal flag (older secrets).
+_MODAL_PRO_SLIM = _env_truthy("STELLAR_MODAL_PRO_V3_ONLY", "STELLAR_MODAL_PRO_V2_ONLY")
+_EXPECTED_ROUTER_LOADS = 7 if _MODAL_PRO_SLIM else 8
 
 
 def _safe_load(module_path: str, prefix: str, tags: list[str]):
@@ -387,7 +391,7 @@ with _suppress_native_stderr():
     _safe_load("routers.plus_analyze", "/analyze", ["Plus Analysis"])
     _safe_load("routers.pose", "/pose", ["Pose Detection"])
 _safe_load("routers.news", "", ["News"])
-if not _MODAL_PRO_V2_ONLY:
+if not _MODAL_PRO_SLIM:
     _safe_load("routers.stellar_pro_api", "", ["stellar-pro"])
 _safe_load("routers.pro_v2_api", "", [])
 _safe_load("routers.prov3_keyframes", "", ["prov3-keyframes"])
@@ -432,11 +436,11 @@ async def health_check():
             "engine": "prov3",
             "route_naming": {
                 "primary": "POST /pro-v3/analyze",
-                "legacy_alias": "POST /pro-v2/analyze (same handler; media URLs stay under /pro-v2/media/ for those requests)",
-                "env_STELLAR_MODAL_PRO_V2_ONLY": "If set, Modal skips registering /stellar-pro. Name is historical; not related to URL v2 alias.",
+                "media": "GET /pro-v3/media/{analysis_id}/{filename}",
+                "env_STELLAR_MODAL_PRO_V3_ONLY": "If set, Modal skips /stellar-pro; Pro is /pro-v3 only (see routers.pro_v2_api).",
             },
             "pro_http_route": "POST /pro-v3/analyze",
-            "pro_http_note": "Primary product path is /pro-v3; /pro-v2 remains a backward-compatible alias.",
+            "pro_http_note": "Modal workers: Pro HTTP and media URLs use the /pro-v3 prefix only.",
             "pro_http": "POST /pro-v3/analyze -> Pro v3 keyframe pipeline (+ optional Gemini report)",
             "api": "POST /api/prov3/keyframes/analyze",
             "video": {
@@ -463,11 +467,8 @@ async def health_check():
             "JWT_SECRET": "set" if jwt_secret else "using-default",
             "FRONTEND_URL": frontend_url or "http://localhost:3000",
             "GOLF_NEWS_API_KEY": "set" if os.getenv("GOLF_NEWS_API_KEY") else "optional-not-set",
-            **(
-                {"STELLAR_MODAL_PRO_V2_ONLY": "1"}
-                if _MODAL_PRO_V2_ONLY
-                else {}
-            ),
+            **({"STELLAR_MODAL_PRO_SLIM": "1"} if _MODAL_PRO_SLIM else {}),
+            **({"STELLAR_MODAL_PRO_V3_ONLY": "1"} if _env_truthy("STELLAR_MODAL_PRO_V3_ONLY") else {}),
         },
     }
     if detect_runtime() == "modal":
