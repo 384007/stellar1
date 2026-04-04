@@ -14,7 +14,7 @@ import {
 } from "@/lib/plus-skeleton-canvas-draw";
 import { getAnalysisVideoBlob } from "@/lib/video-store";
 import { isPlusScoreWithheld } from "@/lib/safe-analysis-score";
-import { rawBase64ImagePayload } from "@/lib/image-base64";
+import { keyframeImageDataUrl } from "@/lib/image-base64";
 
 /* ═══════════════ Types ═══════════════ */
 
@@ -268,9 +268,9 @@ function keyframeForPhase(
   );
 }
 
-/** Backend may emit empty/short base64; invalid JPEG still decodes to a broken <img> (browser “?” icon). */
+/** Backend may emit empty/short base64; wrong data: MIME breaks <img> decode. */
 function plusKeyframeB64Usable(b64: string | undefined | null): boolean {
-  return typeof b64 === "string" && rawBase64ImagePayload(b64).length > 40;
+  return keyframeImageDataUrl(b64) !== null;
 }
 
 function PlusKeyframePhoto({
@@ -287,7 +287,8 @@ function PlusKeyframePhoto({
   lang?: "en" | "zh";
 }) {
   const [broken, setBroken] = useState(false);
-  const usable = plusKeyframeB64Usable(image_base64);
+  const dataUrl = keyframeImageDataUrl(image_base64);
+  const usable = dataUrl !== null;
   const ph = lang === "en" ? "No image" : "无图";
   if (!usable || broken) {
     return (
@@ -303,7 +304,7 @@ function PlusKeyframePhoto({
   return (
     // eslint-disable-next-line @next/next/no-img-element
     <img
-      src={`data:image/jpeg;base64,${rawBase64ImagePayload(image_base64 ?? "")}`}
+      src={dataUrl}
       alt={alt}
       className={className}
       onError={() => setBroken(true)}
@@ -839,9 +840,12 @@ function MotionCorrectionPanel({ poseFrame, phase, lang }: { poseFrame: PoseFram
 /* ═══════════════ Save highlight ═══════════════ */
 
 function saveHighlight(imgBase64: string, label: string) {
+  const url = keyframeImageDataUrl(imgBase64);
+  if (!url) return;
   const link = document.createElement("a");
-  link.href = `data:image/jpeg;base64,${rawBase64ImagePayload(imgBase64)}`;
-  link.download = `stellar-plus-${label.replace(/\s+/g, "-")}-${Date.now()}.jpg`;
+  link.href = url;
+  const ext = url.startsWith("data:image/png") ? "png" : url.startsWith("data:image/webp") ? "webp" : "jpg";
+  link.download = `stellar-plus-${label.replace(/\s+/g, "-")}-${Date.now()}.${ext}`;
   link.click();
 }
 

@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { rawBase64ImagePayload } from "@/lib/image-base64";
+import { keyframeImageDataUrl } from "@/lib/image-base64";
 
 export interface PoseSnapshotJoint {
   name: string;
@@ -27,8 +27,7 @@ interface Keyframe {
 }
 
 function hasKeyframeImage(kf: Keyframe): boolean {
-  if (typeof kf.image_base64 !== "string") return false;
-  return rawBase64ImagePayload(kf.image_base64).length > 40;
+  return keyframeImageDataUrl(kf.image_base64) !== null;
 }
 
 function KeyframeStripMedia({
@@ -50,12 +49,13 @@ function KeyframeStripMedia({
 }) {
   const [imgBroken, setImgBroken] = useState(false);
   const showSkel = showSkeleton && !!kf.pose_snapshot?.joints?.length;
-  if (hasKeyframeImage(kf) && !imgBroken) {
+  const dataUrl = keyframeImageDataUrl(kf.image_base64);
+  if (dataUrl && !imgBroken) {
     return (
       <div className={`relative ${enlarged ? "min-h-[65vh] w-full" : ""} ${className ?? ""}`}>
         {/* eslint-disable-next-line @next/next/no-img-element */}
         <img
-          src={`data:image/jpeg;base64,${rawBase64ImagePayload(kf.image_base64 ?? "")}`}
+          src={dataUrl}
           alt={kf.phase}
           className={
             enlarged

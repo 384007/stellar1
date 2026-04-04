@@ -928,12 +928,10 @@ export default function HistoryPage() {
 
   async function ensureRecordDetailLoaded(record: AnalysisRecord) {
     const recordId = record.id;
-    const hasR2 = !!(record.result_r2_key && String(record.result_r2_key).trim());
-    /** Full-result JSON may live in R2; D1 row + IndexedDB are often compact — bust bad cache for any analysis type. */
-    const bustStripedCacheForR2 = hasR2;
 
+    /** In-memory detail from a prior expand must not block reload when keyframes lack real bitmaps. */
     if (recordDetails[recordId]) {
-      if (!bustStripedCacheForR2 || !plusKeyframesMissingImages(recordDetails[recordId])) {
+      if (!plusKeyframesMissingImages(recordDetails[recordId])) {
         return;
       }
       setRecordDetails((prev) => {
@@ -948,31 +946,19 @@ export default function HistoryPage() {
 
     setDetailLoading((prev) => ({ ...prev, [recordId]: true }));
 
-    // 1. IndexedDB — if R2 full result exists and cache looks D1-compact, delete and fetch GET (merges R2)
-    if (!bustStripedCacheForR2) {
-      try {
-        const cached = await getAnalysisDetail(recordId);
-        if (cached) {
-          const parsed = parseResult(cached);
+    // 1. IndexedDB — same validation as R2 path: compact rows often omit JPEGs; stale cache must not win over D1/R2.
+    try {
+      const cached = await getAnalysisDetail(recordId);
+      if (cached) {
+        const parsed = parseResult(cached);
+        if (!plusKeyframesMissingImages(parsed)) {
           setRecordDetails((prev) => ({ ...prev, [recordId]: parsed }));
           setDetailLoading((prev) => ({ ...prev, [recordId]: false }));
           return;
         }
-      } catch { /* ignore */ }
-    } else {
-      try {
-        const cached = await getAnalysisDetail(recordId);
-        if (cached) {
-          const parsed = parseResult(cached);
-          if (!plusKeyframesMissingImages(parsed)) {
-            setRecordDetails((prev) => ({ ...prev, [recordId]: parsed }));
-            setDetailLoading((prev) => ({ ...prev, [recordId]: false }));
-            return;
-          }
-          await deleteAnalysisDetail(recordId).catch(() => {});
-        }
-      } catch { /* ignore */ }
-    }
+        await deleteAnalysisDetail(recordId).catch(() => {});
+      }
+    } catch { /* ignore */ }
 
     // 2. Fetch from API (GET merges result_r2_key → full JSON when R2 object exists)
     for (let attempt = 0; attempt < 2; attempt++) {
