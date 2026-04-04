@@ -1,11 +1,13 @@
-"""Pro v2 HTTP API — frontend should call this route only (not legacy Pro orchestrators)."""
+"""Pro HTTP API — `/pro-v2/analyze` is the stable frontend path; the engine is Pro v3 keyframes only."""
 
 from __future__ import annotations
 
+import asyncio
+import logging
 import os
 import shutil
+import sys
 import tempfile
-import logging
 from pathlib import Path
 from typing import Optional
 
@@ -13,8 +15,7 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, Uplo
 from fastapi.responses import FileResponse
 
 from routers.auth import get_current_user
-from routers.plus_analyze import _stellar_modal_upload_echo
-from services.pro_v2_video_analysis_service import run_pro_v2_video_analysis
+from services.pro_prov3_analyze_service import run_pro_video_analyze_via_prov3
 
 router = APIRouter(prefix="/pro-v2", tags=["pro-v2"])
 logger = logging.getLogger(__name__)
@@ -22,13 +23,19 @@ logger = logging.getLogger(__name__)
 _PRO_V2_MEDIA_ROOT = Path(os.getenv("STELLAR_PRO_V2_MEDIA_ROOT", "/tmp/stellar_pro_v2_media")).resolve()
 
 
-def _pro_v2_client_region(request: Request) -> str:
-    hint = (request.headers.get("X-Stellar-Network-Hint") or "").strip().lower()
-    if hint in ("cn", "china", "mainland"):
-        return "CN"
-    if (request.headers.get("CF-IPCountry") or "").upper() == "CN":
-        return "CN"
-    return "global"
+def _pro_analyze_ingress_echo(route: str, request: Request) -> None:
+    """One-line ingress trace (replaces plus_analyze helper — no Plus dependency)."""
+    host = (request.headers.get("host") or "").lower()
+    modal_host = ".modal.run" in host
+    modal_env = bool(os.getenv("MODAL_REGION")) or (os.getenv("STELLAR_RUNTIME") or "").lower() == "modal"
+    runtime = (os.getenv("STELLAR_RUNTIME") or "").lower() or "unknown"
+    msg = (
+        f"[stellar-ingress] route={route} method={request.method} path={request.url.path} "
+        f"host={host!r} runtime={runtime} modal_host={int(modal_host)} modal_env={int(modal_env)}"
+    )
+    print(msg, flush=True)
+    print(msg, flush=True, file=sys.stderr)
+    logger.info("%s", msg)
 
 
 def _safe_analysis_media_dir(analysis_id: str) -> Path:
@@ -61,15 +68,14 @@ async def pro_v2_analyze(
     screen_mode: bool = Form(default=False),
     current_user: Optional[dict] = Depends(get_current_user),
 ):
-    """Stellar Pro v2: 240fps → motion swing window → dense scan → 8 motion keyframes → OpenCV impact → gate → AI report."""
+    """Stellar Pro — Pro v3 keyframe pipeline (eight phases, thumbnails, optional contact sheet)."""
     if current_user and not current_user.get("is_pro"):
         raise HTTPException(status_code=403, detail="Pro membership required")
 
-    _stellar_modal_upload_echo("PRO_V2", request)
-    logger.info("[PRO_V2][API] screen_mode=%s", "true" if screen_mode else "false")
+    _pro_analyze_ingress_echo("PRO_PROV3", request)
+    logger.info("[PRO_PROV3][API] screen_mode=%s", "true" if screen_mode else "false")
 
     suffix = Path(file.filename or "video.mp4").suffix or ".mp4"
-    region = _pro_v2_client_region(request)
 
     with tempfile.TemporaryDirectory(prefix="stellar_pro_v2_") as tmpdir:
         input_path = str(Path(tmpdir) / f"input{suffix}")
@@ -82,16 +88,16 @@ async def pro_v2_analyze(
             f.write(body)
 
         try:
-            result = await run_pro_v2_video_analysis(
+            result = await asyncio.to_thread(
+                run_pro_video_analyze_via_prov3,
                 input_path,
                 work_dir,
-                rough_impact_time_s=rough_impact_time_s,
                 screen_mode=screen_mode,
-                region=region,
+                rough_impact_time_s=rough_impact_time_s,
             )
             analysis_id = str(result.get("analysis_id") or "").strip()
             if not analysis_id:
-                raise RuntimeError("pro_v2_analyze failed: missing analysis_id")
+                raise RuntimeError("pro_analyze failed: missing analysis_id")
             media_dir = _safe_analysis_media_dir(analysis_id)
             media_dir.mkdir(parents=True, exist_ok=True)
 
@@ -133,11 +139,11 @@ async def pro_v2_analyze(
                 result["screen_cropped_video_url"] = screen_cropped_video_url
             result["screen_mode"] = bool(screen_mode)
 
-            logger.info("[PRO_V2][MEDIA] original_video_url=%s", result["original_video_url"])
-            logger.info("[PRO_V2][MEDIA] playback_video_url=%s", result["playback_video_url"])
-            logger.info("[PRO_V2][MEDIA] video_url=%s", result["video_url"])
+            logger.info("[PRO_PROV3][MEDIA] original_video_url=%s", result["original_video_url"])
+            logger.info("[PRO_PROV3][MEDIA] playback_video_url=%s", result["playback_video_url"])
+            logger.info("[PRO_PROV3][MEDIA] video_url=%s", result["video_url"])
             return result
         except RuntimeError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         except Exception as exc:
-            raise HTTPException(status_code=500, detail=f"pro_v2_analyze failed: {exc}") from exc
+            raise HTTPException(status_code=500, detail=f"pro_analyze failed: {exc}") from exc
