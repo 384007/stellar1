@@ -669,6 +669,33 @@ retry_reasons: use UPPER_SNAKE tokens like TOP_BELOW_90, IMPACT_BELOW_90, RELEAS
 confidence: 0.0-1.0 your confidence in that score.
 """
 
+PRO_V2_KF_REVIEW_PARTIAL = """You are a strict golf swing phase auditor for SCREEN / RE-RECORDED videos.
+
+You receive between 1 and 6 JPEG images. Each image maps to exactly ONE phase name below. There is NO fixed order beyond the mapping lines — score only those phases.
+
+Phase mapping (image order left-to-right matches attachment order):
+{mapping_lines}
+
+Scoring (0-100 per labeled phase you can see):
+- 90+ only if that phase label clearly matches the frame and the view is usable.
+- Below 90 if wrong phase, ambiguous, UI junk, or unusable.
+
+Return ONLY valid JSON:
+{{
+  "review_round": {review_round},
+  "core_frame_scores": {{
+    "<phase_key>": {{"score": 88, "pass_90": false, "confidence": 0.71}}
+  }},
+  "retry_required": true,
+  "retry_reasons": ["TOP_BELOW_90"]
+}}
+
+Include ONLY phase keys you were asked to score (the phases listed in the mapping). OMIT any phase you did not receive as an image.
+retry_reasons: UPPER_SNAKE like TOP_BELOW_90, TAKEAWAY_IMAGE_MISSING is NOT your job — missing inputs are handled server-side.
+
+confidence: 0.0-1.0
+"""
+
 PRO_V2_REPORT_LIMITED_PROMPT = """LIMITED TRUST REPORT — Stellar Pro v2 (screen / keyframe verification failed).
 
 The player's video was captured from a SCREEN or re-recorded source. After two automated keyframe selection rounds, at least one CORE keyframe still scored below 90 in AI verification.
@@ -1093,6 +1120,48 @@ async def analyze_pro_v2_core_keyframe_review(
         return out
     except Exception as e:
         logger.error("[ai] analyze_pro_v2_core_keyframe_review failed: %s", e)
+        return {
+            "review_round": int(review_round),
+            "core_frame_scores": {},
+            "retry_required": True,
+            "retry_reasons": ["REVIEW_AI_FAILED"],
+            "ai_provider": "kf_review_fallback",
+            "review_error": str(e),
+        }
+
+
+async def analyze_pro_v2_core_keyframe_review_for_phases(
+    phase_b64_pairs: list[tuple[str, str]],
+    *,
+    review_round: int,
+    call_label: str = "pro_v2_kf_review_partial",
+) -> dict:
+    """Vision: variable subset of core phases — each image must be non-empty JPEG b64."""
+    lines = "\n".join(
+        f"- Image {i + 1} → phase `{ph}` (canonical key for JSON: {ph})"
+        for i, (ph, _) in enumerate(phase_b64_pairs)
+    )
+    prompt = PRO_V2_KF_REVIEW_PARTIAL.format(
+        mapping_lines=lines,
+        review_round=int(review_round),
+    )
+    imgs = [b for _, b in phase_b64_pairs]
+    try:
+        text, provider, key_slot = await _call_vision_ai(
+            prompt,
+            imgs[:8],
+            4096,
+            0.12,
+            call_label,
+            timeout_s=min(PRO_AI_TIMEOUT_S, 150.0),
+        )
+        out = extract_json_from_response(text)
+        out["ai_provider"] = provider
+        if key_slot is not None:
+            out["ai_key"] = developer_key_label(key_slot)
+        return out
+    except Exception as e:
+        logger.error("[ai] analyze_pro_v2_core_keyframe_review_for_phases failed: %s", e)
         return {
             "review_round": int(review_round),
             "core_frame_scores": {},

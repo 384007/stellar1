@@ -5,7 +5,8 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from services.gemini_service import analyze_pro_v2_core_keyframe_review
+from services.gemini_service import analyze_pro_v2_core_keyframe_review_for_phases
+from services.pro_v2_strategy_profiles import CORE_TO_MISSING_REASON
 
 logger = logging.getLogger(__name__)
 
@@ -28,6 +29,8 @@ CORE_PHASE_ORDER: tuple[str, ...] = (
     "release",
 )
 
+_MIN_B64_LEN = 48
+
 
 def _empty_scores() -> dict[str, dict[str, Any]]:
     return {
@@ -36,7 +39,7 @@ def _empty_scores() -> dict[str, dict[str, Any]]:
     }
 
 
-def _parse_score_entry(raw: Any) -> dict[str, Any]:
+def _parse_score_entry(raw: Any, *, confidence_ceiling: float | None = None) -> dict[str, Any]:
     if not isinstance(raw, dict):
         return {"score": 0, "pass_90": False, "confidence": 0.0}
     try:
@@ -44,42 +47,32 @@ def _parse_score_entry(raw: Any) -> dict[str, Any]:
     except (TypeError, ValueError):
         sc = 0
     sc = max(0, min(100, sc))
-    # Product gate: pass_90 is strictly score >= 90 (do not trust model-only boolean).
     pass90 = sc >= 90
     try:
         conf = float(raw.get("confidence", 0.0))
     except (TypeError, ValueError):
         conf = 0.0
     conf = max(0.0, min(1.0, conf))
+    if confidence_ceiling is not None:
+        conf = min(conf, float(confidence_ceiling))
     return {"score": sc, "pass_90": pass90, "confidence": round(conf, 4)}
-
-
-def build_ordered_core_images(keyframes: list[dict[str, Any]]) -> tuple[list[str], list[str]]:
-    """Returns (b64_list, picker_phases_in_order) for Gemini."""
-    by_phase: dict[str, dict[str, Any]] = {}
-    for k in keyframes:
-        p = str(k.get("phase") or "").strip()
-        if p:
-            by_phase[p] = k
-    images: list[str] = []
-    picker_order: list[str] = []
-    for picker_phase, core_key in _PICKER_TO_CORE.items():
-        row = by_phase.get(picker_phase)
-        b64 = str((row or {}).get("image_base64") or "").strip()
-        if not b64:
-            logger.warning("[PRO_V2][KF_REVIEW] missing image for phase=%s (core=%s)", picker_phase, core_key)
-        images.append(b64)
-        picker_order.append(picker_phase)
-    return images, picker_order
 
 
 def merge_ai_core_scores(
     ai_raw: dict[str, Any],
     *,
     review_round: int,
+    confidence_ceiling: float | None = None,
+    allowed_keys: set[str] | None = None,
+    base_prefill: dict[str, dict[str, Any]] | None = None,
 ) -> tuple[dict[str, dict[str, Any]], bool, list[str]]:
-    """Normalize AI JSON → core_frame_scores, all_pass_90, retry_reasons."""
-    base = _empty_scores()
+    """Merge AI JSON into core_frame_scores."""
+    base: dict[str, dict[str, Any]]
+    if base_prefill:
+        base = {k: dict(v) for k, v in base_prefill.items()}
+    else:
+        base = _empty_scores()
+
     cfs = ai_raw.get("core_frame_scores")
     if isinstance(cfs, dict):
         alias = {
@@ -90,64 +83,123 @@ def merge_ai_core_scores(
         for k, v in cfs.items():
             kk = str(k).strip()
             kk = alias.get(kk, kk)
-            if kk in base:
-                base[kk] = _parse_score_entry(v)
+            if kk not in base:
+                continue
+            if allowed_keys is not None and kk not in allowed_keys:
+                continue
+            base[kk] = _parse_score_entry(v, confidence_ceiling=confidence_ceiling)
+
     reasons = ai_raw.get("retry_reasons")
     rlist: list[str] = []
     if isinstance(reasons, list):
         rlist = [str(x).strip().upper() for x in reasons if str(x).strip()]
+
     all_pass = all(base[k]["pass_90"] for k in CORE_PHASE_ORDER)
     retry_ai = ai_raw.get("retry_required")
     if isinstance(retry_ai, bool):
         retry_required = retry_ai
     else:
         retry_required = not all_pass
+
     if not all_pass and not rlist:
         for ck in CORE_PHASE_ORDER:
             if not base[ck]["pass_90"]:
                 rlist.append(f"{ck.upper()}_BELOW_90")
+
     logger.info(
-        "[PRO_V2][KF_REVIEW] review_round=%s all_core_pass_90=%s retry_required=%s reasons=%s",
+        "[PRO_V2][KF_REVIEW] review_round=%s all_core_pass_90=%s retry_required=%s reasons=%s ceiling=%s",
         review_round,
         all_pass,
         retry_required,
-        rlist[:8],
+        rlist[:10],
+        confidence_ceiling,
     )
     return base, all_pass, rlist
+
+
+def _usable_b64(b64: str) -> bool:
+    s = (b64 or "").strip()
+    return len(s) >= _MIN_B64_LEN
 
 
 async def run_core_keyframe_review_round(
     keyframes: list[dict[str, Any]],
     *,
     review_round: int,
+    confidence_ceiling: float | None = None,
 ) -> dict[str, Any]:
-    """One AI vision pass over 6 core frames."""
-    images, picker_order = build_ordered_core_images(keyframes)
-    if not any(images):
-        logger.error("[PRO_V2][KF_REVIEW] no_images — forcing retry_required")
-        sc, _, reasons = merge_ai_core_scores(
-            {"core_frame_scores": {}, "retry_required": True, "retry_reasons": ["NO_CORE_IMAGES"]},
-            review_round=review_round,
-        )
+    """AI vision on non-empty core frames only; missing phases are structural failures (no empty images to model)."""
+    by_phase: dict[str, dict[str, Any]] = {}
+    for k in keyframes:
+        p = str(k.get("phase") or "").strip()
+        if p:
+            by_phase[p] = k
+
+    base = _empty_scores()
+    missing_reasons: list[str] = []
+    valid_pairs: list[tuple[str, str]] = []
+
+    for picker_phase, core_key in _PICKER_TO_CORE.items():
+        row = by_phase.get(picker_phase)
+        b64 = str((row or {}).get("image_base64") or "").strip()
+        if not _usable_b64(b64):
+            base[core_key] = {"score": 0, "pass_90": False, "confidence": 0.0}
+            missing_reasons.append(CORE_TO_MISSING_REASON.get(core_key, f"{core_key.upper()}_IMAGE_MISSING"))
+        else:
+            valid_pairs.append((core_key, b64))
+
+    sent = [p[0] for p in valid_pairs]
+    logger.info(
+        "[PRO_V2][KF_REVIEW_INPUT] review_round=%s missing_reasons=%s sent_phases=%s n_images=%s",
+        review_round,
+        missing_reasons[:8],
+        sent,
+        len(valid_pairs),
+    )
+
+    if not valid_pairs:
+        logger.error("[PRO_V2][KF_REVIEW] no_usable_images — NO_CORE_IMAGES")
+        reasons = list(dict.fromkeys(missing_reasons + ["NO_CORE_IMAGES"]))
         return {
             "review_round": review_round,
-            "core_frame_scores": sc,
+            "core_frame_scores": base,
             "retry_required": True,
             "retry_reasons": reasons,
-            "picker_order": picker_order,
+            "picker_order": list(_PICKER_TO_CORE.keys()),
         }
 
-    ai_out = await analyze_pro_v2_core_keyframe_review(
-        images,
+    ai_out = await analyze_pro_v2_core_keyframe_review_for_phases(
+        valid_pairs,
         review_round=review_round,
         call_label=f"pro_v2_kf_r{review_round}",
     )
-    sc, all_pass, reasons = merge_ai_core_scores(ai_out, review_round=review_round)
+    allowed = {p[0] for p in valid_pairs}
+    sc, all_pass, ai_reasons = merge_ai_core_scores(
+        ai_out,
+        review_round=review_round,
+        confidence_ceiling=confidence_ceiling,
+        allowed_keys=allowed,
+        base_prefill=base,
+    )
+
+    merged_reasons = list(dict.fromkeys(missing_reasons + ai_reasons))
+    if str(ai_out.get("ai_provider") or "") == "kf_review_fallback":
+        merged_reasons = list(dict.fromkeys(merged_reasons + ["REVIEW_AI_FAILED"]))
+
+    retry_required = (not all_pass) or bool(missing_reasons) or ("REVIEW_AI_FAILED" in merged_reasons)
+
+    logger.info(
+        "[PRO_V2][KF_REVIEW] review_round=%s merged_retry=%s reasons=%s",
+        review_round,
+        retry_required,
+        merged_reasons[:12],
+    )
+
     return {
         "review_round": review_round,
         "core_frame_scores": sc,
-        "retry_required": not all_pass,
-        "retry_reasons": reasons,
-        "picker_order": picker_order,
+        "retry_required": retry_required,
+        "retry_reasons": merged_reasons,
+        "picker_order": list(_PICKER_TO_CORE.keys()),
         "ai_raw": ai_out,
     }

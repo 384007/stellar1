@@ -75,22 +75,26 @@ def build_full_240fps_playback(
     fast: bool = True,
     crf: int = 28,
     preset: str = "ultrafast",
+    vf_prefix: str | None = None,
 ) -> str:
     """Build a full-length 240fps playback file.
 
     fast=True: uses fps=240 (frame duplication / frame-rate conversion) for quick frontend playback tests.
     fast=False: uses motion-compensated interpolation via minterpolate and is much slower.
+    vf_prefix: optional filters applied before the fps/minterpolate stage (e.g. unsharp for screen deblur).
     """
     ffmpeg_bin = _which_or_raise("ffmpeg")
     input_path = str(Path(input_path))
     output_path = str(Path(output_path))
     Path(output_path).parent.mkdir(parents=True, exist_ok=True)
 
-    vf = (
+    vf_core = (
         "fps=240"
         if fast
         else "minterpolate=fps=240:mi_mode=mci:mc_mode=aobmc:me_mode=bidir:vsbmc=1"
     )
+    pre = (vf_prefix or "").strip().strip(",")
+    vf = f"{pre},{vf_core}" if pre else vf_core
     mode = "fast_playback" if fast else "motion_interpolated"
     logger.info("[ROLE=FFMPEG_PREP] mode=%s input=%s output=%s", mode, input_path, output_path)
     cmd = [

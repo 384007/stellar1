@@ -23,6 +23,15 @@ from services.pro_v2_keyframe_review_service import CORE_PHASE_ORDER, run_core_k
 from services.pro_v2_report_service import LIMITED_NOTICE_ZH, pop_pro_v2_report_meta, write_pro_v2_ai_report
 from services.pro_v2_screen_preprocess_service import run_pro_v2_screen_preprocess
 from services.pro_v2_simple_gate_service import run_simple_gate
+from services.pro_v2_strategy_profiles import (
+    base_picker_tuning_dict,
+    compute_screen_relaxed_margin,
+    derive_routing_execution,
+    ffmpeg_vf_for_attempt,
+    log_route_apply,
+    merge_retry_reasons_into_tuning,
+    second_pass_impact_aggressive,
+)
 from services.pro_v2_swing_window_service import find_swing_window_seconds
 
 logger = logging.getLogger(__name__)
@@ -146,12 +155,19 @@ def _run_motion_pipeline_once(
     work: Path,
     rough_impact_time_s: float | None,
     analysis_input: str,
-    picker_variant: int,
+    picker_tuning: dict[str, Any] | None = None,
+    impact_refine_aggressive: bool = False,
+    analysis_vf_prefix: str | None = None,
+    dense_pose_priority: bool = False,
+    dense_club_emphasis: float = 0.0,
+    min_dense_frames: int = 16,
+    legacy_picker_variant: int = 0,
 ) -> tuple[Any, float, float, list[DenseFrame], list[dict[str, Any]]]:
     ff = run_pro_v2_ffmpeg_preprocess(
         ffmpeg_input_path,
         str(work),
         rough_impact_time_s=rough_impact_time_s,
+        analysis_vf_prefix=analysis_vf_prefix,
     )
     sm = _screen_motion_flag(analysis_input)
     t0, t1 = find_swing_window_seconds(
@@ -166,16 +182,25 @@ def _run_motion_pipeline_once(
         t_start_s=t0,
         t_end_s=t1,
         screen_mode=sm,
+        pose_priority=bool(dense_pose_priority and sm),
+        club_emphasis=float(dense_club_emphasis or 0.0),
     )
-    if len(dense) < 16:
+    if len(dense) < min_dense_frames:
         raise RuntimeError("pro_v2: swing region too short or static — record a clearer swing clip")
+    tun = dict(picker_tuning or {})
+    tun.setdefault("legacy_picker_variant", legacy_picker_variant)
     keyframes = pick_eight_keyframes_motion_only(
         ff.analysis_240_path,
         dense,
         screen_mode=sm,
-        picker_variant=picker_variant,
+        picker_variant=int(legacy_picker_variant),
+        picker_tuning=tun,
     )
-    keyframes = refine_impact_keyframe_only(ff.analysis_240_path, keyframes)
+    keyframes = refine_impact_keyframe_only(
+        ff.analysis_240_path,
+        keyframes,
+        aggressive=bool(impact_refine_aggressive),
+    )
     keyframes, _, _ = run_simple_gate(
         keyframes,
         fps=ff.fps,
@@ -188,6 +213,7 @@ def _run_motion_pipeline_once(
 def _trust_extras(
     *,
     route: dict[str, Any] | None,
+    routing_execution: dict[str, Any] | None,
     analysis_input: str,
     analysis_trust: str,
     report_mode: str,
@@ -208,6 +234,8 @@ def _trust_extras(
     }
     if route:
         out["routing_strategy"] = route
+    if routing_execution:
+        out["routing_execution"] = routing_execution
     return out
 
 
@@ -244,20 +272,65 @@ async def run_pro_v2_video_analysis(
     report_mode = "formal"
     keyframe_mismatch_notice = False
 
+    routing_last_pass: dict[str, Any] = {}
+    routing_exec_static: dict[str, Any] | None = None
+    routing_full_out: dict[str, Any] | None = None
+
     if screen_mode:
         route = await run_pro_v2_ai_routing(input_video_path, screen_mode_requested=True)
+        rp = derive_routing_execution(route)
+        log_route_apply(rp, analysis_id=analysis_id)
+        routing_exec_static = {
+            "quality_level": rp.quality_level,
+            "use_deblur": rp.use_deblur,
+            "use_heavy_club_tracking": rp.use_heavy_club_tracking,
+            "pose_priority": rp.pose_priority,
+            "expected_confidence_ceiling": rp.expected_confidence_ceiling,
+            "min_dense_frames": rp.min_dense_frames,
+            "dense_club_emphasis": rp.dense_club_emphasis,
+            "screen_apply_unsharp": rp.screen_apply_unsharp,
+            "ffmpeg_vf_prefix_routing": rp.ffmpeg_analysis_vf_prefix,
+        }
+        pick_dict: dict[str, Any] = base_picker_tuning_dict(rp)
+        retry_reasons_final: list[str] = []
+
         for attempt in range(2):
-            logger.info("[PRO_V2][SCREEN] preprocess_attempt=%s", attempt)
+            if attempt == 1:
+                pick_dict = merge_retry_reasons_into_tuning(
+                    pick_dict,
+                    retry_reasons_final,
+                    routing=rp,
+                )
+            relaxed = compute_screen_relaxed_margin(attempt, rp, retry_reasons_final)
+            apply_unsharp = bool(rp.screen_apply_unsharp or (attempt == 1 and bool(retry_reasons_final)))
+            ff_vf = ffmpeg_vf_for_attempt(rp, attempt, retry_reasons_final)
+            impact_use = (
+                rp.impact_refine_aggressive
+                if attempt == 0
+                else second_pass_impact_aggressive(rp, retry_reasons_final, rp.impact_refine_aggressive)
+            )
+
+            logger.info(
+                "[PRO_V2][SCREEN] attempt=%s analysis_input_pending preprocess_relaxed=%.4f apply_unsharp=%s "
+                "ffmpeg_vf=%s impact_agg=%s picker_variant_legacy=%s",
+                attempt,
+                relaxed,
+                "true" if apply_unsharp else "false",
+                repr((ff_vf or "")[:100]),
+                impact_use,
+                pick_dict.get("legacy_picker_variant", 0),
+            )
+
             ffmpeg_input_path = input_video_path
             analysis_input = "raw"
             screen_try_dir = work / f"screen_try_{attempt}"
             screen_try_dir.mkdir(parents=True, exist_ok=True)
-            relaxed = 0.05 if attempt == 1 else 0.0
             try:
                 screen = run_pro_v2_screen_preprocess(
                     input_video_path=input_video_path,
                     work_dir=str(screen_try_dir),
                     relaxed_margin=relaxed,
+                    apply_unsharp=apply_unsharp,
                 )
                 ffmpeg_input_path = str(screen.get("cropped_video_path") or input_video_path)
                 if ffmpeg_input_path != input_video_path:
@@ -274,28 +347,50 @@ async def run_pro_v2_video_analysis(
                 analysis_input = "raw"
 
             logger.info(
-                "[PRO_V2][PIPELINE] analysis_input=%s picker_variant=%s",
+                "[PRO_V2][PIPELINE] analysis_input=%s review_pass=%s",
                 analysis_input,
-                attempt,
+                attempt + 1,
             )
             ff, t0, t1, dense, keyframes = _run_motion_pipeline_once(
                 ffmpeg_input_path=ffmpeg_input_path,
                 work=work,
                 rough_impact_time_s=rough_impact_time_s,
                 analysis_input=analysis_input,
-                picker_variant=attempt,
+                picker_tuning=pick_dict,
+                impact_refine_aggressive=impact_use,
+                analysis_vf_prefix=ff_vf,
+                dense_pose_priority=rp.pose_priority,
+                dense_club_emphasis=rp.dense_club_emphasis,
+                min_dense_frames=rp.min_dense_frames,
+                legacy_picker_variant=int(pick_dict.get("legacy_picker_variant", 0)),
             )
 
-            rev = await run_core_keyframe_review_round(keyframes, review_round=attempt + 1)
+            routing_last_pass = {
+                "attempt": attempt,
+                "analysis_input": analysis_input,
+                "relaxed_margin": relaxed,
+                "apply_unsharp": apply_unsharp,
+                "ffmpeg_vf_prefix": ff_vf or "",
+                "impact_refine_aggressive": impact_use,
+                "picker_tuning": {k: pick_dict.get(k) for k in sorted(pick_dict.keys())[:20]},
+                "dense_count": len(dense),
+            }
+
+            rev = await run_core_keyframe_review_round(
+                keyframes,
+                review_round=attempt + 1,
+                confidence_ceiling=rp.expected_confidence_ceiling,
+            )
             review_round_done = attempt + 1
             core_frame_scores = rev["core_frame_scores"]
             retry_reasons_final = list(rev.get("retry_reasons") or [])
             need_retry = bool(rev.get("retry_required"))
             logger.info(
-                "[PRO_V2][KF_REVIEW] review_round=%s retry_required=%s analysis_input=%s",
+                "[PRO_V2][KF_REVIEW] review_round=%s retry_required=%s analysis_input=%s picker_variant=%s",
                 review_round_done,
                 need_retry,
                 analysis_input,
+                pick_dict.get("legacy_picker_variant"),
             )
             if not need_retry:
                 break
@@ -312,11 +407,17 @@ async def run_pro_v2_video_analysis(
         analysis_trust = "high_trust" if all_core_pass else "low_trust"
         report_mode = "formal" if all_core_pass else "limited"
         keyframe_mismatch_notice = not all_core_pass
+        failed_phases = [k for k in CORE_PHASE_ORDER if not (core_frame_scores.get(k) or {}).get("pass_90")]
         if not all_core_pass:
             logger.warning(
-                "[PRO_V2][LOW_TRUST] analysis_trust=low_trust report_mode=limited review_round=%s reasons=%s",
+                "[PRO_V2][LOW_TRUST] analysis_trust=low_trust report_mode=limited review_round=%s "
+                "failed_phases=%s reasons=%s routing_ceiling=%s quality=%s analysis_input=%s",
                 review_round_done,
-                retry_reasons_final[:10],
+                failed_phases,
+                retry_reasons_final[:12],
+                rp.expected_confidence_ceiling,
+                rp.quality_level,
+                routing_last_pass.get("analysis_input"),
             )
         else:
             logger.info(
@@ -329,6 +430,8 @@ async def run_pro_v2_video_analysis(
             keyframe_mismatch_notice,
         )
 
+        routing_full = {**(routing_exec_static or {}), "last_pass": routing_last_pass}
+        routing_full_out = routing_full
         motion_context = _build_motion_context(
             fps=ff.fps,
             swing_t0=t0,
@@ -337,7 +440,8 @@ async def run_pro_v2_video_analysis(
             keyframes=keyframes,
             extras=_trust_extras(
                 route=route,
-                analysis_input=analysis_input,
+                routing_execution=routing_full,
+                analysis_input=str(routing_last_pass.get("analysis_input") or analysis_input),
                 analysis_trust=analysis_trust,
                 report_mode=report_mode,
                 review_round=review_round_done,
@@ -355,7 +459,13 @@ async def run_pro_v2_video_analysis(
             work=work,
             rough_impact_time_s=rough_impact_time_s,
             analysis_input="raw",
-            picker_variant=0,
+            picker_tuning=None,
+            impact_refine_aggressive=False,
+            analysis_vf_prefix=None,
+            dense_pose_priority=False,
+            dense_club_emphasis=0.0,
+            min_dense_frames=16,
+            legacy_picker_variant=0,
         )
         motion_context = _build_motion_context(
             fps=ff.fps,
@@ -435,6 +545,8 @@ async def run_pro_v2_video_analysis(
     }
     if screen_mode and route:
         minimal["routing_strategy"] = route
+    if screen_mode and routing_full_out is not None:
+        minimal["routing_execution"] = routing_full_out
     if screen_cropped_video_path:
         minimal["screen_cropped_video_url"] = screen_cropped_video_path
 

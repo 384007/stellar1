@@ -59,9 +59,16 @@ def _pick_address(dense: list[DenseFrame], E: np.ndarray, n: int) -> int:
     return int(np.argmin(E[0 : hi + 1]))
 
 
-def _pick_takeaway(dense: list[DenseFrame], E: np.ndarray, address_idx: int, n: int) -> int:
+def _pick_takeaway(
+    dense: list[DenseFrame],
+    E: np.ndarray,
+    address_idx: int,
+    n: int,
+    *,
+    late_shift: int = 0,
+) -> int:
     """First sustained rise after address."""
-    start = min(address_idx + 1, n - 4)
+    start = min(address_idx + 1 + max(0, int(late_shift)), n - 4)
     base = float(np.mean(E[max(0, address_idx - 1) : min(address_idx + 2, n)]) + 1e-9)
     for i in range(start, n - 2):
         if E[i] < base * 1.12:
@@ -72,12 +79,19 @@ def _pick_takeaway(dense: list[DenseFrame], E: np.ndarray, address_idx: int, n: 
     return min(address_idx + max(2, n // 40), n - 6)
 
 
-def _strike_burst_range(E: np.ndarray, takeaway_idx: int, n: int) -> tuple[int, int]:
+def _strike_burst_range(
+    E: np.ndarray,
+    takeaway_idx: int,
+    n: int,
+    *,
+    percentile: int = 80,
+) -> tuple[int, int]:
     """High-energy contiguous segment (strike band), not whole clip."""
     if takeaway_idx >= n - 2:
         return max(0, n - 4), n - 1
+    pct = max(55, min(92, int(percentile)))
     tail = E[takeaway_idx:]
-    thr = float(np.percentile(tail, 80))
+    thr = float(np.percentile(tail, pct))
     active = np.zeros(n, dtype=bool)
     active[takeaway_idx:] = E[takeaway_idx:] >= thr
     runs: list[tuple[int, int]] = []
@@ -114,7 +128,15 @@ def _pick_impact_rough(E: np.ndarray, b0: int, b1: int, n: int, *, variant: int 
     return b0 + rel
 
 
-def _pick_top(dense: list[DenseFrame], E: np.ndarray, takeaway_idx: int, impact_idx: int, n: int) -> int:
+def _pick_top(
+    dense: list[DenseFrame],
+    E: np.ndarray,
+    takeaway_idx: int,
+    impact_idx: int,
+    n: int,
+    *,
+    use_second_valley: bool = False,
+) -> int:
     """Valley / direction-change pocket before downswing burst."""
     lo = min(takeaway_idx + 1, n - 3)
     hi = max(lo + 1, impact_idx - 1)
@@ -123,11 +145,20 @@ def _pick_top(dense: list[DenseFrame], E: np.ndarray, takeaway_idx: int, impact_
     region = list(range(lo, hi))
     valleys = [i for i in region if dense[i].is_local_valley]
     if valleys:
-        return int(valleys[int(np.argmin(E[valleys]))])
+        order = sorted(valleys, key=lambda i: float(E[i]))
+        if use_second_valley and len(order) >= 2:
+            return int(order[1])
+        return int(order[0])
     return int(lo + np.argmin(E[lo:hi]))
 
 
-def _pick_backswing(E: np.ndarray, takeaway_idx: int, top_idx: int) -> int:
+def _pick_backswing(
+    E: np.ndarray,
+    takeaway_idx: int,
+    top_idx: int,
+    *,
+    median_mode: bool = False,
+) -> int:
     """Representative rising motion before top."""
     lo = min(takeaway_idx + 1, top_idx - 1)
     hi = max(lo + 1, top_idx)
@@ -137,21 +168,42 @@ def _pick_backswing(E: np.ndarray, takeaway_idx: int, top_idx: int) -> int:
     inner_hi = hi - max(1, (hi - lo) // 8)
     if inner_hi <= inner_lo:
         inner_lo, inner_hi = lo, hi - 1
-    return int(inner_lo + np.argmax(E[inner_lo : inner_hi + 1]))
+    seg = E[inner_lo : inner_hi + 1]
+    if median_mode and seg.size >= 3:
+        order = np.argsort(seg)
+        mid = int(order[len(order) // 2])
+        return int(inner_lo + mid)
+    return int(inner_lo + np.argmax(seg))
 
 
-def _pick_downswing(E: np.ndarray, top_idx: int, impact_idx: int) -> int:
+def _pick_downswing(
+    E: np.ndarray,
+    top_idx: int,
+    impact_idx: int,
+    *,
+    dense_delta: int = 0,
+) -> int:
     """Strong motion after top, strictly before impact."""
     lo = min(top_idx + 1, impact_idx - 2)
     hi = max(lo + 1, impact_idx - 1)
     if hi <= lo:
-        return max(top_idx + 1, impact_idx - 2)
-    return int(lo + np.argmax(E[lo : hi + 1]))
+        base = max(top_idx + 1, impact_idx - 2)
+    else:
+        base = int(lo + np.argmax(E[lo : hi + 1]))
+    dd = int(dense_delta)
+    return max(top_idx + 1, min(base + dd, max(top_idx + 1, impact_idx - 2)))
 
 
-def _pick_follow_through(dense: list[DenseFrame], E: np.ndarray, impact_idx: int, n: int) -> int:
+def _pick_follow_through(
+    dense: list[DenseFrame],
+    E: np.ndarray,
+    impact_idx: int,
+    n: int,
+    *,
+    min_gap_delta: int = 0,
+) -> int:
     """Pick post-impact release frame: first clear local peak with minimum spacing from impact."""
-    min_gap = max(3, min(6, n // 40))
+    min_gap = max(2, max(3, min(6, n // 40)) + int(min_gap_delta))
     start = min(impact_idx + min_gap, n - 3)
     if start >= n - 1:
         return min(n - 2, max(impact_idx + 1, n - 2))
@@ -250,40 +302,58 @@ def pick_eight_keyframes_motion_only(
     *,
     screen_mode: bool = False,
     picker_variant: int = 0,
+    picker_tuning: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     """Per-phase motion picks; v2 is frame-driven (no pose indices).
 
-    picker_variant > 0 nudges late-strip / impact selection for retry after failed AI keyframe review.
+    picker_tuning merges routing + retry_reasons (see pro_v2_strategy_profiles).
+    picker_variant is legacy; when picker_tuning is None, pv still nudges late-strip.
     """
     if len(dense) < 16:
         raise RuntimeError("pro_v2: insufficient dense frames for 8-phase pick")
 
     n = len(dense)
     E = _E(dense)
-    pv = max(0, int(picker_variant))
+    tun = dict(picker_tuning or {})
+    pv = max(0, int(tun.get("legacy_picker_variant", picker_variant)))
+    strike_pct = int(tun.get("strike_percentile", 80))
+    imp_var = int(tun.get("impact_variant", min(2, pv)))
 
     addr = _pick_address(dense, E, n)
-    tw = _pick_takeaway(dense, E, addr, n)
+    tw = _pick_takeaway(dense, E, addr, n, late_shift=int(tun.get("takeaway_late_shift", 0)))
     tw = max(addr + 1, min(tw, n - 5))
 
-    b0, b1 = _strike_burst_range(E, tw, n)
-    imp = _pick_impact_rough(E, b0, b1, n, variant=min(2, pv))
+    b0, b1 = _strike_burst_range(E, tw, n, percentile=strike_pct)
+    imp = _pick_impact_rough(E, b0, b1, n, variant=min(3, max(0, imp_var)))
 
-    top = _pick_top(dense, E, tw, imp, n)
-    top = max(tw + 1, min(top, imp - 1))
-    if pv > 0:
+    top = _pick_top(
+        dense,
+        E,
+        tw,
+        imp,
+        n,
+        use_second_valley=bool(tun.get("top_use_second_valley", False)),
+    )
+    top = max(tw + 1, min(top + int(tun.get("top_dense_delta", 0)), imp - 1))
+    if int(tun.get("top_dense_delta", 0)) == 0 and pv > 0:
         nudge = min(4, max(1, (top - tw) // 5))
         top = max(tw + 1, top - nudge)
 
-    bs = _pick_backswing(E, tw, top)
+    bs = _pick_backswing(E, tw, top, median_mode=bool(tun.get("backswing_median_mode", False)))
     bs = max(tw + 1, min(bs, top - 1)) if top > tw + 2 else min(tw + 1, top - 1)
 
-    ds = _pick_downswing(E, top, imp)
+    ds = _pick_downswing(E, top, imp, dense_delta=int(tun.get("downswing_dense_delta", 0)))
     ds = max(top + 1, min(ds, imp - 1)) if imp > top + 2 else top + 1
 
     imp = max(ds + 1, min(imp, n - 3))
-    ft = _pick_follow_through(dense, E, imp, n)
-    ft = max(imp + 1, min(ft, n - 2))
+    ft = _pick_follow_through(
+        dense,
+        E,
+        imp,
+        n,
+        min_gap_delta=int(tun.get("follow_min_gap_delta", 0)),
+    )
+    ft = max(imp + 1, min(ft + int(tun.get("release_dense_shift", 0)), n - 2))
 
     fin = _pick_finish(dense, E, ft, n)
     fin = max(ft + 1, min(fin, n - 1))
@@ -291,6 +361,7 @@ def pick_eight_keyframes_motion_only(
     order_idx = [addr, tw, bs, top, ds, imp, ft, fin]
     order_idx = _late_strip_spacing_pass(order_idx, n)
     late_min_gap = max(4, min(9, n // 30)) if screen_mode else max(3, min(7, n // 34))
+    late_min_gap += int(tun.get("late_min_gap_extra", 0))
     late_min_gap += min(4, pv * 2)
     gap_if, gap_ff = _late_strip_gap_dense(order_idx)
     if gap_if < late_min_gap:

@@ -103,6 +103,8 @@ export interface PlusAnalysisResult {
   warning?: string;
   screen_cropped_video_url?: string | null;
   playback_video_url?: string | null;
+  /** Screen pipeline: how routing_strategy mapped to last backend pass (debug / transparency). */
+  routing_execution?: Record<string, unknown> | null;
 }
 
 export interface PoseFrame {
@@ -165,6 +167,18 @@ const PRO_V2_CORE_SCORE_LABELS: Record<string, { en: string; zh: string }> = {
   impact: { en: "Impact", zh: "触球" },
   release: { en: "Release", zh: "释放/送杆" },
 };
+
+/** Unify strip labels (8-frame UX) with core review phase IDs — same swing moments, different naming granularity. */
+const PRO_V2_PHASE_NAMING = {
+  stripHint: {
+    zh: "上杆 / 下杆 / 送杆 与下方「核心关键帧评分」中的上杆（中段）、下杆（早段）、释放 为同一挥杆阶段，只是命名粗细不同。",
+    en: "Backswing / Downswing / Follow-through here are the same moments as mid-backswing, early downswing, and release in core scores — friendlier strip names vs. review IDs.",
+  },
+  coreFootnote: {
+    zh: "对应关系：主展示「上杆」≈ 审核「上杆（中段）」；「下杆」≈「下杆（早段）」；「送杆」≈「释放」。并非两套互不相关的关键帧。",
+    en: "Mapping: strip Backswing ≈ review mid-backswing; strip Downswing ≈ early downswing; strip Follow-through ≈ release. These are not two independent sets of frames.",
+  },
+} as const;
 
 /**
  * Convert a keyframe's embedded pose_snapshot into a full PoseFrame.
@@ -945,6 +959,11 @@ function FullSwingView({ result, lang }: Props) {
               );
             })}
           </div>
+          {result.screen_mode ? (
+            <p className="text-[9px] text-white/38 leading-snug px-0.5 mt-1">
+              {lang === "zh" ? PRO_V2_PHASE_NAMING.stripHint.zh : PRO_V2_PHASE_NAMING.stripHint.en}
+            </p>
+          ) : null}
         </div>
       </div>
 
@@ -1532,6 +1551,9 @@ export default function PlusResultView({ result, lang, externalVideoSrc, backend
                   );
                 })}
               </ul>
+              <p className="text-[9px] text-white/38 leading-snug pt-1">
+                {lang === "zh" ? PRO_V2_PHASE_NAMING.coreFootnote.zh : PRO_V2_PHASE_NAMING.coreFootnote.en}
+              </p>
             </div>
           ) : null}
         </div>

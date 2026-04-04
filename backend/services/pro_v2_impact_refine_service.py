@@ -161,8 +161,10 @@ def refine_impact_keyframe_only(
     keyframes: list[dict[str, Any]],
     *,
     window_s: float = 0.12,
+    aggressive: bool = False,
 ) -> list[dict[str, Any]]:
     """Replace only impact using two-pass OpenCV score; enforce downswing<impact<follow-through."""
+    ws = float(window_s) * (1.45 if aggressive else 1.0)
     out = [dict(k) for k in keyframes]
     imp_i = next((i for i, k in enumerate(out) if k.get("phase") == "impact"), None)
     if imp_i is None:
@@ -185,7 +187,7 @@ def refine_impact_keyframe_only(
     upper_bound_idx = min(ft_idx - 1, max(2, total - 2))
     if upper_bound_idx <= lower_bound_idx:
         upper_bound_idx = min(max(lower_bound_idx + 2, center_idx + 3), max(2, total - 2))
-    r0 = max(2, int(round(window_s * fps)))
+    r0 = max(2, int(round(ws * fps)))
 
     pass1 = _pick_best_in_window(
         analysis_video_path,
@@ -198,8 +200,9 @@ def refine_impact_keyframe_only(
     )
     picked = pass1
     pass2 = None
-    if pass1 and pass1.get("weak_window"):
-        r1 = max(r0 + 3, int(round(min(0.20, window_s * 1.7) * fps)))
+    weak_thr = 0.22 if aggressive else 0.26
+    if pass1 and (aggressive or pass1.get("weak_window") or float(pass1.get("score", 0)) < weak_thr):
+        r1 = max(r0 + 3, int(round(min(0.26, ws * 1.85) * fps)))
         pass2 = _pick_best_in_window(
             analysis_video_path,
             center_idx=center_idx,
@@ -229,7 +232,7 @@ def refine_impact_keyframe_only(
     fi = max(lower_bound_idx, min(fi, max(lower_bound_idx, ft_idx - min_gap)))
 
     logger.info(
-        "[PRO_V2][IMPACT_REFINE] rough=(t=%.5f,f=%s) pass1=%s pass2=%s final=(f=%s,score=%.4f,status=%s)",
+        "[PRO_V2][IMPACT_REFINE] rough=(t=%.5f,f=%s) pass1=%s pass2=%s final=(f=%s,score=%.4f,status=%s aggressive=%s)",
         rough_t,
         center_idx,
         None if not pass1 else {"f": pass1.get("frame_index"), "s": round(float(pass1.get("score", 0)), 4)},
@@ -237,6 +240,7 @@ def refine_impact_keyframe_only(
         fi,
         float(best.get("score", 0)),
         "expanded" if pass2 and picked is pass2 else "narrow",
+        "true" if aggressive else "false",
     )
 
     frame = read_frame_bgr_seek(analysis_video_path, fi)

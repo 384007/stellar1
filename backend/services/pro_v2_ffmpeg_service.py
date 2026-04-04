@@ -34,6 +34,7 @@ def run_pro_v2_ffmpeg_preprocess(
     impact_window_pre_s: float = 0.10,
     impact_window_duration_s: float = 0.26,
     playback_crf: int = 32,
+    analysis_vf_prefix: str | None = None,
 ) -> ProV2FFmpegOutputs:
     """Original video → 240fps analysis MP4 → browser playback MP4; optional impact trim on 240fps timeline."""
     from pathlib import Path
@@ -43,7 +44,12 @@ def run_pro_v2_ffmpeg_preprocess(
     analysis_path = str(work / "pro_v2_analysis_240.mp4")
     playback_path = str(work / "pro_v2_playback.mp4")
 
-    build_full_240fps_playback(input_path, analysis_path, fast=True)
+    build_full_240fps_playback(
+        input_path,
+        analysis_path,
+        fast=True,
+        vf_prefix=analysis_vf_prefix,
+    )
     meta = probe_video(analysis_path)
     fps = float(ffprobe_fps(meta))
     duration_s = float(safe_duration_s(meta))
@@ -68,12 +74,13 @@ def run_pro_v2_ffmpeg_preprocess(
         impact_window_path = iw
 
     logger.info(
-        "[PRO_V2][FFMPEG] analysis=%s playback=%s fps=%.3f dur=%.3fs impact_clip=%s",
+        "[PRO_V2][FFMPEG] analysis=%s playback=%s fps=%.3f dur=%.3fs impact_clip=%s vf_prefix=%s",
         analysis_path,
         playback_path,
         fps,
         duration_s,
         impact_window_path,
+        repr((analysis_vf_prefix or "")[:100]),
     )
 
     return ProV2FFmpegOutputs(

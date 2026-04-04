@@ -190,6 +190,10 @@ export function proExpandedToPlusViewModel(r: Record<string, any>): PlusAnalysis
     screen_cropped_video_url:
       typeof r.screen_cropped_video_url === "string" ? r.screen_cropped_video_url : undefined,
     playback_video_url: typeof r.playback_video_url === "string" ? r.playback_video_url : undefined,
+    routing_execution:
+      r.routing_execution && typeof r.routing_execution === "object" && !Array.isArray(r.routing_execution)
+        ? (r.routing_execution as PlusAnalysisResult["routing_execution"])
+        : undefined,
   };
 }
 
@@ -260,5 +264,6 @@ export function expandStellarProForUi(raw: Record<string, any>): Record<string, 
     warning: raw.warning,
     screen_keyframe_review_applied: raw.screen_keyframe_review_applied,
     routing_strategy: raw.routing_strategy,
+    routing_execution: raw.routing_execution,
   };
 }
