@@ -107,7 +107,9 @@ export function proExpandedToPlusViewModel(r: Record<string, any>): PlusAnalysis
     status_en: "Note",
   }));
 
-  const keyframes = Array.isArray(r.keyframes) ? r.keyframes : [];
+  const keyframes = Array.isArray(r.keyframes)
+    ? r.keyframes.filter((k: unknown) => k != null && typeof k === "object" && !Array.isArray(k))
+    : [];
   const phasesWithKf = new Set(
     keyframes.map((k: { phase?: string }) =>
       String(k.phase ?? "")
@@ -126,8 +128,10 @@ export function proExpandedToPlusViewModel(r: Record<string, any>): PlusAnalysis
     | Record<string, { focus: string; drills: string[]; duration?: string }>
     | undefined;
   const day1 = plan && typeof plan === "object" ? Object.values(plan)[0] : undefined;
-  const drillZh = day1?.drills?.filter(Boolean).join("；") ?? "";
-  const drillEn = day1?.drills?.filter(Boolean).join("; ") ?? "";
+  /** Gemini / limited 报告可能省略 drills 或非数组 — 避免 `undefined.join` 抛错整页白屏 */
+  const drillsArr = day1 && Array.isArray(day1.drills) ? day1.drills : [];
+  const drillZh = drillsArr.filter((x) => String(x ?? "").trim()).join("；");
+  const drillEn = drillsArr.filter((x) => String(x ?? "").trim()).join("; ");
   const training = {
     title_zh: day1?.focus || "针对性训练",
     title_en: day1?.focus || "Targeted training",
@@ -241,17 +245,19 @@ export function expandStellarProForUi(raw: Record<string, any>): Record<string, 
     suggestions_zh: raw.suggestions_zh ?? [],
     advanced_metrics: raw.advanced_metrics ?? {},
     training_plan: raw.training_plan ?? {},
-    keyframes: keyframes.map((kf: Record<string, unknown>) => {
-      const phase = String(kf.phase ?? "unknown");
-      return {
-        ...kf,
-        phase,
-        label_en: String(kf.label_en ?? phase),
-        label_zh: String(kf.label_zh ?? phase),
-        timestamp: Number(kf.timestamp ?? 0),
-        image_base64: String(kf.image_base64 ?? ""),
-      };
-    }),
+    keyframes: keyframes
+      .filter((kf): kf is Record<string, unknown> => kf != null && typeof kf === "object" && !Array.isArray(kf))
+      .map((kf) => {
+        const phase = String(kf.phase ?? "unknown");
+        return {
+          ...kf,
+          phase,
+          label_en: String(kf.label_en ?? phase),
+          label_zh: String(kf.label_zh ?? phase),
+          timestamp: Number(kf.timestamp ?? 0),
+          image_base64: String(kf.image_base64 ?? ""),
+        };
+      }),
     skeleton_data: raw.skeleton_data ?? { frames: [], total_frames: 0 },
     prediction: raw.prediction ?? emptyPrediction,
     trajectory: raw.trajectory ?? [],

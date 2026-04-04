@@ -350,10 +350,15 @@ function poseForPhase(
     let bestIdx = 0;
     let bestDiff = Infinity;
     for (let i = 0; i < poses.length; i++) {
-      const d = Math.abs((poses[i].timestamp ?? 0) - kf.timestamp);
-      if (d < bestDiff) { bestDiff = d; bestIdx = i; }
+      const row = poses[i];
+      if (!row || typeof row !== "object") continue;
+      const d = Math.abs((row.timestamp ?? 0) - kf.timestamp);
+      if (d < bestDiff) {
+        bestDiff = d;
+        bestIdx = i;
+      }
     }
-    return poses[bestIdx];
+    return poses[bestIdx] ?? null;
   }
 
   // 3. Fallback: distribute evenly across pose frames
@@ -1642,7 +1647,9 @@ export default function PlusResultView({ result, lang, externalVideoSrc, backend
                   </p>
                   <ul className="font-mono text-[9px] text-white/60">
                     {(result.screen_keyframe_audit.duplicate_pairs ?? []).map((pair, i) => (
-                      <li key={i}>{pair.join(" ↔ ")}</li>
+                      <li key={i}>
+                        {Array.isArray(pair) ? pair.map(String).join(" ↔ ") : String(pair ?? "—")}
+                      </li>
                     ))}
                   </ul>
                 </div>
