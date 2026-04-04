@@ -44,9 +44,13 @@ function makeProv3FormData(blob: Blob, filename: string, screenMode: boolean): F
   return fd;
 }
 
+/** Pro analyze POST is long-running; do not retry 422 (often validation — second POST can 409 single-flight). */
 function shouldRetryModalHttp(status: number): boolean {
-  return status === 422 || status === 429 || status >= 500;
+  return status === 429 || status === 502 || status === 503 || status === 504;
 }
+
+/** One in-flight Pro multipart analyze per tab (avoids duplicate POST → Modal 409). */
+let _prov3AnalyzeClientBusy = false;
 
 /**
  * Hit Modal only; retry transient HTTP statuses on the same host before trying the next Modal URL.
@@ -70,13 +74,17 @@ async function tryProv3ModalHosts(
         await new Promise((r) => setTimeout(r, 5_000));
         console.log(`${logPrefix} Modal HTTP retry round ${hr + 1}/5 → ${mUrl}`);
       }
+      let modalConnCtrl: AbortController | null = null;
       for (let connAttempt = 0; connAttempt < 2; connAttempt++) {
         if (connAttempt > 0) {
+          modalConnCtrl?.abort();
+          modalConnCtrl = null;
           console.log(`${logPrefix} Modal connection retry (${mUrl}), waiting 8s…`);
           await new Promise((r) => setTimeout(r, 8_000));
         }
+        const ctrl = new AbortController();
+        modalConnCtrl = ctrl;
         try {
-          const ctrl = new AbortController();
           const t = setTimeout(() => ctrl.abort(), modalTimeoutMs);
           const analyzeUrl = buildProV3AnalyzeRequestUrl(mUrl);
           console.log(`${logPrefix} Pro Modal → ${analyzeUrl} (round ${hr + 1}, conn ${connAttempt + 1})`);
@@ -87,6 +95,7 @@ async function tryProv3ModalHosts(
             signal: ctrl.signal,
           });
           clearTimeout(t);
+          modalConnCtrl = null;
 
           lastResponse = mRes;
           if (mRes.ok) {
@@ -202,6 +211,13 @@ export async function runProv3AnalyzeMultipart(
   authHeaders: Record<string, string>,
   opts: RunProv3AnalyzeOptions,
 ): Promise<Prov3AnalyzeResult> {
+  if (_prov3AnalyzeClientBusy) {
+    throw new Error(
+      "已有一次 Pro 分析正在进行，请等待结束后再试（重复请求会导致服务器返回 409）。",
+    );
+  }
+  _prov3AnalyzeClientBusy = true;
+  try {
   const modalUrls = opts.modalUrls.map((u) => u.replace(/\/+$/, "")).filter(Boolean);
   const backendUrls = opts.backendUrls.map((u) => u.replace(/\/+$/, "")).filter(Boolean);
   const maxConn = opts.cnNetworkHint ? 2 : 1;
@@ -246,4 +262,7 @@ export async function runProv3AnalyzeMultipart(
   throw new Error(
     "Pro 分析失败：Modal 不可用。请稍后重试；若需临时走 Render，设置 NEXT_PUBLIC_PROV3_RENDER_FALLBACK=true 并重新部署。",
   );
+  } finally {
+    _prov3AnalyzeClientBusy = false;
+  }
 }
