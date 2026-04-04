@@ -129,6 +129,7 @@ export default function AnalyzePage() {
   const [handConfirmed, setHandConfirmed] = useState(false);
   const [showHandPopup, setShowHandPopup] = useState(false);
   const handRef = useRef<"R" | "L">("R");
+  const [processingProScreenMode, setProcessingProScreenMode] = useState(false);
 
   const CLUB_GROUPS = [
     { id: "WOOD", label_zh: "木杆", label_en: "Wood", clubs: ["1W", "3W", "5W"] },
@@ -461,6 +462,9 @@ export default function AnalyzePage() {
   }
 
   async function processBlob(blob: Blob, filename: string, proV2ScreenMode?: boolean) {
+    setProcessingProScreenMode(
+      analysisMode === "pro" && resolveProV2ScreenMode(filename, proV2ScreenMode),
+    );
     setStage("processing");
     setError("");
     setProgress(0);
@@ -559,6 +563,7 @@ export default function AnalyzePage() {
       clearInterval(progressInterval);
       clearTimeout(clubFallbackTimer);
       setProgress(0);
+      setProcessingProScreenMode(false);
       setError(err instanceof Error ? err.message : "分析失败，请重试");
       setStage("upload");
     }
@@ -1131,7 +1136,12 @@ export default function AnalyzePage() {
 
         {stage === "processing" && (
           <div className="relative">
-            <AnalysisWaiting progress={progress} lang={lang} mode={analysisMode} />
+            <AnalysisWaiting
+              progress={progress}
+              lang={lang}
+              mode={analysisMode}
+              proV2ScreenMode={processingProScreenMode}
+            />
 
             {/* Handedness confirmation popup — only when club was detected */}
             {showHandPopup && detectedHand && !handConfirmed && processingClub?.club_type !== "UNKNOWN" && (
@@ -1598,7 +1608,7 @@ export default function AnalyzePage() {
             )}
 
             <div className="text-center pb-4">
-              <button onClick={() => { setStage("upload"); setResult(null); setError(""); setActiveTab("analysis"); }}
+              <button onClick={() => { setProcessingProScreenMode(false); setStage("upload"); setResult(null); setError(""); setActiveTab("analysis"); }}
                 className="btn-primary">
                 {lang === "en" ? "Analyze Again" : "再次分析"}
               </button>

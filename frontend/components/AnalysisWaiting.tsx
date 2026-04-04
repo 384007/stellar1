@@ -6,6 +6,8 @@ interface AnalysisWaitingProps {
   progress: number;
   lang: "en" | "zh";
   mode: "lite" | "pro" | "lab";
+  /** Pro v2: user selected screen / re-capture path (`screen_mode=true` on upload). */
+  proV2ScreenMode?: boolean;
 }
 
 type TechPoint = {
@@ -241,7 +243,7 @@ function GhibliGolfer({ mode, persona }: { mode: "lite" | "pro" | "lab"; persona
   );
 }
 
-export default function AnalysisWaiting({ progress, lang, mode }: AnalysisWaitingProps) {
+export default function AnalysisWaiting({ progress, lang, mode, proV2ScreenMode }: AnalysisWaitingProps) {
   const [currentTip, setCurrentTip] = useState(0);
   const [currentPersona, setCurrentPersona] = useState(0);
   const [fadeState, setFadeState] = useState<"in" | "out">("in");
@@ -372,6 +374,11 @@ export default function AnalysisWaiting({ progress, lang, mode }: AnalysisWaitin
           ? (lang === "zh" ? "Shot Lab 分析中" : "Shot Lab Analyzing...")
           : (lang === "zh" ? "智能分析中" : "Analyzing...")}
       </h2>
+      {mode === "pro" && proV2ScreenMode ? (
+        <div className="mb-2 rounded-full border border-brand-gold/30 bg-brand-gold/10 px-3 py-1 text-[10px] font-semibold tracking-wide text-brand-gold">
+          {lang === "zh" ? "屏幕模式 · AI 路由与关键帧校验" : "Screen mode · AI routing & keyframe review"}
+        </div>
+      ) : null}
       <p className="mb-1 text-xs text-white/40">{stageText}</p>
       <div className="mb-4 flex items-center gap-2">
         <span className="text-[10px] text-white/25 font-mono tabular-nums">

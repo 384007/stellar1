@@ -603,6 +603,101 @@ MOTION_CONTEXT (JSON):
 Return ONLY the same JSON schema as before (total_score, scores, issues, issues_zh, suggestions, suggestions_zh, summary, summary_zh, training_plan day1-day7).
 """
 
+PRO_V2_ROUTE_PROMPT = """You are a video pipeline router for golf swing analysis (Stellar Pro v2).
+
+The user attached {n} JPEG frames sampled evenly from ONE uploaded video (may be a screen recording / monitor re-capture / phone pointed at a TV, or a normal camera video).
+
+Task: decide backend processing strategy. Do NOT write a coaching report. Do NOT score the swing.
+
+Rules:
+- If frames clearly show a display/monitor/tablet bezel, UI chrome, moiré, or obvious re-recording of a screen, set screen_mode_confirmed=true and recommended_pipeline="screen_mode_pipeline".
+- Otherwise screen_mode_confirmed may be false and recommended_pipeline="standard_pipeline".
+- quality_level: high | medium | low based on sharpness, glare, compression artifacts.
+- use_deblur: true if motion blur / double image from screen refresh is visible.
+- use_heavy_club_tracking: true for screen/low quality or when club is hard to see.
+- pose_priority: false for typical screen captures (pixels unreliable); true only if full-body golfer is clearly visible in-camera.
+- expected_confidence_ceiling: float 0.0-1.0 — honest ceiling for downstream pose/club confidence (screen re-capture often <= 0.85).
+
+Return ONLY valid JSON (no markdown):
+{{
+  "screen_mode_confirmed": true,
+  "recommended_pipeline": "screen_mode_pipeline",
+  "quality_level": "high",
+  "use_deblur": true,
+  "use_heavy_club_tracking": true,
+  "pose_priority": false,
+  "expected_confidence_ceiling": 0.84
+}}
+
+The client requested screen_mode={screen_mode_requested}. If the video is NOT a screen capture but the client asked for screen mode, still set recommended_pipeline to screen_mode_pipeline but set screen_mode_confirmed false.
+"""
+
+PRO_V2_KF_REVIEW_PROMPT = """You are a strict golf swing phase auditor for SCREEN / RE-RECORDED videos.
+
+You receive 6 JPEG images in fixed order. Each image is labeled with its intended swing phase. The motion pipeline picked these frames; your job is to judge whether each image PLAUSIBLY matches that phase for coaching use.
+
+Phases (in image order):
+1) takeaway — club just leaving address, early backswing
+2) backswing_mid — mid-backswing, arms climbing
+3) top — transition / end of backswing
+4) early_downswing — early downswing before impact
+5) impact — around strike / max compression
+6) release — post-impact release / follow-through early extension
+
+Scoring (0-100 per image):
+- 90+ only if the phase label is clearly appropriate and the golfer/swing view is usable (not a random UI frame, not a blank wall, not totally unrelated moment).
+- Below 90 if phase is wrong, ambiguous, obscured by screen artifacts, paused wrong frame, or duplicate of another phase.
+
+Return ONLY valid JSON:
+{{
+  "review_round": {review_round},
+  "core_frame_scores": {{
+    "takeaway": {{"score": 92, "pass_90": true, "confidence": 0.93}},
+    "backswing_mid": {{"score": 88, "pass_90": false, "confidence": 0.79}},
+    "top": {{"score": 95, "pass_90": true, "confidence": 0.95}},
+    "early_downswing": {{"score": 90, "pass_90": true, "confidence": 0.91}},
+    "impact": {{"score": 96, "pass_90": true, "confidence": 0.97}},
+    "release": {{"score": 91, "pass_90": true, "confidence": 0.90}}
+  }},
+  "retry_required": true,
+  "retry_reasons": ["BACKSWING_MID_BELOW_90"]
+}}
+
+retry_required must be true if ANY core_frame_scores[*].pass_90 is false.
+retry_reasons: use UPPER_SNAKE tokens like TOP_BELOW_90, IMPACT_BELOW_90, RELEASE_BELOW_90, TAKEAWAY_BELOW_90, BACKSWING_MID_BELOW_90, EARLY_DOWNSWING_BELOW_90.
+
+confidence: 0.0-1.0 your confidence in that score.
+"""
+
+PRO_V2_REPORT_LIMITED_PROMPT = """LIMITED TRUST REPORT — Stellar Pro v2 (screen / keyframe verification failed).
+
+The player's video was captured from a SCREEN or re-recorded source. After two automated keyframe selection rounds, at least one CORE keyframe still scored below 90 in AI verification.
+
+Hard rules:
+1) State clearly that keyframe alignment did NOT pass the high-trust gate. Use exact phrase in Chinese: "关键帧不符，结论受限" and in English: "Key frames did not pass verification; conclusions are limited."
+2) Do NOT write a confident, tour-level definitive report. Hedge every technical claim. Do NOT invent ball flight, clubface aim, or precise angles.
+3) You MAY still give safe, general practice guidance and filming tips (better lighting, full-screen video, direct camera capture next time).
+4) MOTION_CONTEXT JSON is the only numeric source — same phase names as formal mode, but you must repeatedly remind the reader that phase images were not trusted.
+
+MOTION_CONTEXT (JSON):
+{motion_context}
+
+Return ONLY valid JSON with the SAME schema as formal Pro v2 reports:
+{{
+  "total_score": <0-100 keep conservative, prefer 35-55>,
+  "scores": {{"grip": <0-100>, "stance": <0-100>, "backswing": <0-100>, "downswing": <0-100>, "follow_through": <0-100>}},
+  "issues": ["Phase: ...", "..."],
+  "issues_zh": ["阶段：...", "..."],
+  "suggestions": ["Phase: ...", "..."],
+  "suggestions_zh": ["阶段：...", "..."],
+  "summary": "200-400 words English; must mention limited trust / keyframe failure",
+  "summary_zh": "300-600 汉字；必须包含「关键帧不符，结论受限」",
+  "training_plan": {{ "day1": {{"focus": "...", "drills": ["..."], "duration": "30 min"}}, ... day7 }}
+}}
+
+Minimum 3 items each for issues, issues_zh, suggestions, suggestions_zh. training_plan day1-day7 required.
+"""
+
 IMAGE_ONLY_PROMPT = """You are an expert PGA-level golf coach and biomechanics analyst.
 
 CRITICAL RULE — DETECTION FIRST:
@@ -906,16 +1001,22 @@ async def analyze_pro_v2_report_only(
     use_strong_prompt: bool = False,
     max_tokens: int = 10240,
     call_label: str = "pro_v2_report",
+    report_mode: str = "formal",
 ) -> dict:
     """Pro v2: text-only report from motion keyframe metadata — no images (no AI frame picking)."""
     _ = region
-    template = PRO_V2_REPORT_PROMPT_PASS2 if use_strong_prompt else PRO_V2_REPORT_PROMPT
+    if (report_mode or "").strip().lower() == "limited":
+        template = PRO_V2_REPORT_LIMITED_PROMPT
+        temp = 0.25
+    else:
+        template = PRO_V2_REPORT_PROMPT_PASS2 if use_strong_prompt else PRO_V2_REPORT_PROMPT
+        temp = 0.2 if not use_strong_prompt else 0.15
     prompt = template.format(
         motion_context=json.dumps(motion_context, indent=2, ensure_ascii=False),
     )
     try:
         text, provider, key_slot = await _call_vision_ai(
-            prompt, [], max_tokens, 0.2 if not use_strong_prompt else 0.15, call_label, timeout_s=PRO_AI_TIMEOUT_S,
+            prompt, [], max_tokens, temp, call_label, timeout_s=PRO_AI_TIMEOUT_S,
         )
         out = extract_json_from_response(text)
         out["ai_provider"] = provider
@@ -925,6 +1026,81 @@ async def analyze_pro_v2_report_only(
     except Exception as e:
         logger.error("[ai] analyze_pro_v2_report_only failed: %s", e)
         return _fallback_result(str(e))
+
+
+async def analyze_pro_v2_screen_route(
+    storyboard_b64: list[str],
+    *,
+    screen_mode_requested: bool,
+    call_label: str = "pro_v2_route",
+) -> dict:
+    """Vision routing: returns structured pipeline strategy JSON."""
+    n = len(storyboard_b64)
+    prompt = PRO_V2_ROUTE_PROMPT.format(
+        n=n,
+        screen_mode_requested="true" if screen_mode_requested else "false",
+    )
+    try:
+        text, provider, key_slot = await _call_vision_ai(
+            prompt,
+            list(storyboard_b64)[:12],
+            2048,
+            0.15,
+            call_label,
+            timeout_s=min(PRO_AI_TIMEOUT_S, 120.0),
+        )
+        out = extract_json_from_response(text)
+        out["ai_provider"] = provider
+        if key_slot is not None:
+            out["ai_key"] = developer_key_label(key_slot)
+        return out
+    except Exception as e:
+        logger.error("[ai] analyze_pro_v2_screen_route failed: %s", e)
+        return {
+            "screen_mode_confirmed": bool(screen_mode_requested),
+            "recommended_pipeline": "screen_mode_pipeline" if screen_mode_requested else "standard_pipeline",
+            "quality_level": "medium",
+            "use_deblur": bool(screen_mode_requested),
+            "use_heavy_club_tracking": bool(screen_mode_requested),
+            "pose_priority": False,
+            "expected_confidence_ceiling": 0.72 if screen_mode_requested else 0.92,
+            "ai_provider": "route_fallback",
+            "route_error": str(e),
+        }
+
+
+async def analyze_pro_v2_core_keyframe_review(
+    ordered_images_b64: list[str],
+    *,
+    review_round: int,
+    call_label: str = "pro_v2_kf_review",
+) -> dict:
+    """Vision: scores 6 core keyframe JPEGs in fixed order."""
+    prompt = PRO_V2_KF_REVIEW_PROMPT.format(review_round=int(review_round))
+    try:
+        text, provider, key_slot = await _call_vision_ai(
+            prompt,
+            list(ordered_images_b64)[:8],
+            4096,
+            0.12,
+            call_label,
+            timeout_s=min(PRO_AI_TIMEOUT_S, 150.0),
+        )
+        out = extract_json_from_response(text)
+        out["ai_provider"] = provider
+        if key_slot is not None:
+            out["ai_key"] = developer_key_label(key_slot)
+        return out
+    except Exception as e:
+        logger.error("[ai] analyze_pro_v2_core_keyframe_review failed: %s", e)
+        return {
+            "review_round": int(review_round),
+            "core_frame_scores": {},
+            "retry_required": True,
+            "retry_reasons": ["REVIEW_AI_FAILED"],
+            "ai_provider": "kf_review_fallback",
+            "review_error": str(e),
+        }
 
 
 async def analyze_swing_plus(

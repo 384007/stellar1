@@ -90,6 +90,19 @@ export interface PlusAnalysisResult {
   keyframe_display_mode?: "product_ready" | "degraded_debug_strip" | string;
   final_keyframe_gate_pass?: boolean;
   _plus_usage?: { used: number; remaining: number; limit: number | null; is_pro: boolean };
+  /** Pro v2 screen-mode pipeline (Modal `/pro-v2/analyze`) */
+  screen_mode?: boolean;
+  analysis_trust?: "high_trust" | "low_trust" | string;
+  report_mode?: "formal" | "limited" | string;
+  review_round?: number;
+  core_frame_scores?: Record<
+    string,
+    { score?: number | null; pass_90?: boolean | null; confidence?: number | null }
+  >;
+  keyframe_mismatch_notice?: boolean;
+  warning?: string;
+  screen_cropped_video_url?: string | null;
+  playback_video_url?: string | null;
 }
 
 export interface PoseFrame {
@@ -143,6 +156,15 @@ const PHASE_LABELS: Record<string, { en: string; zh: string }> = {
 };
 
 const SWING_PHASES = ["address", "takeaway", "backswing", "top", "downswing", "impact", "follow_through", "finish"];
+
+const PRO_V2_CORE_SCORE_LABELS: Record<string, { en: string; zh: string }> = {
+  takeaway: { en: "Takeaway", zh: "起杆" },
+  backswing_mid: { en: "Backswing (mid)", zh: "上杆（中段）" },
+  top: { en: "Top", zh: "顶点" },
+  early_downswing: { en: "Early downswing", zh: "下杆（早段）" },
+  impact: { en: "Impact", zh: "触球" },
+  release: { en: "Release", zh: "释放/送杆" },
+};
 
 /**
  * Convert a keyframe's embedded pose_snapshot into a full PoseFrame.
@@ -1410,8 +1432,119 @@ export default function PlusResultView({ result, lang, externalVideoSrc, backend
         </span>
       </div>
 
+      {result.type === "pro" && result.screen_mode ? (
+        <div
+          className={`rounded-xl border p-4 space-y-3 ${
+            result.analysis_trust === "low_trust"
+              ? "border-amber-500/35 bg-amber-500/[0.07]"
+              : "border-brand-gold/25 bg-brand-gold/[0.06]"
+          }`}
+        >
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="rounded-full border border-white/15 bg-black/30 px-2.5 py-0.5 text-[10px] font-bold uppercase tracking-wider text-brand-gold">
+              {lang === "zh" ? "屏幕模式" : "Screen mode"}
+            </span>
+            <span className="text-[10px] text-white/45">
+              {lang === "zh" ? "翻拍/录屏链路" : "Screen / re-capture pipeline"}
+            </span>
+            {typeof result.review_round === "number" && result.review_round > 0 ? (
+              <span className="text-[10px] text-white/35 font-mono">
+                review_round={result.review_round}
+              </span>
+            ) : null}
+          </div>
+          <div className="flex flex-wrap gap-2 text-[11px]">
+            <span
+              className={`rounded-md px-2 py-1 font-semibold ${
+                result.analysis_trust === "low_trust" ? "bg-amber-500/20 text-amber-200" : "bg-emerald-500/15 text-emerald-200"
+              }`}
+            >
+              {result.analysis_trust === "low_trust"
+                ? lang === "zh"
+                  ? "低信任 low_trust"
+                  : "Low trust"
+                : lang === "zh"
+                  ? "高信任 high_trust"
+                  : "High trust"}
+            </span>
+            <span
+              className={`rounded-md px-2 py-1 font-medium ${
+                result.report_mode === "limited" ? "bg-white/10 text-amber-100/90" : "bg-white/10 text-white/80"
+              }`}
+            >
+              {result.report_mode === "limited"
+                ? lang === "zh"
+                  ? "报告：受限 limited"
+                  : "Report: limited"
+                : lang === "zh"
+                  ? "报告：正式 formal"
+                  : "Report: formal"}
+            </span>
+          </div>
+          {result.keyframe_mismatch_notice && (result.warning || "").trim() ? (
+            <p className="text-sm font-semibold text-amber-200/95 leading-snug">{result.warning}</p>
+          ) : null}
+          {result.screen_cropped_video_url ? (
+            <div className="space-y-1">
+              <p className="text-[10px] uppercase tracking-wider text-white/40">
+                {lang === "zh" ? "裁剪后屏幕区域预览" : "Cropped screen preview"}
+              </p>
+              <video
+                className="w-full max-h-48 rounded-lg border border-white/10 bg-black"
+                controls
+                playsInline
+                preload="metadata"
+                src={result.screen_cropped_video_url}
+              />
+            </div>
+          ) : null}
+          {result.core_frame_scores && Object.keys(result.core_frame_scores).length > 0 ? (
+            <div className="space-y-2">
+              <p className="text-[10px] uppercase tracking-wider text-white/40">
+                {lang === "zh" ? "核心关键帧 AI 评分（≥90 为高信任门槛）" : "Core keyframe AI scores (90+ = trust gate)"}
+              </p>
+              <ul className="grid gap-1.5 sm:grid-cols-2 text-xs">
+                {(
+                  ["takeaway", "backswing_mid", "top", "early_downswing", "impact", "release"] as const
+                ).map((key) => {
+                  const row = result.core_frame_scores?.[key];
+                  const lab = PRO_V2_CORE_SCORE_LABELS[key];
+                  const sc = typeof row?.score === "number" ? row.score : "—";
+                  const ok = row?.pass_90 === true;
+                  const cf =
+                    typeof row?.confidence === "number" ? Math.round(row.confidence * 100) : null;
+                  return (
+                    <li
+                      key={key}
+                      className={`flex items-center justify-between rounded-lg border px-2 py-1.5 ${
+                        ok ? "border-white/10 bg-white/[0.03]" : "border-amber-500/25 bg-amber-500/[0.06]"
+                      }`}
+                    >
+                      <span className="text-white/70">{lang === "zh" ? lab.zh : lab.en}</span>
+                      <span className="font-mono text-white/90 tabular-nums">
+                        {sc}
+                        {cf != null ? <span className="text-white/35 text-[10px] ml-1">({cf}%)</span> : null}
+                        {!ok && sc !== "—" ? (
+                          <span className="ml-1 text-amber-300/90 text-[10px]">&lt;90</span>
+                        ) : null}
+                      </span>
+                    </li>
+                  );
+                })}
+              </ul>
+            </div>
+          ) : null}
+        </div>
+      ) : null}
+
       {/* Scores */}
-      <div className="glass-card p-5">
+      <div
+        className={`glass-card p-5 ${
+          result.type === "pro" && result.report_mode === "limited" && result.keyframe_mismatch_notice
+            ? "ring-1 ring-amber-500/20"
+            : ""
+        }`}
+      >
         {scoreWithheld ? (
           <div className="space-y-2 text-center py-2">
             <p className="text-sm font-medium text-amber-200/95">

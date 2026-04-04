@@ -177,6 +177,19 @@ export function proExpandedToPlusViewModel(r: Record<string, any>): PlusAnalysis
       r.training_plan && typeof r.training_plan === "object"
         ? (r.training_plan as PlusAnalysisResult["training_plan"])
         : undefined,
+    screen_mode: Boolean(r.screen_mode),
+    analysis_trust: typeof r.analysis_trust === "string" ? r.analysis_trust : undefined,
+    report_mode: typeof r.report_mode === "string" ? r.report_mode : undefined,
+    review_round: typeof r.review_round === "number" ? r.review_round : undefined,
+    core_frame_scores:
+      r.core_frame_scores && typeof r.core_frame_scores === "object" && !Array.isArray(r.core_frame_scores)
+        ? (r.core_frame_scores as PlusAnalysisResult["core_frame_scores"])
+        : undefined,
+    keyframe_mismatch_notice: Boolean(r.keyframe_mismatch_notice),
+    warning: typeof r.warning === "string" ? r.warning : undefined,
+    screen_cropped_video_url:
+      typeof r.screen_cropped_video_url === "string" ? r.screen_cropped_video_url : undefined,
+    playback_video_url: typeof r.playback_video_url === "string" ? r.playback_video_url : undefined,
   };
 }
 
@@ -236,5 +249,16 @@ export function expandStellarProForUi(raw: Record<string, any>): Record<string, 
     video_meta: raw.video_meta ?? {},
     contact_sheet_url: raw.contact_sheet_url ?? null,
     video_url: raw.video_url ?? null,
+    screen_mode: raw.screen_mode,
+    analysis_trust: raw.analysis_trust,
+    report_mode: raw.report_mode,
+    review_round: raw.review_round,
+    core_frame_scores: raw.core_frame_scores,
+    retry_required: raw.retry_required,
+    retry_reasons: raw.retry_reasons,
+    keyframe_mismatch_notice: raw.keyframe_mismatch_notice,
+    warning: raw.warning,
+    screen_keyframe_review_applied: raw.screen_keyframe_review_applied,
+    routing_strategy: raw.routing_strategy,
   };
 }

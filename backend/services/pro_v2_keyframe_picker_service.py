@@ -98,11 +98,19 @@ def _strike_burst_range(E: np.ndarray, takeaway_idx: int, n: int) -> tuple[int, 
     return best[0], best[1]
 
 
-def _pick_impact_rough(E: np.ndarray, b0: int, b1: int, n: int) -> int:
+def _pick_impact_rough(E: np.ndarray, b0: int, b1: int, n: int, *, variant: int = 0) -> int:
     """Strongest frame inside strike burst (local to band, not global argmax over clip)."""
     b0 = max(0, min(b0, n - 1))
     b1 = max(b0, min(b1, n - 1))
-    rel = int(np.argmax(E[b0 : b1 + 1]))
+    seg = E[b0 : b1 + 1]
+    if seg.size <= 0:
+        return b0
+    if variant > 0:
+        order = np.argsort(seg)
+        k = max(0, min(seg.size - 1, seg.size - 1 - min(variant, seg.size - 1)))
+        rel = int(order[k])
+        return b0 + rel
+    rel = int(np.argmax(seg))
     return b0 + rel
 
 
@@ -241,23 +249,31 @@ def pick_eight_keyframes_motion_only(
     dense: list[DenseFrame],
     *,
     screen_mode: bool = False,
+    picker_variant: int = 0,
 ) -> list[dict[str, Any]]:
-    """Per-phase motion picks; v2 is frame-driven (no pose indices)."""
+    """Per-phase motion picks; v2 is frame-driven (no pose indices).
+
+    picker_variant > 0 nudges late-strip / impact selection for retry after failed AI keyframe review.
+    """
     if len(dense) < 16:
         raise RuntimeError("pro_v2: insufficient dense frames for 8-phase pick")
 
     n = len(dense)
     E = _E(dense)
+    pv = max(0, int(picker_variant))
 
     addr = _pick_address(dense, E, n)
     tw = _pick_takeaway(dense, E, addr, n)
     tw = max(addr + 1, min(tw, n - 5))
 
     b0, b1 = _strike_burst_range(E, tw, n)
-    imp = _pick_impact_rough(E, b0, b1, n)
+    imp = _pick_impact_rough(E, b0, b1, n, variant=min(2, pv))
 
     top = _pick_top(dense, E, tw, imp, n)
     top = max(tw + 1, min(top, imp - 1))
+    if pv > 0:
+        nudge = min(4, max(1, (top - tw) // 5))
+        top = max(tw + 1, top - nudge)
 
     bs = _pick_backswing(E, tw, top)
     bs = max(tw + 1, min(bs, top - 1)) if top > tw + 2 else min(tw + 1, top - 1)
@@ -275,6 +291,7 @@ def pick_eight_keyframes_motion_only(
     order_idx = [addr, tw, bs, top, ds, imp, ft, fin]
     order_idx = _late_strip_spacing_pass(order_idx, n)
     late_min_gap = max(4, min(9, n // 30)) if screen_mode else max(3, min(7, n // 34))
+    late_min_gap += min(4, pv * 2)
     gap_if, gap_ff = _late_strip_gap_dense(order_idx)
     if gap_if < late_min_gap:
         repick_ft = _pick_follow_through(dense, E, int(order_idx[5]), n)
@@ -338,4 +355,6 @@ def pick_eight_keyframes_motion_only(
         int(order_idx[6] - order_idx[5]),
         int(order_idx[7] - order_idx[6]),
     )
+    if pv > 0:
+        logger.info("[PRO_V2][RETRY] picker_variant=%s late_min_gap_adjusted=%s", pv, late_min_gap)
     return keyframes

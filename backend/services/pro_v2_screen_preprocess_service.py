@@ -107,9 +107,17 @@ def _detect_screen_box(frame: np.ndarray) -> tuple[int, int, int, int, float] | 
     return (x0, y0, w, h, 0.42)
 
 
-def run_pro_v2_screen_preprocess(input_video_path: str, work_dir: str) -> dict[str, Any]:
-    """Detect/crop embedded screen video region. Raises RuntimeError when detection/crop fails."""
-    logger.info("[PRO_V2][SCREEN] entered")
+def run_pro_v2_screen_preprocess(
+    input_video_path: str,
+    work_dir: str,
+    *,
+    relaxed_margin: float = 0.0,
+) -> dict[str, Any]:
+    """Detect/crop embedded screen video region. Raises RuntimeError when detection/crop fails.
+
+    relaxed_margin: 0..0.12 expands crop outward (retry round 2) to include more context.
+    """
+    logger.info("[PRO_V2][SCREEN] entered relaxed_margin=%.4f", float(relaxed_margin or 0.0))
     work = Path(work_dir)
     work.mkdir(parents=True, exist_ok=True)
 
@@ -142,6 +150,16 @@ def run_pro_v2_screen_preprocess(input_video_path: str, work_dir: str) -> dict[s
     arr = np.array(boxes, dtype=np.float32)
     x, y, w, h = np.median(arr, axis=0).astype(int).tolist()
     x, y, w, h = _clamp_box(x, y, w, h, fw=frame_w, fh=frame_h)
+    rm = max(0.0, min(0.12, float(relaxed_margin or 0.0)))
+    if rm > 0:
+        pad_x = int(round(w * rm))
+        pad_y = int(round(h * rm))
+        x = max(0, x - pad_x)
+        y = max(0, y - pad_y)
+        w = min(frame_w - x, w + 2 * pad_x)
+        h = min(frame_h - y, h + 2 * pad_y)
+        x, y, w, h = _clamp_box(x, y, w, h, fw=frame_w, fh=frame_h)
+        logger.info("[PRO_V2][RETRY] screen_preprocess relaxed expand pad=(%s,%s)", pad_x, pad_y)
     confidence = float(min(1.0, max(0.0, (len(boxes) / sample_count) * 0.6 + (float(np.median(scores)) if scores else 0.0) * 0.4)))
 
     out_path = str(work / "pro_v2_screen_cropped.mp4")

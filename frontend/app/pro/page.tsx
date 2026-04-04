@@ -108,6 +108,8 @@ export default function ProPage() {
   const [username, setUsername] = useState("");
   const [screenRecording, setScreenRecording] = useState(false);
   const [screenRecTime, setScreenRecTime] = useState(0);
+  /** Shown on AnalysisWaiting while Pro v2 runs with `screen_mode=true`. */
+  const [processingProScreenMode, setProcessingProScreenMode] = useState(false);
 
   const screenStreamRef = useRef<MediaStream | null>(null);
   const screenRecRef = useRef<MediaRecorder | null>(null);
@@ -301,6 +303,7 @@ export default function ProPage() {
 
   async function processBlob(blob: Blob, filename: string, proV2ScreenMode?: boolean) {
     proV2ScreenOpenDiagnosisTabRef.current = resolveProV2ScreenMode(filename, proV2ScreenMode);
+    setProcessingProScreenMode(resolveProV2ScreenMode(filename, proV2ScreenMode));
     setStage("processing");
     setError("");
     setProgress(0);
@@ -350,6 +353,7 @@ export default function ProPage() {
               ? "分析失败"
               : "Analysis failed",
         );
+        setProcessingProScreenMode(false);
         setStage("upload");
         return;
       }
@@ -398,6 +402,7 @@ export default function ProPage() {
       }, 0);
     } catch (err: unknown) {
       clearInterval(progressInterval);
+      setProcessingProScreenMode(false);
       setError(err instanceof Error ? err.message : "Analysis failed");
       setStage("upload");
     }
@@ -695,7 +700,7 @@ export default function ProPage() {
         )}
 
         {stage === "processing" && (
-          <AnalysisWaiting progress={progress} lang={lang} mode="pro" />
+          <AnalysisWaiting progress={progress} lang={lang} mode="pro" proV2ScreenMode={processingProScreenMode} />
         )}
 
         {stage === "results" && result && (
@@ -721,6 +726,7 @@ export default function ProPage() {
                     if (prev) try { URL.revokeObjectURL(prev); } catch { /* */ }
                     return null;
                   });
+                  setProcessingProScreenMode(false);
                   setStage("upload");
                   setResult(null);
                   setError("");

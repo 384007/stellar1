@@ -131,6 +131,7 @@ async def pro_v2_analyze(
             result["playback_video_url"] = playback_video_url or original_video_url
             if screen_cropped_video_url:
                 result["screen_cropped_video_url"] = screen_cropped_video_url
+            result["screen_mode"] = bool(screen_mode)
 
             logger.info("[PRO_V2][MEDIA] original_video_url=%s", result["original_video_url"])
             logger.info("[PRO_V2][MEDIA] playback_video_url=%s", result["playback_video_url"])

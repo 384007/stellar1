@@ -9,6 +9,9 @@ from services.gemini_service import analyze_pro_v2_report_only
 
 logger = logging.getLogger(__name__)
 
+LIMITED_NOTICE_ZH = "关键帧不符，结论受限"
+LIMITED_NOTICE_EN = "Key frames did not pass verification; conclusions are limited."
+
 # Minimum bar after pass 1 / pass 2 (aligned with product expectations for screen mode).
 _MIN_SUMMARY_EN_WORDS = 280
 _MIN_SUMMARY_ZH_CHARS = 360
@@ -21,6 +24,18 @@ def _nonempty_str_list(raw: Any) -> list[str]:
     if not isinstance(raw, list):
         return []
     return [str(x).strip() for x in raw if str(x).strip()]
+
+
+def _report_is_weak_limited(out: dict[str, Any]) -> bool:
+    summary_en = str(out.get("summary") or "").strip()
+    summary_zh = str(out.get("summary_zh") or "").strip()
+    if LIMITED_NOTICE_ZH not in summary_zh and LIMITED_NOTICE_EN.lower() not in summary_en.lower():
+        return True
+    issues = _nonempty_str_list(out.get("issues"))
+    issues_zh = _nonempty_str_list(out.get("issues_zh"))
+    if len(issues) < 2 or len(issues_zh) < 2:
+        return True
+    return False
 
 
 def _report_is_weak(out: dict[str, Any]) -> bool:
@@ -240,10 +255,77 @@ def build_pro_v2_fallback_report(motion_context: dict[str, Any]) -> dict[str, An
     }
 
 
+def build_pro_v2_limited_fallback(motion_context: dict[str, Any]) -> dict[str, Any]:
+    """Deterministic low-trust report when limited-mode Gemini is weak or unavailable."""
+    swing = motion_context.get("swing_window_s") or [0.0, 0.0]
+    try:
+        w0, w1 = float(swing[0]), float(swing[1])
+    except (TypeError, ValueError, IndexError):
+        w0, w1 = 0.0, 0.0
+    fps = float(motion_context.get("fps") or 240.0)
+    summary_en = (
+        f"{LIMITED_NOTICE_EN} This clip was processed in screen / re-capture mode. "
+        f"Automated keyframe verification did not reach the 90-point bar on all core phases, "
+        f"so phase timing in the motion summary (≈{fps:.0f} fps, window {w0:.3f}s–{w1:.3f}s) must be treated as approximate only. "
+        "Do not treat this like a high-confidence studio analysis. "
+        "Prefer re-recording with the camera aimed directly at the golfer, full body in frame, stable exposure, and minimal moiré. "
+        "Until then, keep practice cues general: tempo, balance, and filming hygiene — not precise impact or face-angle claims."
+    )
+    summary_zh = (
+        f"{LIMITED_NOTICE_ZH}。本次为屏幕/翻拍链路，核心关键帧 AI 校验未全部达到 90 分门槛，"
+        f"motion summary（约 {fps:.0f} fps，窗口 {w0:.3f}–{w1:.3f} 秒）仅作参考，不得当作高置信结论。"
+        "建议改用真机直拍：全身入镜、光线稳定、减少摩尔纹与反光后再做正式分析。"
+        "在重拍前，练习重点保持保守：节奏、重心与拍摄方式，避免对触球细节作过度推断。"
+    )
+    issues_en = [
+        "Address: setup cannot be trusted at high confidence — re-film with direct camera capture before fine tuning.",
+        "Impact: screen-capture keyframes failed verification; do not infer strike quality from this report.",
+        "Finish: use balanced finish holds as a general cue only until a trusted capture is available.",
+    ]
+    issues_zh = [
+        "站姿：当前为低信任报告，站位细节不宜过度解读，请改真机直拍后再细调。",
+        "触球：关键帧未通过高信任校验，勿据此推断触球质量。",
+        "收杆：仅作一般性平衡提示，待高信任素材后再深入。",
+    ]
+    sug_en = [
+        "Takeaway: film face-on and down-the-line at native resolution; avoid recording a playing video on a monitor.",
+        "Top: if you must use screen mode, maximize the swing video within the frame and reduce UI overlays.",
+        "Downswing: alternate 5 slow rehearsal swings without ball, then one smooth swing with ball when lighting is stable.",
+    ]
+    sug_zh = [
+        "起杆：尽量正面与身后双视角直拍，避免翻拍屏幕。",
+        "顶点：若必须用屏幕模式，请放大挥杆画面并减少界面干扰。",
+        "下杆：无球慢节奏重复 5 次再击球，保持光线稳定。",
+    ]
+    sub = 48
+    scores = {"grip": sub, "stance": sub, "backswing": sub, "downswing": sub, "follow_through": sub}
+    training_plan = {
+        f"day{i}": {
+            "focus": "低信任期：以拍摄与节奏为主",
+            "drills": [sug_zh[(i - 1) % 3][:100], sug_en[(i - 1) % 3][:100]],
+            "duration": "20 min",
+        }
+        for i in range(1, 8)
+    }
+    return {
+        "total_score": sub,
+        "scores": scores,
+        "issues": issues_en,
+        "issues_zh": issues_zh,
+        "suggestions": sug_en,
+        "suggestions_zh": sug_zh,
+        "summary": summary_en,
+        "summary_zh": summary_zh,
+        "training_plan": training_plan,
+        "ai_provider": "pro_v2_limited_fallback",
+    }
+
+
 async def write_pro_v2_ai_report(
     motion_context: dict[str, Any],
     *,
     region: str = "global",
+    report_mode: str = "formal",
 ) -> dict[str, Any]:
     """Text-only Gemini report from motion_context JSON; pass-2 + local fallback if weak."""
     meta: dict[str, Any] = {
@@ -253,13 +335,44 @@ async def write_pro_v2_ai_report(
         "fallback_used": False,
     }
 
-    logger.info("[PRO_V2][REPORT] pass1_started")
+    if (report_mode or "").strip().lower() == "limited":
+        logger.info("[PRO_V2][REPORT_MODE] report_mode=limited pass=single")
+        out1 = await analyze_pro_v2_report_only(
+            motion_context,
+            region=region,
+            use_strong_prompt=False,
+            max_tokens=8192,
+            call_label="pro_v2_report_limited",
+            report_mode="limited",
+        )
+        weak1 = _report_is_weak_limited(out1)
+        meta["pass1_weak"] = weak1
+        chosen = build_pro_v2_limited_fallback(motion_context) if weak1 else out1
+        if weak1:
+            meta["fallback_used"] = True
+            logger.warning("[PRO_V2][REPORT_MODE] limited_fallback_used=true")
+        else:
+            logger.info("[PRO_V2][REPORT_MODE] limited_fallback_used=false")
+        summary_en = str(chosen.get("summary") or "").strip()
+        summary_zh = str(chosen.get("summary_zh") or "").strip()
+        logger.info(
+            "[PRO_V2][REPORT] total_score=%s provider=%s en_words=%s zh_chars=%s mode=limited",
+            chosen.get("total_score"),
+            chosen.get("ai_provider"),
+            len(summary_en.split()),
+            len(summary_zh.replace(" ", "")),
+        )
+        chosen[_META_KEY] = meta
+        return chosen
+
+    logger.info("[PRO_V2][REPORT] pass1_started report_mode=formal")
     out1 = await analyze_pro_v2_report_only(
         motion_context,
         region=region,
         use_strong_prompt=False,
         max_tokens=10240,
         call_label="pro_v2_report",
+        report_mode="formal",
     )
     weak1 = _report_is_weak(out1)
     meta["pass1_weak"] = weak1
@@ -275,6 +388,7 @@ async def write_pro_v2_ai_report(
             use_strong_prompt=True,
             max_tokens=12288,
             call_label="pro_v2_report_pass2",
+            report_mode="formal",
         )
         weak2 = _report_is_weak(out2)
         meta["pass2_weak"] = weak2
