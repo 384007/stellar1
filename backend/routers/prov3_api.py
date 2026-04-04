@@ -332,8 +332,19 @@ async def _run_pro_analyze_body(
             except RuntimeError as exc:
                 if str(exc) == PROV3_ANALYZE_CANCELLED:
                     raise HTTPException(status_code=422, detail="分析已取消") from exc
+                logger.warning(
+                    "[PRO_PROV3][API] analyze RuntimeError (422) file=%s: %s",
+                    file.filename,
+                    exc,
+                )
                 raise HTTPException(status_code=422, detail=str(exc)) from exc
             except Exception as exc:
+                logger.exception(
+                    "[PRO_PROV3][API] analyze failed (500) file=%s suffix=%s: %s",
+                    file.filename,
+                    suffix,
+                    exc,
+                )
                 raise HTTPException(status_code=500, detail=f"pro_analyze failed: {exc}") from exc
     finally:
         prov3_finish_analyze()
