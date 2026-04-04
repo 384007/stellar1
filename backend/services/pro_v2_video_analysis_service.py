@@ -288,6 +288,7 @@ async def run_pro_v2_video_analysis(
         route = await run_pro_v2_ai_routing(input_video_path, screen_mode_requested=True)
         rp = derive_routing_execution(route)
         log_route_apply(rp, analysis_id=analysis_id)
+        logger.info("[PRO_V2][ROUTE_APPLY] analysis_ts=%s route=%s", analysis_id, route)
         routing_exec_static = {
             "quality_level": rp.quality_level,
             "use_deblur": rp.use_deblur,
@@ -378,6 +379,13 @@ async def run_pro_v2_video_analysis(
                         roi_ev.get("passed"),
                         roi_ev.get("reason_codes"),
                     )
+                    logger.info(
+                        "[PRO_V2][SCREEN_CLEAN] analysis_ts=%s attempt=%s clean=%s cropped=%s",
+                        analysis_id,
+                        attempt,
+                        screen_clean_video_path,
+                        screen_cropped_video_path,
+                    )
             except Exception as exc:
                 logger.warning(
                     "[PRO_V2][SCREEN] preprocess_fail attempt=%s relaxed=%s reason=%s",
@@ -426,6 +434,16 @@ async def run_pro_v2_video_analysis(
                 screen_cropped_video_path=screen_cropped_video_path,
                 raw_video_path=input_video_path,
             )
+            for _k in keyframes:
+                logger.info(
+                    "[PRO_V2][KEYFRAME_SOURCE] analysis_ts=%s phase=%s ts=%.4f source_kind=%s source_frame_index=%s picker_tuning=%s",
+                    analysis_id,
+                    _k.get("phase"),
+                    float(_k.get("timestamp") or 0.0),
+                    _k.get("display_source_kind"),
+                    _k.get("display_source_frame_index"),
+                    routing_last_pass.get("picker_tuning"),
+                )
             routing_last_pass["display_source_kind"] = display_source_kind
             if render_missing_reasons:
                 retry_reasons_final = list(dict.fromkeys(list(retry_reasons_final) + render_missing_reasons))
@@ -728,7 +746,7 @@ async def run_pro_v2_video_analysis(
         "report_mode": report_mode,
         "review_round": review_round_done,
         "core_frame_scores": core_frame_scores if screen_mode else {},
-        "retry_required": False,
+        "retry_required": bool(screen_mode and (not trust_core_ai_all_pass)),
         "retry_reasons": retry_reasons_final if screen_mode else [],
         "keyframe_mismatch_notice": keyframe_mismatch_notice if screen_mode else False,
         "warning": "",

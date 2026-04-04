@@ -1557,6 +1557,26 @@ export default function PlusResultView({ result, lang, externalVideoSrc, backend
               </p>
               <ul className="grid grid-cols-2 gap-x-2 gap-y-1 text-[10px] text-white/55">
                 <li>
+                  {lang === "zh" ? "Screen Mode" : "Screen mode"}:{" "}
+                  {result.screen_mode
+                    ? lang === "zh"
+                      ? "是"
+                      : "Yes"
+                    : lang === "zh"
+                      ? "否"
+                      : "No"}
+                </li>
+                <li>
+                  {lang === "zh" ? "结构 Gate" : "Structural gate"}:{" "}
+                  {result.screen_keyframe_audit.structural_gates_passed
+                    ? lang === "zh"
+                      ? "通过"
+                      : "OK"
+                    : lang === "zh"
+                      ? "未通过"
+                      : "Fail"}
+                </li>
+                <li>
                   ROI:{" "}
                   {result.screen_keyframe_audit.roi_passed
                     ? lang === "zh"
@@ -1648,7 +1668,7 @@ export default function PlusResultView({ result, lang, externalVideoSrc, backend
           {result.core_frame_scores && Object.keys(result.core_frame_scores).length > 0 ? (
             <div className="space-y-2">
               <p className="text-[10px] uppercase tracking-wider text-white/40">
-                {lang === "zh" ? "核心关键帧 AI 评分（≥90 为高信任门槛）" : "Core keyframe AI scores (90+ = trust gate)"}
+                {lang === "zh" ? "核心关键帧审核（逐张评分 + 评论，≥90 为高信任门槛）" : "Core keyframe audit (per-frame score + comment; 90+ = trust gate)"}
               </p>
               <ul className="grid gap-1.5 sm:grid-cols-2 text-xs">
                 {(
