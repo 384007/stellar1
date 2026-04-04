@@ -80,12 +80,48 @@ const TRANSPORT_POSE_FRAMES_MAX = 18;
 const TRANSPORT_SKELETON_FRAMES_MAX = 24;
 
 /**
- * Single pipeline for **localStorage history rows** and **POST /api/history body**:
- * small enough for mobile quota and Cloudflare request limits; server can still compact further.
+ * Single pipeline for **localStorage history rows** (and legacy tiny API bodies):
+ * drops keyframe bitmaps for quota. For authenticated cloud history POST, prefer
+ * `slimAnalysisResultForServerHistory` so keyframes survive in R2/full JSON.
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function slimAnalysisResultForHistoryTransport(result: any): any {
   let out: any = stripResultForStorage(stripHeavyMediaForLocalHistory(result));
+
+  if (out.prediction && typeof out.prediction === "object" && !Array.isArray(out.prediction)) {
+    const p = { ...(out.prediction as Record<string, unknown>) };
+    delete p.trajectory;
+    out.prediction = p;
+  }
+
+  if (Array.isArray(out.pose_frames) && out.pose_frames.length > 0) {
+    const slim = slimPoseFramesForCloudRow(out.pose_frames);
+    out.pose_frames = subsamplePoseFramesEven(slim, TRANSPORT_POSE_FRAMES_MAX);
+  }
+
+  if (out.skeleton_data && typeof out.skeleton_data === "object" && !Array.isArray(out.skeleton_data)) {
+    const sk = out.skeleton_data as { frames?: unknown[]; total_frames?: number };
+    const frames = Array.isArray(sk.frames) ? sk.frames : [];
+    if (frames.length > TRANSPORT_SKELETON_FRAMES_MAX) {
+      out.skeleton_data = { ...sk, frames: frames.slice(0, TRANSPORT_SKELETON_FRAMES_MAX) };
+    }
+  }
+
+  delete out.trajectory;
+  return out;
+}
+
+/**
+ * For **POST /api/history** (cloud sync): same pose/skeleton slimming as
+ * `slimAnalysisResultForHistoryTransport`, but **keeps keyframe `image_base64`**
+ * so Pro/Plus history can show the strip after reload. Payload may exceed D1 row
+ * cap; the API stores the full JSON in R2 and keeps a compact row in D1.
+ *
+ * localStorage rows should still use `slimAnalysisResultForHistoryTransport`.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export function slimAnalysisResultForServerHistory(result: any): any {
+  let out: any = stripResultForStorage(result);
 
   if (out.prediction && typeof out.prediction === "object" && !Array.isArray(out.prediction)) {
     const p = { ...(out.prediction as Record<string, unknown>) };

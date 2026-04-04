@@ -9,7 +9,10 @@ import PlusResultView, { type PlusAnalysisResult } from "@/components/PlusResult
 import { preloadPoseModel } from "@/lib/mediapipe-assets";
 import { saveAnalysisVideo } from "@/lib/video-store";
 import { makeFormData } from "@/lib/fetch-retry";
-import { slimAnalysisResultForHistoryTransport } from "@/lib/strip-result";
+import {
+  slimAnalysisResultForHistoryTransport,
+  slimAnalysisResultForServerHistory,
+} from "@/lib/strip-result";
 import { normalizedTotalScoreForStorage } from "@/lib/safe-analysis-score";
 import { patchLocalHistoryVideoR2Key } from "@/lib/history-sync-record";
 import { pruneLocalStellarHistoryRecords } from "@/lib/pro-history-retention";
@@ -205,7 +208,7 @@ export default function PlusPage() {
           analysis_id: data.analysis_id,
           type: "plus",
           total_score: normalizedTotalScoreForStorage(data.total_score),
-          result: slimAnalysisResultForHistoryTransport(data),
+          result: slimAnalysisResultForServerHistory(data),
           video_r2_key: videoR2Key,
         }),
       });

@@ -13,7 +13,10 @@ import {
   normalizeProV2UrlListsFromPrecheck,
 } from "@/lib/pro-v2-endpoints";
 import { runProV2AnalyzeMultipart } from "@/lib/pro-v2-analyze-client";
-import { slimAnalysisResultForHistoryTransport } from "@/lib/strip-result";
+import {
+  slimAnalysisResultForHistoryTransport,
+  slimAnalysisResultForServerHistory,
+} from "@/lib/strip-result";
 import { normalizedTotalScoreForStorage } from "@/lib/safe-analysis-score";
 import { patchLocalHistoryVideoR2Key } from "@/lib/history-sync-record";
 import { expandStellarProForUi, proExpandedToPlusViewModel } from "@/lib/stellar-pro-result";
@@ -282,7 +285,7 @@ export default function ProPage() {
 
       let resultForApi: Record<string, unknown>;
       try {
-        resultForApi = slimAnalysisResultForHistoryTransport(data) as Record<string, unknown>;
+        resultForApi = slimAnalysisResultForServerHistory(data) as Record<string, unknown>;
         JSON.stringify(resultForApi);
       } catch (e) {
         console.warn("[pro] history API payload slim failed, using minimal fields:", e);
