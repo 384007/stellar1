@@ -23,6 +23,7 @@ MMAction2 + MMPose + extras: `backend/requirements-modal.txt` (no torch/ultralyt
   Optional volume: `/models/tsn_kinetics400.pth` (and matching config name) overrides baked weights.
 
 ASGI entry: ``main:app``. Pro v3 路由均在 ``/pro-v3`` 下：``POST /pro-v3/analyze``、``GET /pro-v3/media/...``、``POST /pro-v3/keyframes/*``（见 ``routers.prov3_api``）。``STELLAR_MODAL_PRO_V3_ONLY=1`` 时不加载旧 ``/stellar-pro/analyze``。
+``fastapi_app`` 使用 ``timeout=3600``；若未设置 ``STELLAR_PROV3_USE_FAST_240FPS``，默认 ``1``（跳过 minterpolate，避免 300s 级超时与取消后 runner 挂起）。
 """
 from __future__ import annotations
 
@@ -268,10 +269,12 @@ def _wire_swingnet_paths() -> None:
 
 # Scaling: no keep_warm / min_containers — idle workers scale to zero (cold start on next request).
 # Do not add warm pools here without an explicit product decision.
+# Default Modal function timeout is 300s; Pro v3 (240fps ffmpeg + ML) can exceed that — raise cap (Modal allows up to 24h).
 @app.function(
     cpu=1,
     # PyTorch + TensorFlow + MMAction in one worker; 4GiB can OOM on cold import.
     memory=6144,
+    timeout=3600,
     volumes={"/models": stellar_models_volume},
 )
 @modal.asgi_app()
@@ -286,6 +289,10 @@ def fastapi_app():
     # To enforce one analyze per worker: set Modal secret STELLAR_PROV3_ANALYZE_SINGLE_FLIGHT=1
     if "STELLAR_PROV3_ANALYZE_SINGLE_FLIGHT" not in os.environ:
         os.environ["STELLAR_PROV3_ANALYZE_SINGLE_FLIGHT"] = "0"
+    # minterpolate (MCI) on 1 CPU is slow enough to hit Modal's old 300s wall; cancellation leaves ffmpeg in a thread
+    # and can block runner shutdown. Fast 240fps (fps dup) is the safe default; set STELLAR_PROV3_USE_FAST_240FPS=0 for MCI.
+    if "STELLAR_PROV3_USE_FAST_240FPS" not in os.environ:
+        os.environ["STELLAR_PROV3_USE_FAST_240FPS"] = "1"
     _wire_stellar_model_paths()
     _wire_mmaction2_paths()
     _wire_swingnet_paths()
@@ -306,9 +313,11 @@ def fastapi_app():
     _line = f"[modal] build_info git_sha={_sha} branch={_branch} build_time={_bt}"
     print(_line, flush=True, file=sys.stderr)
     _sf = os.environ.get("STELLAR_PROV3_ANALYZE_SINGLE_FLIGHT", "0")
+    _fast = os.environ.get("STELLAR_PROV3_USE_FAST_240FPS", "1")
     _pro = (
         f"[modal] pro_v3_api POST /pro-v3/analyze GET /pro-v3/media/* POST /pro-v3/keyframes/* asgi=main:app "
-        f"STELLAR_MODAL_PRO_V3_ONLY=1 STELLAR_PROV3_ANALYZE_SINGLE_FLIGHT={_sf} actual_sha={_sha}"
+        f"STELLAR_MODAL_PRO_V3_ONLY=1 STELLAR_PROV3_ANALYZE_SINGLE_FLIGHT={_sf} "
+        f"STELLAR_PROV3_USE_FAST_240FPS={_fast} actual_sha={_sha}"
     )
     print(_pro, flush=True, file=sys.stderr)
 
