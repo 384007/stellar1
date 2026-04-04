@@ -436,11 +436,12 @@ async def run_pro_v2_video_analysis(
             )
             for _k in keyframes:
                 logger.info(
-                    "[PRO_V2][KEYFRAME_SOURCE] analysis_ts=%s phase=%s ts=%.4f source_kind=%s source_frame_index=%s picker_tuning=%s",
+                    "[PRO_V2][KEYFRAME_SOURCE] analysis_ts=%s phase=%s analysis_ts_s=%.4f source_kind=%s source_ts_s=%.4f source_frame_index=%s picker_tuning=%s",
                     analysis_id,
                     _k.get("phase"),
                     float(_k.get("timestamp") or 0.0),
                     _k.get("display_source_kind"),
+                    float(_k.get("display_source_timestamp") or 0.0),
                     _k.get("display_source_frame_index"),
                     routing_last_pass.get("picker_tuning"),
                 )
@@ -597,10 +598,13 @@ async def run_pro_v2_video_analysis(
             "keyframes_lineup": [
                 {
                     "phase": k.get("phase"),
+                    "analysis_timestamp": k.get("timestamp"),
                     "frame_index": k.get("frame_index"),
                     "display_source_kind": k.get("display_source_kind"),
+                    "display_source_timestamp": k.get("display_source_timestamp"),
                     "display_source_frame_index": k.get("display_source_frame_index"),
-                    "timestamp": k.get("timestamp"),
+                    "display_render_ok": k.get("display_render_ok"),
+                    "display_render_error": k.get("display_render_error"),
                 }
                 for k in keyframes
             ],
@@ -637,6 +641,25 @@ async def run_pro_v2_video_analysis(
         )
         motion_context["structural_gates_passed"] = structural_ok
         motion_context["structural_gate_reason_codes"] = gate_reason_codes[:12]
+        motion_context["analysis_keyframes"] = [
+            {
+                "phase": k.get("phase"),
+                "analysis_timestamp": float(k.get("timestamp") or 0.0),
+                "analysis_frame_index": int(k.get("frame_index") or 0),
+            }
+            for k in keyframes
+        ]
+        motion_context["display_keyframes"] = [
+            {
+                "phase": k.get("phase"),
+                "display_source_kind": k.get("display_source_kind"),
+                "display_source_timestamp": float(k.get("display_source_timestamp") or 0.0),
+                "display_source_frame_index": int(k.get("display_source_frame_index") or -1),
+                "display_render_ok": bool(k.get("display_render_ok")),
+                "display_render_error": str(k.get("display_render_error") or ""),
+            }
+            for k in keyframes
+        ]
         hard_stop = bool(not formal_allowed and (
             any(str(c).startswith("SCREEN_ROI_") or str(c).startswith("DENSE_") for c in gate_reason_codes)
             or "KEYFRAME_VISUAL_DUPLICATE" in gate_reason_codes

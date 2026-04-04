@@ -68,6 +68,12 @@ export interface PlusAnalysisResult {
     label_zh: string;
     timestamp: number;
     image_base64: string;
+    analysis_timestamp?: number;
+    display_source_kind?: string;
+    display_source_timestamp?: number;
+    display_source_frame_index?: number;
+    display_render_ok?: boolean;
+    display_render_error?: string;
     width?: number;
     height?: number;
     pose_snapshot?: { joints: Array<{ name: string; nx: number; ny: number; v: number }>; connections: number[][] };
@@ -1722,6 +1728,20 @@ export default function PlusResultView({ result, lang, externalVideoSrc, backend
               <p className="text-[9px] text-white/38 leading-snug pt-1">
                 {lang === "zh" ? PRO_V2_PHASE_NAMING.coreFootnote.zh : PRO_V2_PHASE_NAMING.coreFootnote.en}
               </p>
+            </div>
+          ) : null}
+          {Array.isArray(result.keyframes) && result.keyframes.length > 0 ? (
+            <div className="space-y-1">
+              <p className="text-[10px] uppercase tracking-wider text-white/40">
+                {lang === "zh" ? "关键帧回源调试（展示帧来源）" : "Display keyframe source debug"}
+              </p>
+              <ul className="grid gap-1 text-[10px] text-white/60 font-mono">
+                {result.keyframes.map((k) => (
+                  <li key={`dbg-${k.phase}`} className="rounded border border-white/10 bg-white/[0.02] px-2 py-1 break-all">
+                    {`${k.phase}: source=${k.display_source_kind ?? "unknown"}, idx=${k.display_source_frame_index ?? -1}, ts=${typeof k.display_source_timestamp === "number" ? k.display_source_timestamp.toFixed(4) : "0.0000"}, ok=${k.display_render_ok === false ? "false" : "true"}${k.display_render_error ? `, err=${k.display_render_error}` : ""}`}
+                  </li>
+                ))}
+              </ul>
             </div>
           ) : null}
         </div>
