@@ -17,7 +17,7 @@ TARGET_FPS = 240
 
 
 def build_analysis_timeline(video_path: str, work_dir: str) -> Dict[str, object]:
-    """Produce a true constant-frame-rate analysis clip at 240 fps (timeline for Pro v3 / SwingNet).
+    """Pro v3 **第二步**：在 ``cleanup_video`` 产物上生成 **恒定 240fps** 分析用 MP4（SwingNet / 抽帧用）。
 
     Uses motion-compensated interpolation when ``minterpolate`` is available; otherwise ``fps=240``
     (frame duplication / sampling — still a valid 240 Hz time base).

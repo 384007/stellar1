@@ -1,5 +1,5 @@
 /**
- * Pro analyze (`/pro-v2/analyze`) returns a minimal JSON contract. Expand to the shape
+ * Pro analyze (`/pro-v3/analyze`, alias `/pro-v2/analyze`) returns a minimal JSON contract. Expand to the shape
  * the Pro UI still expects (skeleton / prediction placeholders).
  */
 

@@ -22,7 +22,7 @@ MMAction2 + MMPose + extras: `backend/requirements-modal.txt` (no torch/ultralyt
   At runtime `fastapi_app` sets STELLAR_MMACTION2_* unless STELLAR_ACTION_BACKEND=disabled.
   Optional volume: `/models/tsn_kinetics400.pth` (and matching config name) overrides baked weights.
 
-ASGI entry: ``main:app``. Modal Pro 仅注册 ``POST /pro-v2/analyze``（设置 ``STELLAR_MODAL_PRO_V2_ONLY``，不加载旧 ``/stellar-pro/analyze``）。
+ASGI entry: ``main:app``. Modal Pro 注册 ``POST /pro-v3/analyze``（主）与 ``POST /pro-v2/analyze``（兼容别名）；设置 ``STELLAR_MODAL_PRO_V2_ONLY`` 时不加载旧 ``/stellar-pro/analyze``。
 """
 from __future__ import annotations
 
@@ -177,7 +177,7 @@ image = (
         f'STELLAR_COMMIT_FULL={_STELLAR_SHA_FULL} '
         f'BRANCH={_MODAL_BUILD.get("STELLAR_GIT_BRANCH")} '
         f'BUILD_TIME={_MODAL_BUILD.get("STELLAR_BUILD_TIME")} '
-        f'PRO_API_PATH=/pro-v2/analyze STELLAR_MODAL_PRO_V2_ONLY=1"'
+        f'PRO_API_PATH=/pro-v3/analyze STELLAR_MODAL_PRO_V2_ONLY=1"'
     )
     # Keep backend mount last so local backend edits do not invalidate the whole image build.
     .add_local_dir("backend", remote_path="/backend")
@@ -303,7 +303,7 @@ def fastapi_app():
     print(_line, flush=True)
     print(_line, flush=True, file=sys.stderr)
     _pro = (
-        f"[modal] pro_v2_api path=/pro-v2/analyze asgi=main:app "
+        f"[modal] pro_api path=/pro-v3/analyze (alias /pro-v2/analyze) asgi=main:app "
         f"STELLAR_MODAL_PRO_V2_ONLY=1 actual_sha={_sha}"
     )
     print(_pro, flush=True)

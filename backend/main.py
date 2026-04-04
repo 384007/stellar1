@@ -390,7 +390,7 @@ with _suppress_native_stderr():
 _safe_load("routers.news", "", ["News"])
 if not _MODAL_PRO_V2_ONLY:
     _safe_load("routers.stellar_pro_api", "", ["stellar-pro"])
-_safe_load("routers.pro_v2_api", "", ["pro-v2"])
+_safe_load("routers.pro_v2_api", "", [])
 _safe_load("routers.prov3_keyframes", "", ["prov3-keyframes"])
 
 
@@ -431,9 +431,14 @@ async def health_check():
         "load_errors": _load_errors or None,
         "prov3": {
             "engine": "prov3",
-            "pro_http_route": "POST /pro-v2/analyze",
-            "pro_http_note": "Path stays /pro-v2 for stable frontend contract; handler runs Pro v3 keyframes (+ optional Gemini report).",
-            "pro_http": "POST /pro-v2/analyze -> Pro v3 keyframe pipeline",
+            "route_naming": {
+                "primary": "POST /pro-v3/analyze",
+                "legacy_alias": "POST /pro-v2/analyze (same handler; media URLs stay under /pro-v2/media/ for those requests)",
+                "env_STELLAR_MODAL_PRO_V2_ONLY": "If set, Modal skips registering /stellar-pro. Name is historical; not related to URL v2 alias.",
+            },
+            "pro_http_route": "POST /pro-v3/analyze",
+            "pro_http_note": "Primary product path is /pro-v3; /pro-v2 remains a backward-compatible alias.",
+            "pro_http": "POST /pro-v3/analyze -> Pro v3 keyframe pipeline (+ optional Gemini report)",
             "api": "POST /api/prov3/keyframes/analyze",
             "video": {
                 "target_analysis_fps": 240,
@@ -443,7 +448,7 @@ async def health_check():
             },
             "ab_weights": {
                 "a_engine": "wmcnally/golfdb:SwingNet (eight events + top-k)",
-                "b_engine": "same SwingNet prob tensor — local peak refine (no second checkpoint)",
+                "b_engine": "same SwingNet prob tensor - local peak refine (no second checkpoint)",
                 "swingnet_weights_present": bool(_sw_ck),
                 "swingnet_checkpoint": _sw_ck or None,
             },

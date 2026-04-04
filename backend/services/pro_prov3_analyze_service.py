@@ -172,7 +172,7 @@ def run_pro_video_analyze_via_prov3(
     screen_mode: bool = False,
     rough_impact_time_s: float | None = None,
 ) -> dict[str, Any]:
-    """Synchronous end-to-end Pro response for `/pro-v2/analyze` using only Pro v3 services."""
+    """Synchronous end-to-end Pro response for `/pro-v3/analyze` (and legacy `/pro-v2/analyze`) using only Pro v3 services."""
     _ = rough_impact_time_s
     work = Path(work_dir)
     work.mkdir(parents=True, exist_ok=True)

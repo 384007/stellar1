@@ -256,7 +256,8 @@ export default function AnalyzePage() {
           backendUrls,
           cnNetworkHint: cnPro,
           screenMode,
-          modalTimeoutMs: cnPro ? 45_000 : 120_000,
+          // Match /pro: Pro v3 on Modal often exceeds 2–3 minutes (SwingNet + dense + Gemini).
+          modalTimeoutMs: cnPro ? 90_000 : 360_000,
           renderTimeoutMs: 360_000,
           logPrefix: `[stellar v2] ${mb}MB`,
         },

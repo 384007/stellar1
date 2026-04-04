@@ -1,6 +1,6 @@
-"""Same FastAPI app as `main.py` (local/Render: `/stellar-pro/analyze` + `/pro-v2/analyze`).
+"""Same FastAPI app as `main.py` (local/Render: `/stellar-pro/analyze` + `/pro-v3/analyze` + alias `/pro-v2/analyze`).
 
-Modal workers set `STELLAR_MODAL_PRO_V2_ONLY=1` before import — only `/pro-v2/analyze` is registered.
+Modal workers set `STELLAR_MODAL_PRO_V2_ONLY=1` before import — `/stellar-pro` is off; Pro uses `/pro-v3/analyze` (+ `/pro-v2` alias).
 
 Run locally:
   python main_pro.py

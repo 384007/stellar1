@@ -62,6 +62,7 @@ async def prov3_refine(req: RefineRequest):
 
 @router.post("/analyze")
 async def prov3_analyze(file: UploadFile = File(...), screen_mode: bool = Form(default=False)):
+    """端到端预处理（cleanup→240fps 分析轨→抽帧）+ A/B；与 ``/pro-v3/analyze`` 同一上传模式。"""
     suffix = Path(file.filename or "video.mp4").suffix or ".mp4"
     with tempfile.TemporaryDirectory(prefix="prov3_analyze_") as tmpdir:
         input_path = Path(tmpdir) / f"input{suffix}"

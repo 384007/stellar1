@@ -96,7 +96,7 @@ export interface PlusAnalysisResult {
   keyframe_display_mode?: "product_ready" | "degraded_debug_strip" | string;
   final_keyframe_gate_pass?: boolean;
   _plus_usage?: { used: number; remaining: number; limit: number | null; is_pro: boolean };
-  /** Pro v2 screen-mode pipeline (Modal `/pro-v2/analyze`) */
+  /** Pro v3 pipeline (Modal `/pro-v3/analyze`; legacy `/pro-v2/analyze`) */
   screen_mode?: boolean;
   screen_fallback_raw?: boolean;
   screen_fallback_hint_zh?: string;

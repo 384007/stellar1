@@ -5,7 +5,7 @@ export type RunProV2AnalyzeOptions = {
   backendUrls: string[];
   cnNetworkHint: boolean;
   screenMode: boolean;
-  /** Modal attempt timeout (analyze page uses shorter cold-start budget). */
+  /** Modal wall-clock timeout for the full analyze POST (must cover long Pro v3 runs). */
   modalTimeoutMs: number;
   renderTimeoutMs: number;
   logPrefix: string;
@@ -67,8 +67,8 @@ async function tryProV2ModalHosts(
         try {
           const ctrl = new AbortController();
           const t = setTimeout(() => ctrl.abort(), modalTimeoutMs);
-          console.log(`${logPrefix} Pro Modal → ${mUrl}/pro-v2/analyze (round ${hr + 1}, conn ${connAttempt + 1})`);
-          const mRes = await fetch(`${mUrl}/pro-v2/analyze`, {
+          console.log(`${logPrefix} Pro Modal → ${mUrl}/pro-v3/analyze (round ${hr + 1}, conn ${connAttempt + 1})`);
+          const mRes = await fetch(`${mUrl}/pro-v3/analyze`, {
             method: "POST",
             headers,
             body: makeProV2FormData(blob, filename, screenMode),
@@ -142,8 +142,8 @@ async function tryProV2BackendHosts(
     let bRes: Response | null = null;
     while (!bRes) {
       try {
-        console.log(`${logPrefix} Pro Render → ${bUrl}/pro-v2/analyze`);
-        bRes = await fetch(`${bUrl}/pro-v2/analyze`, {
+        console.log(`${logPrefix} Pro Render → ${bUrl}/pro-v3/analyze`);
+        bRes = await fetch(`${bUrl}/pro-v3/analyze`, {
           method: "POST",
           headers,
           body: makeProV2FormData(blob, filename, screenMode),

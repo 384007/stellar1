@@ -12,7 +12,11 @@ from services.internal.prov3_ffmpeg import (
 
 
 def cleanup_video(input_video: str, work_dir: str, *, screen_mode: bool = False) -> Dict[str, object]:
-    """Scale + light denoise + H.264 re-mux; real ffmpeg (not copy-only)."""
+    """Pro v3 **第一步**：缩放 + 轻去噪 + H.264（非 copy）。
+
+    输出仍为**源时间轴近似帧率**的清洗片段；**恒定 240fps 分析轨**由后续的
+    ``build_analysis_timeline`` 生成。``screen_mode=True`` 时追加 ``setsar=1``，便于拍屏素材。
+    """
     Path(work_dir).mkdir(parents=True, exist_ok=True)
     cleaned_video = str(Path(work_dir) / "analysis_cleaned.mp4")
 
