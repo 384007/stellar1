@@ -13,6 +13,11 @@ import { slimAnalysisResultForHistoryTransport } from "@/lib/strip-result";
 import { normalizedTotalScoreForStorage } from "@/lib/safe-analysis-score";
 import { patchLocalHistoryVideoR2Key } from "@/lib/history-sync-record";
 import { pruneLocalStellarHistoryRecords } from "@/lib/pro-history-retention";
+import {
+  consumeReanalyzeFromHistoryPayload,
+  fetchVideoBlobForHistoryReanalyze,
+  reanalyzeHistoryFilename,
+} from "@/lib/reanalyze-from-history";
 
 interface ClubDetection { club_type: string; club_group: string; confidence: number }
 
@@ -94,6 +99,25 @@ export default function PlusPage() {
 
     preloadPoseModel();
   }, [router]);
+
+  useEffect(() => {
+    if (!authChecked) return;
+    const p = consumeReanalyzeFromHistoryPayload();
+    if (!p || p.page !== "plus") return;
+    void (async () => {
+      const blob = await fetchVideoBlobForHistoryReanalyze(p.analysisId, p.videoUrl);
+      if (!blob || blob.size === 0) {
+        setError(
+          lang === "zh"
+            ? "无法加载该记录原视频。请确认本机已缓存或已登录且云端仍保存视频。"
+            : "Could not load the original video for this record.",
+        );
+        return;
+      }
+      processBlob(blob, reanalyzeHistoryFilename(blob));
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [authChecked, lang]);
 
   // Avoid [sessionVideoSrc] effect cleanup + revokeObjectURL: Strict Mode can revoke the URL
   // while the video tab still needs it. Revoke only in setSessionVideoSrc updaters / reset flows.

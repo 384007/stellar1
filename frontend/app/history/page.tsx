@@ -31,6 +31,10 @@ import {
   buildOfflineLabHtml,
   downloadOfflineHtml,
 } from "@/lib/offline-analysis-html";
+import {
+  queueReanalyzeFromHistory,
+  type ReanalyzeFromHistoryPayload,
+} from "@/lib/reanalyze-from-history";
 
 function isFiniteAnalysisScore(v: unknown): v is number {
   return typeof v === "number" && Number.isFinite(v);
@@ -629,6 +633,21 @@ export default function HistoryPage() {
     } finally {
       setExportingId(null);
     }
+  }
+
+  function goReanalyzeFromRecord(rec: AnalysisRecord) {
+    if (rec.type === "lab") return;
+    const page: ReanalyzeFromHistoryPayload["page"] =
+      rec.type === "plus" ? "plus" : rec.type === "pro" ? "pro" : "analyze";
+    const analysisMode: "lite" | "pro" | undefined = page === "analyze" ? "lite" : undefined;
+    const vu = (rec.video_url || "").trim();
+    queueReanalyzeFromHistory({
+      analysisId: rec.id,
+      page,
+      analysisMode,
+      videoUrl: vu && /^https?:\/\//i.test(vu) ? vu : undefined,
+    });
+    router.push(page === "plus" ? "/plus" : page === "pro" ? "/pro" : "/analyze");
   }
 
   async function fetchHistory(token: string) {
@@ -1516,6 +1535,16 @@ export default function HistoryPage() {
                             type={rec.type}
                             lang={lang}
                           />
+                          <button
+                            type="button"
+                            onClick={() => goReanalyzeFromRecord(rec)}
+                            className="inline-flex min-h-[44px] touch-manipulation items-center gap-2 rounded-lg border border-violet-500/35 bg-violet-500/10 px-4 py-2 text-xs font-medium text-violet-200/90 transition hover:bg-violet-500/15"
+                          >
+                            <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.75}>
+                              <path strokeLinecap="round" strokeLinejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0 3.181 3.183a8.25 8.25 0 0 0 13.803-3.7M4.031 9.865a8.25 8.25 0 0 0 13.803 3.7m0 0V19.5m0-4.992v-.01" />
+                            </svg>
+                            {lang === "zh" ? "重新分析" : "Re-analyze"}
+                          </button>
                         </div>
 
                         {isLoadingData && !recordVideos[rec.id] && (

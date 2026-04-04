@@ -24,6 +24,11 @@ import {
   normalizeProV2UrlListsFromPrecheck,
 } from "@/lib/pro-v2-endpoints";
 import { runProV2AnalyzeMultipart } from "@/lib/pro-v2-analyze-client";
+import {
+  consumeReanalyzeFromHistoryPayload,
+  fetchVideoBlobForHistoryReanalyze,
+  reanalyzeHistoryFilename,
+} from "@/lib/reanalyze-from-history";
 
 interface AnalysisResult {
   analysis_id: string;
@@ -164,6 +169,27 @@ export default function AnalyzePage() {
     preloadPoseModel();
   }, [router]);
 
+  useEffect(() => {
+    if (!authChecked) return;
+    const p = consumeReanalyzeFromHistoryPayload();
+    if (!p || p.page !== "analyze") return;
+    void (async () => {
+      const blob = await fetchVideoBlobForHistoryReanalyze(p.analysisId, p.videoUrl);
+      if (!blob || blob.size === 0) {
+        setError(
+          lang === "zh"
+            ? "无法加载该记录原视频。请确认本机已缓存或已登录且云端仍保存视频。"
+            : "Could not load the original video for this record.",
+        );
+        return;
+      }
+      const mode: AnalysisMode = p.analysisMode === "pro" ? "pro" : "lite";
+      processBlob(blob, reanalyzeHistoryFilename(blob), false, mode);
+    })();
+    // processBlob 为稳定闭包即可；仅依赖登录就绪与语言（错误文案）
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [authChecked, lang]);
+
   function resolveProV2ScreenMode(
     filename: string,
     explicit: boolean | undefined,
@@ -178,8 +204,9 @@ export default function AnalyzePage() {
     file: File | Blob,
     filename: string,
     proV2ScreenMode?: boolean,
+    modeOverride?: AnalysisMode,
   ): Promise<AnalysisResult> {
-    const isPro = analysisMode === "pro";
+    const isPro = (modeOverride ?? analysisMode) === "pro";
     if (!isPro) {
       console.warn("[stellar v2] 当前为 LITE 模式：请求走 /api/analyze（Cloudflare Edge），不会进入 Modal 日志。");
     }
@@ -408,9 +435,14 @@ export default function AnalyzePage() {
     } catch { /* ignore */ }
   }
 
-  async function saveAnalysisToHistory(data: AnalysisResult, blob?: Blob, filename?: string) {
+  async function saveAnalysisToHistory(
+    data: AnalysisResult,
+    blob?: Blob,
+    filename?: string,
+    modeForSave?: AnalysisMode,
+  ) {
     const token = localStorage.getItem("stellar_token");
-    const mode = analysisMode;
+    const mode = modeForSave ?? analysisMode;
 
     saveToLocalHistory(data, mode);
 
@@ -461,9 +493,16 @@ export default function AnalyzePage() {
     }
   }
 
-  async function processBlob(blob: Blob, filename: string, proV2ScreenMode?: boolean) {
+  async function processBlob(
+    blob: Blob,
+    filename: string,
+    proV2ScreenMode?: boolean,
+    analysisModeOverride?: AnalysisMode,
+  ) {
+    const modeForRun = analysisModeOverride ?? analysisMode;
+    if (analysisModeOverride) setAnalysisMode(analysisModeOverride);
     setProcessingProScreenMode(
-      analysisMode === "pro" && resolveProV2ScreenMode(filename, proV2ScreenMode),
+      modeForRun === "pro" && resolveProV2ScreenMode(filename, proV2ScreenMode),
     );
     setStage("processing");
     setError("");
@@ -502,7 +541,7 @@ export default function AnalyzePage() {
     }, 6000);
 
     try {
-      const data = await sendFileForAnalysis(blob, filename, proV2ScreenMode);
+      const data = await sendFileForAnalysis(blob, filename, proV2ScreenMode, modeForRun);
       clearInterval(progressInterval);
       clearTimeout(clubFallbackTimer);
 
@@ -555,7 +594,7 @@ export default function AnalyzePage() {
 
       void saveAnalysisVideo(data.analysis_id, blob, filename).catch(() => {});
       try {
-        await saveAnalysisToHistory(data, blob, filename);
+        await saveAnalysisToHistory(data, blob, filename, modeForRun);
       } catch (e) {
         console.warn("[analyze] history save failed:", e);
       }

@@ -18,6 +18,11 @@ import { normalizedTotalScoreForStorage } from "@/lib/safe-analysis-score";
 import { patchLocalHistoryVideoR2Key } from "@/lib/history-sync-record";
 import { expandStellarProForUi, proExpandedToPlusViewModel } from "@/lib/stellar-pro-result";
 import { pruneLocalStellarHistoryRecords } from "@/lib/pro-history-retention";
+import {
+  consumeReanalyzeFromHistoryPayload,
+  fetchVideoBlobForHistoryReanalyze,
+  reanalyzeHistoryFilename,
+} from "@/lib/reanalyze-from-history";
 
 function isVideoBlobForOverlay(blob: Blob, filename: string): boolean {
   const t = (blob.type || "").toLowerCase();
@@ -170,6 +175,24 @@ export default function ProPage() {
 
     preloadPoseModel();
     pruneLocalStellarHistoryRecords();
+  }, []);
+
+  useEffect(() => {
+    const p = consumeReanalyzeFromHistoryPayload();
+    if (!p || p.page !== "pro") return;
+    void (async () => {
+      const blob = await fetchVideoBlobForHistoryReanalyze(p.analysisId, p.videoUrl);
+      if (!blob || blob.size === 0) {
+        setError(
+          lang === "zh"
+            ? "无法加载该记录原视频。请确认本机已缓存或已登录且云端仍保存视频。"
+            : "Could not load the original video for this record.",
+        );
+        return;
+      }
+      processBlob(blob, reanalyzeHistoryFilename(blob), false);
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Do not revoke proVideoSrc in a [proVideoSrc] effect cleanup: React Strict Mode runs that
