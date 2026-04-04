@@ -86,6 +86,12 @@ async function tryProV2ModalHosts(
           console.warn(
             `${logPrefix} Modal ${isAbort ? "timed out" : "unreachable"} (${mUrl}): ${e instanceof Error ? e.message : e}`,
           );
+          // Abort = wall-clock timeout: server may already be analyzing — do NOT re-POST (was causing duplicate full analyses).
+          if (isAbort) {
+            throw new Error(
+              "分析等待超时：请勿重复提交。可稍后从历史查看是否已完成，或缩短视频后重试。",
+            );
+          }
           if (isConnect && connAttempt === 0) continue;
           if (!isConnect) break;
         }

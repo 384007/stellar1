@@ -135,6 +135,8 @@ export default function AnalyzePage() {
   const [showHandPopup, setShowHandPopup] = useState(false);
   const handRef = useRef<"R" | "L">("R");
   const [processingProScreenMode, setProcessingProScreenMode] = useState(false);
+  /** 防止重复提交 Pro v2 / 分析流程。 */
+  const analysisInFlightRef = useRef(false);
 
   const CLUB_GROUPS = [
     { id: "WOOD", label_zh: "木杆", label_en: "Wood", clubs: ["1W", "3W", "5W"] },
@@ -501,6 +503,12 @@ export default function AnalyzePage() {
     proV2ScreenMode?: boolean,
     analysisModeOverride?: AnalysisMode,
   ) {
+    if (analysisInFlightRef.current) {
+      console.warn("[analyze] analyze already in flight, ignoring duplicate trigger");
+      return;
+    }
+    analysisInFlightRef.current = true;
+    try {
     const modeForRun = analysisModeOverride ?? analysisMode;
     if (analysisModeOverride) setAnalysisMode(analysisModeOverride);
     setProcessingProScreenMode(
@@ -607,6 +615,9 @@ export default function AnalyzePage() {
       setProcessingProScreenMode(false);
       setError(err instanceof Error ? err.message : "分析失败，请重试");
       setStage("upload");
+    }
+    } finally {
+      analysisInFlightRef.current = false;
     }
   }
 

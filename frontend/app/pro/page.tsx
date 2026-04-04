@@ -132,6 +132,8 @@ export default function ProPage() {
   /** Default until /api/pro/precheck returns — avoids skipping Modal if user analyzes before precheck finishes. */
   const modalUrlsRef = useRef<string[]>([DEFAULT_PRO_V2_MODAL_URL]);
   const cnNetworkHintRef = useRef(false);
+  /** 防止双击/历史再次分析竞态导致重复 POST Modal。 */
+  const analysisInFlightRef = useRef(false);
 
   useEffect(() => {
     const token = localStorage.getItem("stellar_token");
@@ -330,6 +332,12 @@ export default function ProPage() {
   }
 
   async function processBlob(blob: Blob, filename: string, proV2ScreenMode?: boolean) {
+    if (analysisInFlightRef.current) {
+      console.warn("[pro] analyze already in flight, ignoring duplicate trigger");
+      return;
+    }
+    analysisInFlightRef.current = true;
+    try {
     proV2ScreenOpenDiagnosisTabRef.current = resolveProV2ScreenMode(filename, proV2ScreenMode);
     setProcessingProScreenMode(resolveProV2ScreenMode(filename, proV2ScreenMode));
     setStage("processing");
@@ -433,6 +441,9 @@ export default function ProPage() {
       setProcessingProScreenMode(false);
       setError(err instanceof Error ? err.message : "Analysis failed");
       setStage("upload");
+    }
+    } finally {
+      analysisInFlightRef.current = false;
     }
   }
 
