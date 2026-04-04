@@ -20,6 +20,7 @@ import {
   consumeReanalyzeFromHistoryPayload,
   fetchVideoBlobForHistoryReanalyze,
   reanalyzeHistoryFilename,
+  reanalyzePayloadProv3ScreenMode,
 } from "@/lib/reanalyze-from-history";
 
 interface ClubDetection { club_type: string; club_group: string; confidence: number }
@@ -117,7 +118,7 @@ export default function PlusPage() {
         );
         return;
       }
-      if (p.proV2ScreenMode) setInputMode("screen");
+      if (reanalyzePayloadProv3ScreenMode(p)) setInputMode("screen");
       processBlob(blob, reanalyzeHistoryFilename(blob));
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps

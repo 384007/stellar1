@@ -35,6 +35,7 @@ import {
   queueReanalyzeFromHistory,
   type ReanalyzeFromHistoryPayload,
 } from "@/lib/reanalyze-from-history";
+import { expandStellarProForUi, proExpandedToPlusViewModel } from "@/lib/stellar-pro-result";
 
 function isFiniteAnalysisScore(v: unknown): v is number {
   return typeof v === "number" && Number.isFinite(v);
@@ -44,8 +45,8 @@ function recordHasFiniteTotalScore(r: AnalysisRecord): r is AnalysisRecord & { t
   return isFiniteAnalysisScore(r.total_score);
 }
 
-/** Pro V2：历史 `result_json` 是否标记为屏幕模式（再次分析时回传 `screen_mode`）。 */
-function proV2ScreenModeFromHistoryRecord(rec: AnalysisRecord): boolean {
+/** Pro v3：历史 `result_json` 是否标记为屏幕模式（再次分析时回传 `screen_mode`）。 */
+function prov3ScreenModeFromHistoryRecord(rec: AnalysisRecord): boolean {
   if (rec.type === "lab") return false;
   try {
     const p = JSON.parse(rec.result_json || "{}") as { screen_mode?: unknown };
@@ -65,6 +66,26 @@ function plusKeyframesMissingImages(parsed: ParsedResult): boolean {
     return rawBase64ImagePayload(b).length > 400;
   }).length;
   return withImg < Math.min(6, kfs.length);
+}
+
+/** Prefer merged `result_json` with real keyframe bitmaps over longer text-only local rows (localStorage strips JPEGs). */
+function keyframeImagePayloadScore(json: string | null | undefined): number {
+  if (!json) return 0;
+  try {
+    const p = JSON.parse(json) as { keyframes?: unknown[] };
+    const kfs = p.keyframes;
+    if (!Array.isArray(kfs)) return 0;
+    let score = 0;
+    for (const k of kfs) {
+      if (!k || typeof k !== "object" || Array.isArray(k)) continue;
+      const b = (k as { image_base64?: string }).image_base64;
+      if (typeof b !== "string") continue;
+      score += rawBase64ImagePayload(b).length;
+    }
+    return score;
+  } catch {
+    return 0;
+  }
 }
 
 interface AnalysisRecord {
@@ -432,7 +453,15 @@ export default function HistoryPage() {
       const local = localMap.get(sr.id);
       if (!local) return sr;
       const out = { ...sr };
-      if ((local.result_json || "").length > (sr.result_json || "").length) {
+      const sj = sr.result_json || "";
+      const lj = local.result_json || "";
+      const serverImg = keyframeImagePayloadScore(sj);
+      const localImg = keyframeImagePayloadScore(lj);
+      if (localImg > serverImg) {
+        out.result_json = local.result_json;
+      } else if (serverImg > localImg) {
+        out.result_json = sr.result_json;
+      } else if (lj.length > sj.length) {
         out.result_json = local.result_json;
       }
       // Keep server video when set; otherwise use local R2 key / https URL (fixes "video missing" after partial sync).
@@ -663,7 +692,7 @@ export default function HistoryPage() {
       page,
       analysisMode,
       videoUrl: vu && /^https?:\/\//i.test(vu) ? vu : undefined,
-      proV2ScreenMode: proV2ScreenModeFromHistoryRecord(rec),
+      prov3ScreenMode: prov3ScreenModeFromHistoryRecord(rec),
     });
     router.push(page === "plus" ? "/plus" : page === "pro" ? "/pro" : "/analyze");
   }
@@ -1508,7 +1537,6 @@ export default function HistoryPage() {
                       const loadingDetail = detailLoading[rec.id] === true;
                       const detailParsed = recordDetails[rec.id];
                       const awaitingKeyframePayload =
-                        hasR2Full &&
                         plusKeyframesMissingImages(listParsed) &&
                         loadingDetail &&
                         !detailParsed;
@@ -1644,6 +1672,25 @@ export default function HistoryPage() {
                             </div>
                           ) : (
                             <PlusResultView result={parsed as PlusAnalysisResult} lang={lang} />
+                          )
+                        ) : rec.type === "pro" ? (
+                          awaitingKeyframePayload ? (
+                            <div className="mb-4 flex flex-col items-center justify-center rounded-xl border border-white/10 bg-black/30 py-16">
+                              <div className="h-8 w-8 animate-spin rounded-full border-2 border-white/15 border-t-brand-gold/80" />
+                              <p className="mt-4 px-6 text-center text-xs text-white/45">
+                                {lang === "zh"
+                                  ? "正在加载完整关键帧与报告（来自云端）…"
+                                  : "Loading full keyframes and report from cloud…"}
+                              </p>
+                            </div>
+                          ) : (
+                            <PlusResultView
+                              result={proExpandedToPlusViewModel(
+                                expandStellarProForUi(parsed as Record<string, unknown>),
+                              )}
+                              lang={lang}
+                              externalVideoSrc={recordVideos[rec.id] || undefined}
+                            />
                           )
                         ) : (
                           <>

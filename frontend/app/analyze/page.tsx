@@ -20,14 +20,15 @@ import { patchLocalHistoryVideoR2Key } from "@/lib/history-sync-record";
 import { expandStellarProForUi } from "@/lib/stellar-pro-result";
 import { pruneLocalStellarHistoryRecords } from "@/lib/pro-history-retention";
 import {
-  DEFAULT_PRO_V2_MODAL_URL,
-  normalizeProV2UrlListsFromPrecheck,
+  DEFAULT_PROV3_MODAL_URL,
+  normalizeProv3UrlListsFromPrecheck,
 } from "@/lib/pro-v2-endpoints";
-import { runProV2AnalyzeMultipart, yieldUiBeforeHeavyParse } from "@/lib/pro-v2-analyze-client";
+import { runProv3AnalyzeMultipart, yieldUiBeforeHeavyParse } from "@/lib/pro-v2-analyze-client";
 import {
   consumeReanalyzeFromHistoryPayload,
   fetchVideoBlobForHistoryReanalyze,
   reanalyzeHistoryFilename,
+  reanalyzePayloadProv3ScreenMode,
 } from "@/lib/reanalyze-from-history";
 
 interface AnalysisResult {
@@ -127,7 +128,7 @@ export default function AnalyzePage() {
   const backendBaseRef = useRef<string>(process.env.NEXT_PUBLIC_BACKEND_URL || "https://stellar1-backend.onrender.com");
   const lastBlobRef = useRef<{ blob: Blob; filename: string } | null>(null);
   /** Pro v2 screen preprocess: set before opening 实拍 when source is 对屏拍摄 (screen tab). */
-  const screenCaptureForProV2Ref = useRef(false);
+  const screenCaptureForProv3Ref = useRef(false);
   const [processingClub, setProcessingClub] = useState<ClubDetection | null>(null);
   const processingClubRef = useRef<ClubDetection | null>(null);
   const [detectedHand, setDetectedHand] = useState<"R" | "L" | null>(null);
@@ -186,7 +187,7 @@ export default function AnalyzePage() {
         return;
       }
       const mode: AnalysisMode = p.analysisMode === "pro" ? "pro" : "lite";
-      const screenTag = Boolean(p.proV2ScreenMode);
+      const screenTag = reanalyzePayloadProv3ScreenMode(p);
       if (screenTag) setInputMode("screen");
       processBlob(blob, reanalyzeHistoryFilename(blob), screenTag, mode);
     })();
@@ -194,7 +195,7 @@ export default function AnalyzePage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [authChecked, lang]);
 
-  function resolveProV2ScreenMode(
+  function resolveProv3ScreenMode(
     filename: string,
     explicit: boolean | undefined,
   ): boolean {
@@ -207,7 +208,7 @@ export default function AnalyzePage() {
   async function sendFileForAnalysis(
     file: File | Blob,
     filename: string,
-    proV2ScreenMode?: boolean,
+    prov3ScreenMode?: boolean,
     modeOverride?: AnalysisMode,
   ): Promise<AnalysisResult> {
     const isPro = (modeOverride ?? analysisMode) === "pro";
@@ -227,7 +228,7 @@ export default function AnalyzePage() {
       const defaultBackend =
         process.env.NEXT_PUBLIC_BACKEND_URL || "https://stellar1-backend.onrender.com";
       let proNetworkHint = "";
-      let modalUrls: string[] = [DEFAULT_PRO_V2_MODAL_URL];
+      let modalUrls: string[] = [DEFAULT_PROV3_MODAL_URL];
       let backendUrls: string[] = [defaultBackend];
       try {
         const pc = await fetch("/api/pro/precheck", {
@@ -236,7 +237,7 @@ export default function AnalyzePage() {
         });
         if (pc.ok) {
           const data = await pc.json();
-          const lists = normalizeProV2UrlListsFromPrecheck(data);
+          const lists = normalizeProv3UrlListsFromPrecheck(data);
           modalUrls = lists.modalUrls;
           backendUrls = lists.backendUrls.length ? lists.backendUrls : [defaultBackend];
           if (data.network_hint === "cn") proNetworkHint = "cn";
@@ -246,8 +247,8 @@ export default function AnalyzePage() {
 
       const mb = (file.size / 1024 / 1024).toFixed(1);
       const cnPro = proNetworkHint === "cn";
-      const screenMode = resolveProV2ScreenMode(filename, proV2ScreenMode);
-      const { response: res, route: proServedBy } = await runProV2AnalyzeMultipart(
+      const screenMode = resolveProv3ScreenMode(filename, prov3ScreenMode);
+      const { response: res, route: proServedBy } = await runProv3AnalyzeMultipart(
         file as Blob,
         filename,
         authHeaders,
@@ -508,7 +509,7 @@ export default function AnalyzePage() {
   async function processBlob(
     blob: Blob,
     filename: string,
-    proV2ScreenMode?: boolean,
+    prov3ScreenMode?: boolean,
     analysisModeOverride?: AnalysisMode,
   ) {
     if (analysisInFlightRef.current) {
@@ -520,7 +521,7 @@ export default function AnalyzePage() {
     const modeForRun = analysisModeOverride ?? analysisMode;
     if (analysisModeOverride) setAnalysisMode(analysisModeOverride);
     setProcessingProScreenMode(
-      modeForRun === "pro" && resolveProV2ScreenMode(filename, proV2ScreenMode),
+      modeForRun === "pro" && resolveProv3ScreenMode(filename, prov3ScreenMode),
     );
     setStage("processing");
     setError("");
@@ -559,7 +560,7 @@ export default function AnalyzePage() {
     }, 6000);
 
     try {
-      const data = await sendFileForAnalysis(blob, filename, proV2ScreenMode, modeForRun);
+      const data = await sendFileForAnalysis(blob, filename, prov3ScreenMode, modeForRun);
       clearInterval(progressInterval);
       clearTimeout(clubFallbackTimer);
 
@@ -853,7 +854,7 @@ export default function AnalyzePage() {
 
   const handleUploadComplete = useCallback(
     (file: File) => {
-      screenCaptureForProV2Ref.current = false;
+      screenCaptureForProv3Ref.current = false;
       processBlob(file, file.name, false);
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -863,7 +864,7 @@ export default function AnalyzePage() {
   const handleVideoCapture = useCallback(
     (videoBlob: Blob) => {
       setLiveCapture(false);
-      processBlob(videoBlob, "swing-capture.webm", screenCaptureForProV2Ref.current);
+      processBlob(videoBlob, "swing-capture.webm", screenCaptureForProv3Ref.current);
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [lang, analysisMode]
@@ -878,7 +879,7 @@ export default function AnalyzePage() {
       processBlob(
         new Blob([byteArray], { type: "image/jpeg" }),
         "swing-capture.jpg",
-        screenCaptureForProV2Ref.current,
+        screenCaptureForProv3Ref.current,
       );
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -922,7 +923,7 @@ export default function AnalyzePage() {
         if (rec.state !== "inactive") rec.stop();
       };
     } catch {
-      screenCaptureForProV2Ref.current = true;
+      screenCaptureForProv3Ref.current = true;
       setLiveCapture(true);
     }
   }
@@ -1140,7 +1141,7 @@ export default function AnalyzePage() {
                     </p>
                     <button
                       onClick={() => {
-                        screenCaptureForProV2Ref.current = false;
+                        screenCaptureForProv3Ref.current = false;
                         setLiveCapture(true);
                       }}
                       className="btn-primary mx-auto"
@@ -1174,7 +1175,7 @@ export default function AnalyzePage() {
                       </button>
                       <button
                         onClick={() => {
-                          screenCaptureForProV2Ref.current = true;
+                          screenCaptureForProv3Ref.current = true;
                           setLiveCapture(true);
                         }}
                         className="rounded-xl border border-white/20 bg-white/5 px-6 py-3 text-sm text-white/70 transition hover:bg-white/10"
@@ -1200,7 +1201,7 @@ export default function AnalyzePage() {
               progress={progress}
               lang={lang}
               mode={analysisMode}
-              proV2ScreenMode={processingProScreenMode}
+              prov3ScreenMode={processingProScreenMode}
             />
 
             {/* Handedness confirmation popup — only when club was detected */}

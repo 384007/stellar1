@@ -321,28 +321,47 @@ def build_pro_v2_limited_fallback(motion_context: dict[str, Any]) -> dict[str, A
     }
 
 
+def _report_chain_labels(chain: str) -> tuple[str, str, str]:
+    c = (chain or "pro_v2").strip().lower()
+    if c == "prov3":
+        return ("prov3_report_limited", "prov3_report", "prov3_report_pass2")
+    return ("pro_v2_report_limited", "pro_v2_report", "pro_v2_report_pass2")
+
+
+def _report_chain_tag(chain: str) -> str:
+    return "PROV3" if (chain or "").strip().lower() == "prov3" else "PRO_V2"
+
+
 async def write_pro_v2_ai_report(
     motion_context: dict[str, Any],
     *,
     region: str = "global",
     report_mode: str = "formal",
+    report_chain: str = "pro_v2",
 ) -> dict[str, Any]:
     """Text-only Gemini report from motion_context JSON; pass-2 + local fallback if weak."""
+    lim_lbl, p1_lbl, p2_lbl = _report_chain_labels(report_chain)
+    ct = _report_chain_tag(report_chain)
     meta: dict[str, Any] = {
         "pass1_weak": False,
         "pass2_used": False,
         "pass2_weak": False,
         "fallback_used": False,
+        "report_chain": (report_chain or "pro_v2").strip().lower(),
     }
 
     if (report_mode or "").strip().lower() == "limited":
-        logger.info("[PRO_V2][REPORT_MODE] report_mode=limited pass=single")
+        logger.info(
+            "[%s][REPORT_MODE] report_mode=limited pass=single chain=%s",
+            ct,
+            meta["report_chain"],
+        )
         out1 = await analyze_pro_v2_report_only(
             motion_context,
             region=region,
             use_strong_prompt=False,
             max_tokens=8192,
-            call_label="pro_v2_report_limited",
+            call_label=lim_lbl,
             report_mode="limited",
         )
         weak1 = _report_is_weak_limited(out1)
@@ -350,13 +369,14 @@ async def write_pro_v2_ai_report(
         chosen = build_pro_v2_limited_fallback(motion_context) if weak1 else out1
         if weak1:
             meta["fallback_used"] = True
-            logger.warning("[PRO_V2][REPORT_MODE] limited_fallback_used=true")
+            logger.warning("[%s][REPORT_MODE] limited_fallback_used=true", ct)
         else:
-            logger.info("[PRO_V2][REPORT_MODE] limited_fallback_used=false")
+            logger.info("[%s][REPORT_MODE] limited_fallback_used=false", ct)
         summary_en = str(chosen.get("summary") or "").strip()
         summary_zh = str(chosen.get("summary_zh") or "").strip()
         logger.info(
-            "[PRO_V2][REPORT] total_score=%s provider=%s en_words=%s zh_chars=%s mode=limited",
+            "[%s][REPORT] total_score=%s provider=%s en_words=%s zh_chars=%s mode=limited",
+            ct,
             chosen.get("total_score"),
             chosen.get("ai_provider"),
             len(summary_en.split()),
@@ -365,48 +385,49 @@ async def write_pro_v2_ai_report(
         chosen[_META_KEY] = meta
         return chosen
 
-    logger.info("[PRO_V2][REPORT] pass1_started report_mode=formal")
+    logger.info("[%s][REPORT] pass1_started report_mode=formal chain=%s", ct, meta["report_chain"])
     out1 = await analyze_pro_v2_report_only(
         motion_context,
         region=region,
         use_strong_prompt=False,
         max_tokens=10240,
-        call_label="pro_v2_report",
+        call_label=p1_lbl,
         report_mode="formal",
     )
     weak1 = _report_is_weak(out1)
     meta["pass1_weak"] = weak1
-    logger.info("[PRO_V2][REPORT] pass1_weak=%s", weak1)
+    logger.info("[%s][REPORT] pass1_weak=%s", ct, weak1)
 
     chosen = out1
     if weak1:
-        logger.info("[PRO_V2][REPORT] pass2_started")
+        logger.info("[%s][REPORT] pass2_started", ct)
         meta["pass2_used"] = True
         out2 = await analyze_pro_v2_report_only(
             motion_context,
             region=region,
             use_strong_prompt=True,
             max_tokens=12288,
-            call_label="pro_v2_report_pass2",
+            call_label=p2_lbl,
             report_mode="formal",
         )
         weak2 = _report_is_weak(out2)
         meta["pass2_weak"] = weak2
-        logger.info("[PRO_V2][REPORT] pass2_weak=%s", weak2)
+        logger.info("[%s][REPORT] pass2_weak=%s", ct, weak2)
         chosen = out2
 
     if _report_is_weak(chosen):
         fb = build_pro_v2_fallback_report(motion_context)
         meta["fallback_used"] = True
-        logger.warning("[PRO_V2][REPORT] fallback_used=true (AI output still weak after pass2)")
+        logger.warning("[%s][REPORT] fallback_used=true (AI output still weak after pass2)", ct)
         chosen = fb
     else:
-        logger.info("[PRO_V2][REPORT] fallback_used=false")
+        logger.info("[%s][REPORT] fallback_used=false", ct)
 
     summary_en = str(chosen.get("summary") or "").strip()
     summary_zh = str(chosen.get("summary_zh") or "").strip()
     logger.info(
-        "[PRO_V2][REPORT] total_score=%s provider=%s en_words=%s zh_chars=%s",
+        "[%s][REPORT] total_score=%s provider=%s en_words=%s zh_chars=%s",
+        ct,
         chosen.get("total_score"),
         chosen.get("ai_provider"),
         len(summary_en.split()),
@@ -417,7 +438,25 @@ async def write_pro_v2_ai_report(
     return chosen
 
 
+async def write_prov3_ai_report(
+    motion_context: dict[str, Any],
+    *,
+    region: str = "global",
+    report_mode: str = "formal",
+) -> dict[str, Any]:
+    """Pro v3 文案报告（与 write_pro_v2_ai_report 同一实现，日志与 Gemini call_label 使用 prov3）。"""
+    return await write_pro_v2_ai_report(
+        motion_context,
+        region=region,
+        report_mode=report_mode,
+        report_chain="prov3",
+    )
+
+
 def pop_pro_v2_report_meta(report: dict[str, Any]) -> dict[str, Any]:
     """Remove internal meta from report dict; returns meta for logging."""
     raw = report.pop(_META_KEY, None)
     return raw if isinstance(raw, dict) else {}
+
+
+pop_prov3_report_meta = pop_pro_v2_report_meta

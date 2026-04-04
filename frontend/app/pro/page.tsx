@@ -10,10 +10,10 @@ import AnalysisWaiting from "@/components/AnalysisWaiting";
 import type { PoseSnapshot } from "@/components/KeyframeStrip";
 import { saveAnalysisVideo } from "@/lib/video-store";
 import {
-  DEFAULT_PRO_V2_MODAL_URL,
-  normalizeProV2UrlListsFromPrecheck,
+  DEFAULT_PROV3_MODAL_URL,
+  normalizeProv3UrlListsFromPrecheck,
 } from "@/lib/pro-v2-endpoints";
-import { runProV2AnalyzeMultipart, yieldUiBeforeHeavyParse } from "@/lib/pro-v2-analyze-client";
+import { runProv3AnalyzeMultipart, yieldUiBeforeHeavyParse } from "@/lib/pro-v2-analyze-client";
 import {
   slimAnalysisResultForHistoryTransport,
   slimAnalysisResultForServerHistory,
@@ -26,6 +26,7 @@ import {
   consumeReanalyzeFromHistoryPayload,
   fetchVideoBlobForHistoryReanalyze,
   reanalyzeHistoryFilename,
+  reanalyzePayloadProv3ScreenMode,
 } from "@/lib/reanalyze-from-history";
 import { loadProAnalysisById } from "@/lib/load-pro-analysis-by-id";
 
@@ -120,7 +121,7 @@ export default function ProPage({ deepLinkAnalysisId }: { deepLinkAnalysisId?: s
   const [username, setUsername] = useState("");
   const [screenRecording, setScreenRecording] = useState(false);
   const [screenRecTime, setScreenRecTime] = useState(0);
-  /** Shown on AnalysisWaiting while Pro v2 runs with `screen_mode=true`. */
+  /** Shown on AnalysisWaiting while Pro v3 runs with `screen_mode=true`. */
   const [processingProScreenMode, setProcessingProScreenMode] = useState(false);
 
   const screenStreamRef = useRef<MediaStream | null>(null);
@@ -128,13 +129,13 @@ export default function ProPage({ deepLinkAnalysisId }: { deepLinkAnalysisId?: s
   const screenChunksRef = useRef<Blob[]>([]);
   const screenTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   /** Pro v2 screen preprocess: true when 对屏拍摄 (screen tab) before opening 实拍. */
-  const screenCaptureForProV2Ref = useRef(false);
+  const screenCaptureForProv3Ref = useRef(false);
   /** After Pro v2 screen-mode analyze, open 姿势诊断 first (report text); upload path stays 视频分析 first. */
-  const proV2ScreenOpenDiagnosisTabRef = useRef(false);
+  const prov3ScreenOpenDiagnosisTabRef = useRef(false);
 
   const backendUrlsRef = useRef<string[]>(["https://stellar1-backend.onrender.com"]);
   /** Default until /api/pro/precheck returns — avoids skipping Modal if user analyzes before precheck finishes. */
-  const modalUrlsRef = useRef<string[]>([DEFAULT_PRO_V2_MODAL_URL]);
+  const modalUrlsRef = useRef<string[]>([DEFAULT_PROV3_MODAL_URL]);
   const cnNetworkHintRef = useRef(false);
   /** 防止双击/历史再次分析竞态导致重复 POST Modal。 */
   const analysisInFlightRef = useRef(false);
@@ -173,7 +174,7 @@ export default function ProPage({ deepLinkAnalysisId }: { deepLinkAnalysisId?: s
           window.location.href = "/pro-login";
           return;
         }
-        const lists = normalizeProV2UrlListsFromPrecheck(data);
+        const lists = normalizeProv3UrlListsFromPrecheck(data);
         if (lists.backendUrls.length) backendUrlsRef.current = lists.backendUrls;
         modalUrlsRef.current = lists.modalUrls;
         cnNetworkHintRef.current = data.network_hint === "cn";
@@ -252,7 +253,7 @@ export default function ProPage({ deepLinkAnalysisId }: { deepLinkAnalysisId?: s
         );
         return;
       }
-      const sm = Boolean(p.proV2ScreenMode);
+      const sm = reanalyzePayloadProv3ScreenMode(p);
       if (sm) setInputMode("screen");
       processBlob(blob, reanalyzeHistoryFilename(blob), sm);
     })();
@@ -381,22 +382,22 @@ export default function ProPage({ deepLinkAnalysisId }: { deepLinkAnalysisId?: s
     }
   }
 
-  function resolveProV2ScreenMode(filename: string, explicit: boolean | undefined): boolean {
+  function resolveProv3ScreenMode(filename: string, explicit: boolean | undefined): boolean {
     if (explicit === true) return true;
     if (explicit === false) return false;
     if (inputMode === "screen") return true;
     return /(?:^|\/)(screen-capture\.webm|pro-screen\.webm)$/i.test(filename);
   }
 
-  async function processBlob(blob: Blob, filename: string, proV2ScreenMode?: boolean) {
+  async function processBlob(blob: Blob, filename: string, prov3ScreenMode?: boolean) {
     if (analysisInFlightRef.current) {
       console.warn("[pro] analyze already in flight, ignoring duplicate trigger");
       return;
     }
     analysisInFlightRef.current = true;
     try {
-    proV2ScreenOpenDiagnosisTabRef.current = resolveProV2ScreenMode(filename, proV2ScreenMode);
-    setProcessingProScreenMode(resolveProV2ScreenMode(filename, proV2ScreenMode));
+    prov3ScreenOpenDiagnosisTabRef.current = resolveProv3ScreenMode(filename, prov3ScreenMode);
+    setProcessingProScreenMode(resolveProv3ScreenMode(filename, prov3ScreenMode));
     setStage("processing");
     setError("");
     setProgress(0);
@@ -427,11 +428,11 @@ export default function ProPage({ deepLinkAnalysisId }: { deepLinkAnalysisId?: s
       let res: Response;
       try {
         const cn = cnNetworkHintRef.current;
-        const out = await runProV2AnalyzeMultipart(blob, filename, authHeaders, {
+        const out = await runProv3AnalyzeMultipart(blob, filename, authHeaders, {
           modalUrls: modalUrlsRef.current,
           backendUrls: backendUrlsRef.current,
           cnNetworkHint: cn,
-          screenMode: resolveProV2ScreenMode(filename, proV2ScreenMode),
+          screenMode: resolveProv3ScreenMode(filename, prov3ScreenMode),
           modalTimeoutMs: cn ? 90_000 : 360_000,
           renderTimeoutMs: 360_000,
           logPrefix: "[pro]",
@@ -525,7 +526,7 @@ export default function ProPage({ deepLinkAnalysisId }: { deepLinkAnalysisId?: s
 
   const handleUploadComplete = useCallback(
     (file: File) => {
-      screenCaptureForProV2Ref.current = false;
+      screenCaptureForProv3Ref.current = false;
       processBlob(file, file.name, false);
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -535,7 +536,7 @@ export default function ProPage({ deepLinkAnalysisId }: { deepLinkAnalysisId?: s
   const handleVideoCapture = useCallback(
     (videoBlob: Blob) => {
       setLiveCapture(false);
-      processBlob(videoBlob, "pro-capture.webm", screenCaptureForProV2Ref.current);
+      processBlob(videoBlob, "pro-capture.webm", screenCaptureForProv3Ref.current);
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [lang]
@@ -550,7 +551,7 @@ export default function ProPage({ deepLinkAnalysisId }: { deepLinkAnalysisId?: s
       processBlob(
         new Blob([byteArray], { type: "image/jpeg" }),
         "pro-capture.jpg",
-        screenCaptureForProV2Ref.current,
+        screenCaptureForProv3Ref.current,
       );
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -594,7 +595,7 @@ export default function ProPage({ deepLinkAnalysisId }: { deepLinkAnalysisId?: s
         if (rec.state !== "inactive") rec.stop();
       };
     } catch {
-      screenCaptureForProV2Ref.current = true;
+      screenCaptureForProv3Ref.current = true;
       setLiveCapture(true);
     }
   }
@@ -755,7 +756,7 @@ export default function ProPage({ deepLinkAnalysisId }: { deepLinkAnalysisId?: s
                     </p>
                     <button
                       onClick={() => {
-                        screenCaptureForProV2Ref.current = false;
+                        screenCaptureForProv3Ref.current = false;
                         setLiveCapture(true);
                       }}
                       className="rounded-xl bg-brand-gold px-6 py-3 text-sm font-semibold text-black transition hover:bg-brand-gold/80"
@@ -794,7 +795,7 @@ export default function ProPage({ deepLinkAnalysisId }: { deepLinkAnalysisId?: s
                       </button>
                       <button
                         onClick={() => {
-                          screenCaptureForProV2Ref.current = true;
+                          screenCaptureForProv3Ref.current = true;
                           setLiveCapture(true);
                         }}
                         className="rounded-xl border border-brand-gold/20 bg-brand-gold/5 px-6 py-3 text-sm text-brand-gold/70 transition hover:bg-brand-gold/10"
@@ -815,7 +816,7 @@ export default function ProPage({ deepLinkAnalysisId }: { deepLinkAnalysisId?: s
         )}
 
         {stage === "processing" && (
-          <AnalysisWaiting progress={progress} lang={lang} mode="pro" proV2ScreenMode={processingProScreenMode} />
+          <AnalysisWaiting progress={progress} lang={lang} mode="pro" prov3ScreenMode={processingProScreenMode} />
         )}
 
         {stage === "results" && result && (
@@ -832,7 +833,7 @@ export default function ProPage({ deepLinkAnalysisId }: { deepLinkAnalysisId?: s
               backendUrl={backendUrlsRef.current[0] || "https://stellar1-backend.onrender.com"}
               externalVideoSrc={proVideoSrc}
               coachingMode="pro"
-              initialActiveTab={proV2ScreenOpenDiagnosisTabRef.current ? "diagnosis" : "video"}
+              initialActiveTab={prov3ScreenOpenDiagnosisTabRef.current ? "diagnosis" : "video"}
             />
             <div className="text-center py-6">
               <button

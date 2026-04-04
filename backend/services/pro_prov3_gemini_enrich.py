@@ -1,4 +1,8 @@
-"""After Pro v3 keyframes, run the same text-only Gemini report as Pro v2 (motion_context + pass-2 + fallback)."""
+"""Pro v3 关键帧之后的 Gemini 文案报告（motion_context + 多 pass + 本地兜底）。
+
+实现上与历史 ``pro_v2_report_service`` 共用同一套 prompt/解析；此处仅使用 ``prov3`` 对外命名与日志标签。
+若浏览器先于服务端结束而断开，Modal 上仍可能打满日志但前端看不到报告——请对齐客户端超时与 Modal task 超时。
+"""
 
 from __future__ import annotations
 
@@ -9,9 +13,8 @@ from typing import Any
 
 import cv2
 
-from services.pro_v2_dense_scan_service import DenseFrame, dense_scan_swing_region
-from services.pro_v2_report_service import pop_pro_v2_report_meta, write_pro_v2_ai_report
-from services.pro_v2_swing_window_service import find_swing_window_seconds
+from services.pro_v2_report_service import pop_prov3_report_meta, write_prov3_ai_report
+from services.prov3_report_motion import DenseFrame, dense_scan_swing_region, find_swing_window_seconds
 
 logger = logging.getLogger(__name__)
 
@@ -51,8 +54,8 @@ def _build_motion_context_local(
             }
         )
     ctx: dict[str, Any] = {
-        "pipeline": "pro_v2",
-        "motion_authority": "dense_opencv_only",
+        "pipeline": "prov3",
+        "motion_authority": "prov3_keyframes_plus_dense_opencv",
         "fps": fps,
         "swing_window_s": [round(swing_t0, 4), round(swing_t1, 4)],
         "dense_frame_count": len(dense),
@@ -160,8 +163,6 @@ async def enrich_pro_prov3_response(
 
     kf_motion = _keyframes_for_motion(list(minimal.get("keyframes") or []), analysis_fps)
     extras: dict[str, Any] = {
-        "pipeline": "prov3",
-        "motion_authority": "prov3_keyframes_plus_dense_opencv",
         "prov3_analysis_trust": minimal.get("analysis_trust"),
         "prov3_fail_reasons": list(minimal.get("retry_reasons") or [])[:12],
     }
@@ -175,14 +176,14 @@ async def enrich_pro_prov3_response(
     )
 
     try:
-        rep = await write_pro_v2_ai_report(
+        rep = await write_prov3_ai_report(
             motion_context,
             region=region,
             report_mode="limited" if report_mode == "limited" else "formal",
         )
-        meta = pop_pro_v2_report_meta(rep)
+        meta = pop_prov3_report_meta(rep)
     except Exception as exc:
-        logger.exception("[PRO_PROV3][GEMINI] write_pro_v2_ai_report failed: %s", exc)
+        logger.exception("[PRO_PROV3][GEMINI] write_prov3_ai_report failed: %s", exc)
         return minimal
 
     if isinstance(rep.get("summary"), str) and rep["summary"].strip():

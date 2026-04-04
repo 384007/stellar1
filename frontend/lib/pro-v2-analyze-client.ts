@@ -239,3 +239,16 @@ export async function runProV2AnalyzeMultipart(
     "Pro 分析失败：Modal 不可用。请稍后重试；若需临时走 Render，设置 NEXT_PUBLIC_PRO_V2_RENDER_FALLBACK=true 并重新部署。",
   );
 }
+
+/** Pro v3：`POST /pro-v3/analyze`（与 `runProV2AnalyzeMultipart` 同一实现，仅命名区分）。 */
+export type RunProv3AnalyzeOptions = RunProV2AnalyzeOptions;
+export type Prov3AnalyzeResult = ProV2AnalyzeResult;
+
+export async function runProv3AnalyzeMultipart(
+  blob: Blob,
+  filename: string,
+  authHeaders: Record<string, string>,
+  opts: RunProv3AnalyzeOptions,
+): Promise<Prov3AnalyzeResult> {
+  return runProV2AnalyzeMultipart(blob, filename, authHeaders, opts);
+}

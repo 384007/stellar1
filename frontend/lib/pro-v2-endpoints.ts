@@ -19,6 +19,9 @@
 
 /** Shipped default when env has no MODAL_BACKEND_URL; keep in sync with Modal dashboard deployment. */
 export const DEFAULT_PRO_V2_MODAL_URL = "https://dytsui--stellar-ai-fastapi-app.modal.run";
+
+/** Pro v3（`/pro-v3/analyze`）与上述共用 Modal 基址与环境变量。 */
+export const DEFAULT_PROV3_MODAL_URL = DEFAULT_PRO_V2_MODAL_URL;
 const DEFAULT_RENDER = "https://stellar1-backend.onrender.com";
 
 function splitCsv(raw: string): string[] {
@@ -109,4 +112,11 @@ export function normalizeProV2UrlListsFromPrecheck(data: {
     backendUrls = [DEFAULT_RENDER];
   }
   return { modalUrls, backendUrls };
+}
+
+/** Pro v3：与 `normalizeProV2UrlListsFromPrecheck` 相同（precheck 契约一致）。 */
+export function normalizeProv3UrlListsFromPrecheck(
+  data: Parameters<typeof normalizeProV2UrlListsFromPrecheck>[0],
+): ReturnType<typeof normalizeProV2UrlListsFromPrecheck> {
+  return normalizeProV2UrlListsFromPrecheck(data);
 }

@@ -1032,7 +1032,7 @@ async def analyze_pro_v2_report_only(
     call_label: str = "pro_v2_report",
     report_mode: str = "formal",
 ) -> dict:
-    """Pro v2: text-only report from motion keyframe metadata — no images (no AI frame picking)."""
+    """Text-only report from motion keyframe metadata (no images). Used by Pro v2 and Pro v3 (``call_label`` differs)."""
     _ = region
     if (report_mode or "").strip().lower() == "limited":
         template = PRO_V2_REPORT_LIMITED_PROMPT

@@ -9,11 +9,17 @@ export type ReanalyzeFromHistoryPayload = {
   analysisMode?: "lite" | "pro";
   videoUrl?: string;
   /**
-   * 原分析为 Pro V2 屏幕模式时保留；再次分析时传给 `processBlob` / `screen_mode` 表单字段。
-   * 缺省或未存则按非屏幕处理（与旧版 session 行为一致）。
+   * Pro v3：原分析为屏幕模式时保留；再次分析时传给 `screen_mode` 表单字段。
    */
+  prov3ScreenMode?: boolean;
+  /** @deprecated 旧 session 键名，读取时仍兼容 */
   proV2ScreenMode?: boolean;
 };
+
+/** 从重新分析 payload 解析是否对屏（兼容历史 `proV2ScreenMode`）。 */
+export function reanalyzePayloadProv3ScreenMode(p: ReanalyzeFromHistoryPayload): boolean {
+  return Boolean(p.prov3ScreenMode ?? p.proV2ScreenMode);
+}
 
 export function queueReanalyzeFromHistory(p: ReanalyzeFromHistoryPayload): void {
   if (typeof sessionStorage === "undefined") return;

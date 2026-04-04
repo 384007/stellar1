@@ -264,7 +264,7 @@ def run_pro_video_analyze_via_prov3(
             }
         },
         "video_meta": {},
-        "pro_v2_screen_pipeline": False,
+        "prov3_screen_pipeline": bool(screen_mode),
         "screen_mode": bool(screen_mode),
         "analysis_trust": analysis_trust,
         "report_mode": report_mode,
