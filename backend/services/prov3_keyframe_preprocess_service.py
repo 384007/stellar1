@@ -13,7 +13,13 @@ from services.internal.video_cleanup_service import cleanup_video
 logger = logging.getLogger(__name__)
 
 
-def run_preprocess(input_video: str, work_dir: str, *, screen_mode: bool = False) -> PreprocessResult:
+def run_preprocess(
+    input_video: str,
+    work_dir: str,
+    *,
+    screen_mode: bool = False,
+    cancel_check: Callable[[], None] | None = None,
+) -> PreprocessResult:
     """Pro v3 统一预处理（**屏幕模式与普通上传同一套顺序**）。
 
     客户端无论「拍屏录」还是「直接上传挥杆文件」，都是 **multipart 上传** 到
