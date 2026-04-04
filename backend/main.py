@@ -359,7 +359,7 @@ _MODAL_PRO_V2_ONLY = (os.getenv("STELLAR_MODAL_PRO_V2_ONLY") or "").strip().lowe
     "yes",
     "on",
 )
-_EXPECTED_ROUTER_LOADS = 6 if _MODAL_PRO_V2_ONLY else 7
+_EXPECTED_ROUTER_LOADS = 7 if _MODAL_PRO_V2_ONLY else 8
 
 
 def _safe_load(module_path: str, prefix: str, tags: list[str]):
@@ -382,6 +382,7 @@ _safe_load("routers.news", "", ["News"])
 if not _MODAL_PRO_V2_ONLY:
     _safe_load("routers.stellar_pro_api", "", ["stellar-pro"])
 _safe_load("routers.pro_v2_api", "", ["pro-v2"])
+_safe_load("routers.prov3_keyframes", "", ["prov3-keyframes"])
 
 
 @app.get("/health")
