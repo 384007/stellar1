@@ -81,6 +81,10 @@ _STELLAR_SHA_SHORT = (
     _STELLAR_SHA_FULL[:7] if len(_STELLAR_SHA_FULL) >= 7 else _STELLAR_SHA_FULL
 )
 
+# Single source of truth for @app.function(timeout=...). Modal default is 300s; Pro analyze needs more.
+# If logs still say "timeout of 300s", the deployed app was not built from this `modal_app.py` (re-run `modal deploy`).
+MODAL_FASTAPI_FUNCTION_TIMEOUT_S = 3600
+
 # ---------------------------------------------------------------------------
 # Image – install system libs needed by mediapipe/opencv, then Python deps
 # ---------------------------------------------------------------------------
@@ -178,7 +182,8 @@ image = (
         f'STELLAR_COMMIT_FULL={_STELLAR_SHA_FULL} '
         f'BRANCH={_MODAL_BUILD.get("STELLAR_GIT_BRANCH")} '
         f'BUILD_TIME={_MODAL_BUILD.get("STELLAR_BUILD_TIME")} '
-        f'PRO_API=/pro-v3/analyze STELLAR_MODAL_PRO_V3_ONLY=1"'
+        f"PRO_API=/pro-v3/analyze STELLAR_MODAL_PRO_V3_ONLY=1 "
+        f'FN_TIMEOUT_S={MODAL_FASTAPI_FUNCTION_TIMEOUT_S}"'
     )
     # Keep backend mount last so local backend edits do not invalidate the whole image build.
     .add_local_dir("backend", remote_path="/backend")
@@ -274,7 +279,7 @@ def _wire_swingnet_paths() -> None:
     cpu=1,
     # PyTorch + TensorFlow + MMAction in one worker; 4GiB can OOM on cold import.
     memory=6144,
-    timeout=3600,
+    timeout=MODAL_FASTAPI_FUNCTION_TIMEOUT_S,
     volumes={"/models": stellar_models_volume},
 )
 @modal.asgi_app()
@@ -312,6 +317,12 @@ def fastapi_app():
     _bt = os.environ.get("STELLAR_BUILD_TIME", "unknown")
     _line = f"[modal] build_info git_sha={_sha} branch={_branch} build_time={_bt}"
     print(_line, flush=True, file=sys.stderr)
+    print(
+        f"[modal] function timeout in modal_app.py: {MODAL_FASTAPI_FUNCTION_TIMEOUT_S}s "
+        "(Modal default is 300s; if tasks still cancel at 300s, redeploy with `modal deploy modal_app.py`.)",
+        flush=True,
+        file=sys.stderr,
+    )
     _sf = os.environ.get("STELLAR_PROV3_ANALYZE_SINGLE_FLIGHT", "0")
     _fast = os.environ.get("STELLAR_PROV3_USE_FAST_240FPS", "1")
     _pro = (
