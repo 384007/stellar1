@@ -1,7 +1,6 @@
 import asyncio
 import logging
 import os
-import sys
 import tempfile
 import time
 import uuid
@@ -33,9 +32,6 @@ def _stellar_modal_upload_echo(route: str, request: Request) -> None:
         f"[stellar-ingress] route={route} method={request.method} path={request.url.path} "
         f"host={host!r} runtime={runtime} modal_host={int(modal_host)} modal_env={int(modal_env)}"
     )
-    print(msg, flush=True)
-    print(msg, flush=True, file=sys.stderr)
-    # Third path: Modal dashboard often attaches to the Python logging stream more reliably than raw print.
     logger.info("%s", msg)
 
 router = APIRouter()

@@ -69,8 +69,7 @@ def detect_runtime() -> str:
 
 
 def _modal_echo(msg: str) -> None:
-    """Modal dashboard / `modal app logs` can attach to stdout or stderr depending on version; mirror both."""
-    print(msg, flush=True)
+    """Single write to stderr — matches `_configure_modal_logging` so Modal log stream shows each line once."""
     print(msg, flush=True, file=sys.stderr)
 
 

@@ -300,13 +300,11 @@ def fastapi_app():
     _branch = os.environ.get("STELLAR_GIT_BRANCH", "unknown")
     _bt = os.environ.get("STELLAR_BUILD_TIME", "unknown")
     _line = f"[modal] build_info git_sha={_sha} branch={_branch} build_time={_bt}"
-    print(_line, flush=True)
     print(_line, flush=True, file=sys.stderr)
     _pro = (
         f"[modal] pro_api path=/pro-v3/analyze (alias /pro-v2/analyze) asgi=main:app "
         f"STELLAR_MODAL_PRO_V2_ONLY=1 actual_sha={_sha}"
     )
-    print(_pro, flush=True)
     print(_pro, flush=True, file=sys.stderr)
 
     if "/backend" not in sys.path:

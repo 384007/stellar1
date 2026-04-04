@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useCallback, useEffect, useRef } from "react";
+import { useRouter } from "next/navigation";
 import UploadZone from "@/components/UploadZone";
 import PlusResultView from "@/components/PlusResultView";
 import ScreenModeCapture from "@/components/ScreenModeCapture";
@@ -26,6 +27,7 @@ import {
   fetchVideoBlobForHistoryReanalyze,
   reanalyzeHistoryFilename,
 } from "@/lib/reanalyze-from-history";
+import { loadProAnalysisById } from "@/lib/load-pro-analysis-by-id";
 
 function isVideoBlobForOverlay(blob: Blob, filename: string): boolean {
   const t = (blob.type || "").toLowerCase();
@@ -104,11 +106,13 @@ interface ProAnalysisResult {
 type Stage = "upload" | "processing" | "results";
 type InputMode = "upload" | "capture" | "screen";
 
-export default function ProPage() {
-  const [stage, setStage] = useState<Stage>("upload");
+export default function ProPage({ deepLinkAnalysisId }: { deepLinkAnalysisId?: string } = {}) {
+  const router = useRouter();
+  const deepId = (deepLinkAnalysisId || "").trim();
+  const [stage, setStage] = useState<Stage>(deepId ? "processing" : "upload");
   const [result, setResult] = useState<ProAnalysisResult | null>(null);
   const [error, setError] = useState("");
-  const [progress, setProgress] = useState(0);
+  const [progress, setProgress] = useState(deepId ? 15 : 0);
   const [liveCapture, setLiveCapture] = useState(false);
   const [inputMode, setInputMode] = useState<InputMode>("upload");
   const [lang, setLang] = useState<"en" | "zh">("zh");
@@ -134,6 +138,7 @@ export default function ProPage() {
   const cnNetworkHintRef = useRef(false);
   /** 防止双击/历史再次分析竞态导致重复 POST Modal。 */
   const analysisInFlightRef = useRef(false);
+  const deepLinkStartedForRef = useRef<string | null>(null);
 
   useEffect(() => {
     const token = localStorage.getItem("stellar_token");
@@ -181,6 +186,58 @@ export default function ProPage() {
     preloadPoseModel();
     pruneLocalStellarHistoryRecords();
   }, []);
+
+  useEffect(() => {
+    if (!deepId) return;
+    const token = localStorage.getItem("stellar_token");
+    if (!token || token.startsWith("local-")) return;
+    if (deepLinkStartedForRef.current === deepId) return;
+    deepLinkStartedForRef.current = deepId;
+
+    let cancelled = false;
+    void (async () => {
+      setStage("processing");
+      setProgress(25);
+      setError("");
+      try {
+        const loaded = await loadProAnalysisById(deepId, token);
+        if (cancelled) return;
+        if (!loaded) {
+          setError(
+            lang === "zh"
+              ? "找不到该分析记录。请确认已登录且记录在本机或云端仍存在。"
+              : "Analysis not found. Sign in and ensure the record exists locally or on the server.",
+          );
+          setStage("upload");
+          setProgress(0);
+          deepLinkStartedForRef.current = null;
+          return;
+        }
+        const data = expandStellarProForUi(loaded.raw) as ProAnalysisResult;
+        setResult(data);
+        setProgress(100);
+        setStage("results");
+        if (loaded.videoBlob && loaded.videoBlob.size > 0) {
+          setProVideoSrc(URL.createObjectURL(loaded.videoBlob));
+        } else {
+          const vu = String(
+            loaded.raw.playback_video_url || loaded.raw.video_url || loaded.raw.original_video_url || "",
+          ).trim();
+          if (vu.startsWith("http")) setProVideoSrc(vu);
+        }
+      } catch {
+        if (!cancelled) {
+          setError(lang === "zh" ? "加载记录失败" : "Failed to load analysis");
+          setStage("upload");
+          setProgress(0);
+          deepLinkStartedForRef.current = null;
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [deepId, lang]);
 
   useEffect(() => {
     const p = consumeReanalyzeFromHistoryPayload();
@@ -433,6 +490,13 @@ export default function ProPage() {
       setProgress(100);
       setResult(data);
       setStage("results");
+      if (typeof window !== "undefined" && data.analysis_id) {
+        try {
+          window.history.replaceState(null, "", `/pro/${encodeURIComponent(data.analysis_id)}`);
+        } catch {
+          /* ignore */
+        }
+      }
       if (isVideoBlobForOverlay(blob, filename) && blob.size > 0) {
         setProVideoSrc(URL.createObjectURL(blob));
       }
@@ -781,6 +845,8 @@ export default function ProPage() {
                   setStage("upload");
                   setResult(null);
                   setError("");
+                  deepLinkStartedForRef.current = null;
+                  router.push("/pro");
                 }}
                 className="btn-pro"
               >

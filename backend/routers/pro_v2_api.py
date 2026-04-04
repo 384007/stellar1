@@ -6,7 +6,6 @@ import asyncio
 import logging
 import os
 import shutil
-import sys
 import tempfile
 from pathlib import Path
 from typing import Optional
@@ -53,8 +52,6 @@ def _pro_analyze_ingress_echo(route: str, request: Request) -> None:
         f"[stellar-ingress] route={route} method={request.method} path={request.url.path} "
         f"host={host!r} runtime={runtime} modal_host={int(modal_host)} modal_env={int(modal_env)}"
     )
-    print(msg, flush=True)
-    print(msg, flush=True, file=sys.stderr)
     logger.info("%s", msg)
 
 
