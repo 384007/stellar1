@@ -258,10 +258,17 @@ def _sigterm_forward(signum: int, frame: Any) -> None:
     os.kill(os.getpid(), signum)
 
 
-def _ensure_sigterm_kills_ffmpeg() -> None:
-    """Modal / container cancel often sends SIGTERM; kill blocking ffmpeg so worker threads can exit."""
+def ensure_sigterm_kills_ffmpeg() -> None:
+    """Install SIGTERM hook once on the **main thread** (required by Python).
+
+    Pro analyze runs ffmpeg inside ``asyncio.to_thread``; those workers cannot call
+    ``signal.signal``. Call ``ensure_sigterm_kills_ffmpeg()`` from FastAPI ``startup``
+    so container SIGTERM still terminates blocking ffmpeg children.
+    """
     global _sigterm_hook_installed, _previous_sigterm
     if _sigterm_hook_installed or os.name == "nt":
+        return
+    if threading.current_thread() is not threading.main_thread():
         return
     _sigterm_hook_installed = True
     _previous_sigterm = signal.signal(signal.SIGTERM, _sigterm_forward)
@@ -273,7 +280,7 @@ def run_ffmpeg(
     timeout_s: int = 900,
     label: str = "ffmpeg",
 ) -> None:
-    _ensure_sigterm_kills_ffmpeg()
+    ensure_sigterm_kills_ffmpeg()
     cmd = [ffmpeg_bin(), "-hide_banner", "-loglevel", "error", "-y", *args]
     proc = subprocess.Popen(
         cmd,

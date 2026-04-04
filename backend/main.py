@@ -223,6 +223,10 @@ FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:3000")
 async def _startup():
     """Launch background keep-alive loop and pre-warm heavy models."""
     logging.getLogger("services.gemini_service").setLevel(logging.INFO)
+    # Main thread only: allows SIGTERM to kill ffmpeg when analyze uses asyncio.to_thread.
+    from services.internal.prov3_ffmpeg import ensure_sigterm_kills_ffmpeg
+
+    ensure_sigterm_kills_ffmpeg()
     ffmpeg_ok = _verify_ffmpeg_at_startup()
     if ffmpeg_ok:
         await asyncio.to_thread(_verify_ffmpeg_cli)
