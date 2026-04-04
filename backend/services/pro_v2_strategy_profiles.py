@@ -142,18 +142,25 @@ def log_route_apply(rp: RoutingDerivedParams, *, analysis_id: str = "") -> None:
 
 
 def base_picker_tuning_dict(rp: RoutingDerivedParams) -> dict[str, Any]:
+    """Routing-driven base: heavy club / low quality widen late strip and soften strike lock."""
     strike = 76 if rp.use_heavy_club_tracking else 80
+    late_extra = int(rp.late_strip_club_boost)
+    follow_gap_d = 0
+    if rp.quality_level == "low":
+        strike = max(70, strike - 4)
+        late_extra += 2
+        follow_gap_d = -1
     return {
         "top_dense_delta": 0,
         "top_use_second_valley": False,
         "impact_variant": 0,
         "strike_percentile": strike,
-        "late_min_gap_extra": rp.late_strip_club_boost,
-        "follow_min_gap_delta": 0,
+        "late_min_gap_extra": late_extra,
+        "follow_min_gap_delta": follow_gap_d,
         "release_dense_shift": 0,
-        "backswing_median_mode": False,
-        "downswing_dense_delta": 0,
-        "takeaway_late_shift": 0,
+        "backswing_median_mode": rp.quality_level == "low",
+        "downswing_dense_delta": -1 if rp.quality_level == "low" else 0,
+        "takeaway_late_shift": 1 if rp.quality_level == "low" else 0,
         "legacy_picker_variant": 0,
     }
 
@@ -168,31 +175,51 @@ def merge_retry_reasons_into_tuning(
     t = dict(base)
     rs = {str(x).strip().upper() for x in reasons if str(x).strip()}
 
-    if "TOP_BELOW_90" in rs:
+    if "TOP_BELOW_90" in rs or "TOP_IMAGE_MISSING" in rs:
         t["top_dense_delta"] = int(t.get("top_dense_delta", 0)) - 2
         t["top_use_second_valley"] = True
-    if "IMPACT_BELOW_90" in rs:
+    if "IMPACT_BELOW_90" in rs or "IMPACT_IMAGE_MISSING" in rs:
         t["impact_variant"] = min(3, int(t.get("impact_variant", 0)) + 2)
         t["strike_percentile"] = max(72, int(t.get("strike_percentile", 80)) - 3)
-    if "RELEASE_BELOW_90" in rs:
+    if "RELEASE_BELOW_90" in rs or "RELEASE_IMAGE_MISSING" in rs:
         t["follow_min_gap_delta"] = int(t.get("follow_min_gap_delta", 0)) - 2
         t["release_dense_shift"] = int(t.get("release_dense_shift", 0)) + 3
         t["late_min_gap_extra"] = max(0, int(t.get("late_min_gap_extra", 0)) - 1)
-    if "BACKSWING_MID_BELOW_90" in rs:
+    if "BACKSWING_MID_BELOW_90" in rs or "BACKSWING_MID_IMAGE_MISSING" in rs:
         t["backswing_median_mode"] = True
-    if "EARLY_DOWNSWING_BELOW_90" in rs:
+    if "EARLY_DOWNSWING_BELOW_90" in rs or "EARLY_DOWNSWING_IMAGE_MISSING" in rs:
         t["downswing_dense_delta"] = int(t.get("downswing_dense_delta", 0)) - 3
-    if "TAKEAWAY_BELOW_90" in rs:
+    if "TAKEAWAY_BELOW_90" in rs or "TAKEAWAY_IMAGE_MISSING" in rs:
         t["takeaway_late_shift"] = int(t.get("takeaway_late_shift", 0)) + 3
     if "NO_CORE_IMAGES" in rs or "REVIEW_AI_FAILED" in rs:
         t["impact_variant"] = max(int(t.get("impact_variant", 0)), 1)
         t["strike_percentile"] = max(70, int(t.get("strike_percentile", 80)) - 5)
 
-    t["legacy_picker_variant"] = 1
+    # Late-strip nudge scales with failure families — not a blind variant=1 rerun.
+    pv = 0
+    if rs:
+        pv = 1
+        late_strip_hits = sum(
+            1
+            for k in (
+                "IMPACT_BELOW_90",
+                "RELEASE_BELOW_90",
+                "IMPACT_IMAGE_MISSING",
+                "RELEASE_IMAGE_MISSING",
+            )
+            if k in rs
+        )
+        if late_strip_hits:
+            pv = 2
+        if "NO_CORE_IMAGES" in rs or "REVIEW_AI_FAILED" in rs:
+            pv = max(pv, 2)
+        if len(rs) >= 4:
+            pv = max(pv, 2)
+    t["legacy_picker_variant"] = min(2, pv)
 
     logger.info(
         "[PRO_V2][RETRY_APPLY] reasons=%s -> top_d=%s top_2nd=%s imp_var=%s strike_pct=%s "
-        "late_extra=%s follow_gap_d=%s rel_shift=%s bs_med=%s ds_d=%s tw_late=%s routing_q=%s",
+        "late_extra=%s follow_gap_d=%s rel_shift=%s bs_med=%s ds_d=%s tw_late=%s legacy_pv=%s routing_q=%s",
         sorted(rs)[:12],
         t.get("top_dense_delta"),
         t.get("top_use_second_valley"),
@@ -204,9 +231,36 @@ def merge_retry_reasons_into_tuning(
         t.get("backswing_median_mode"),
         t.get("downswing_dense_delta"),
         t.get("takeaway_late_shift"),
+        t.get("legacy_picker_variant"),
         routing.quality_level,
     )
     return t
+
+
+def resolve_screen_unsharp(
+    rp: RoutingDerivedParams,
+    attempt: int,
+    retry_reasons: list[str],
+) -> tuple[bool, str, str]:
+    """Whether to run crop unsharp, log reason, and strength profile (normal|strong).
+
+    ``routing.use_deblur`` always wins on any attempt. Retry pass can add unsharp when
+    routing did not ask for it but round-1 failed (decode / missing / AI).
+    """
+    if rp.screen_apply_unsharp:
+        prof = "strong" if attempt >= 1 and rp.quality_level == "low" else "normal"
+        return True, "routing_use_deblur", prof
+    if attempt >= 1:
+        rs = {str(x).strip().upper() for x in retry_reasons if str(x).strip()}
+        if any("IMAGE_MISSING" in x for x in rs):
+            return True, "retry_image_missing", "strong"
+        if "REVIEW_AI_FAILED" in rs or "NO_CORE_IMAGES" in rs:
+            return True, "retry_decode_or_review", "strong"
+        if "EARLY_DOWNSWING_BELOW_90" in rs or "TOP_BELOW_90" in rs:
+            return True, "retry_motion_pick", "normal"
+        if rs:
+            return True, "retry_generic_reasons", "normal"
+    return False, "off", "normal"
 
 
 def compute_screen_relaxed_margin(

@@ -180,6 +180,19 @@ const PRO_V2_PHASE_NAMING = {
   },
 } as const;
 
+/** Hover: tie audit phase keys to 8-frame strip names (tooltip). */
+const PRO_V2_CORE_STRIP_TOOLTIP: Record<
+  "takeaway" | "backswing_mid" | "top" | "early_downswing" | "impact" | "release",
+  { en: string; zh: string }
+> = {
+  takeaway: { en: "8-frame strip: Takeaway", zh: "8 帧条：起杆" },
+  backswing_mid: { en: "Same moment as strip “Backswing”", zh: "与 8 帧条「上杆」为同一时刻（审核称上杆中段）" },
+  top: { en: "8-frame strip: Top", zh: "8 帧条：顶点" },
+  early_downswing: { en: "Same moment as strip “Downswing”", zh: "与 8 帧条「下杆」为同一时刻（审核称下杆早段）" },
+  impact: { en: "8-frame strip: Impact", zh: "8 帧条：击球" },
+  release: { en: "Same moment as strip “Follow-through”", zh: "与 8 帧条「送杆」为同一时刻（审核称释放）" },
+};
+
 /**
  * Convert a keyframe's embedded pose_snapshot into a full PoseFrame.
  * This ensures the skeleton always matches the JPEG image, even when
@@ -1528,6 +1541,7 @@ export default function PlusResultView({ result, lang, externalVideoSrc, backend
                 ).map((key) => {
                   const row = result.core_frame_scores?.[key];
                   const lab = PRO_V2_CORE_SCORE_LABELS[key];
+                  const tip = PRO_V2_CORE_STRIP_TOOLTIP[key];
                   const sc = typeof row?.score === "number" ? row.score : "—";
                   const ok = row?.pass_90 === true;
                   const cf =
@@ -1539,7 +1553,12 @@ export default function PlusResultView({ result, lang, externalVideoSrc, backend
                         ok ? "border-white/10 bg-white/[0.03]" : "border-amber-500/25 bg-amber-500/[0.06]"
                       }`}
                     >
-                      <span className="text-white/70">{lang === "zh" ? lab.zh : lab.en}</span>
+                      <span
+                        className="text-white/70 cursor-help underline decoration-dotted decoration-white/25 underline-offset-2"
+                        title={lang === "zh" ? tip.zh : tip.en}
+                      >
+                        {lang === "zh" ? lab.zh : lab.en}
+                      </span>
                       <span className="font-mono text-white/90 tabular-nums">
                         {sc}
                         {cf != null ? <span className="text-white/35 text-[10px] ml-1">({cf}%)</span> : null}

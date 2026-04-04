@@ -23,13 +23,13 @@ from services.pro_v2_keyframe_review_service import CORE_PHASE_ORDER, run_core_k
 from services.pro_v2_report_service import LIMITED_NOTICE_ZH, pop_pro_v2_report_meta, write_pro_v2_ai_report
 from services.pro_v2_screen_preprocess_service import run_pro_v2_screen_preprocess
 from services.pro_v2_simple_gate_service import run_simple_gate
+from services.pro_v2_picker_tuning_service import build_pro_v2_picker_tuning, log_picker_tuning
 from services.pro_v2_strategy_profiles import (
-    base_picker_tuning_dict,
     compute_screen_relaxed_margin,
     derive_routing_execution,
     ffmpeg_vf_for_attempt,
     log_route_apply,
-    merge_retry_reasons_into_tuning,
+    resolve_screen_unsharp,
     second_pass_impact_aggressive,
 )
 from services.pro_v2_swing_window_service import find_swing_window_seconds
@@ -291,18 +291,27 @@ async def run_pro_v2_video_analysis(
             "screen_apply_unsharp": rp.screen_apply_unsharp,
             "ffmpeg_vf_prefix_routing": rp.ffmpeg_analysis_vf_prefix,
         }
-        pick_dict: dict[str, Any] = base_picker_tuning_dict(rp)
         retry_reasons_final: list[str] = []
 
         for attempt in range(2):
-            if attempt == 1:
-                pick_dict = merge_retry_reasons_into_tuning(
-                    pick_dict,
-                    retry_reasons_final,
-                    routing=rp,
-                )
+            pick_dict = build_pro_v2_picker_tuning(
+                routing=rp,
+                retry_reasons=retry_reasons_final,
+                attempt_index=attempt,
+                screen_mode=True,
+            )
+            log_picker_tuning(
+                pick_dict,
+                analysis_id=analysis_id,
+                attempt_index=attempt,
+                review_round=attempt + 1,
+                retry_reasons=retry_reasons_final,
+                analysis_trust="pending",
+            )
             relaxed = compute_screen_relaxed_margin(attempt, rp, retry_reasons_final)
-            apply_unsharp = bool(rp.screen_apply_unsharp or (attempt == 1 and bool(retry_reasons_final)))
+            apply_unsharp, unsharp_reason, unsharp_profile = resolve_screen_unsharp(
+                rp, attempt, retry_reasons_final
+            )
             ff_vf = ffmpeg_vf_for_attempt(rp, attempt, retry_reasons_final)
             impact_use = (
                 rp.impact_refine_aggressive
@@ -311,14 +320,20 @@ async def run_pro_v2_video_analysis(
             )
 
             logger.info(
-                "[PRO_V2][SCREEN] attempt=%s analysis_input_pending preprocess_relaxed=%.4f apply_unsharp=%s "
-                "ffmpeg_vf=%s impact_agg=%s picker_variant_legacy=%s",
+                "[PRO_V2][SCREEN] id=%s attempt=%s routing_use_deblur=%s unsharp_applied=%s "
+                "unsharp_reason=%s unsharp_profile=%s preprocess_relaxed=%.4f ffmpeg_vf=%s impact_agg=%s "
+                "legacy_picker_variant=%s retry_reasons_in=%s",
+                analysis_id,
                 attempt,
-                relaxed,
+                rp.use_deblur,
                 "true" if apply_unsharp else "false",
+                unsharp_reason,
+                unsharp_profile,
+                relaxed,
                 repr((ff_vf or "")[:100]),
                 impact_use,
                 pick_dict.get("legacy_picker_variant", 0),
+                retry_reasons_final[:10],
             )
 
             ffmpeg_input_path = input_video_path
@@ -331,6 +346,7 @@ async def run_pro_v2_video_analysis(
                     work_dir=str(screen_try_dir),
                     relaxed_margin=relaxed,
                     apply_unsharp=apply_unsharp,
+                    unsharp_profile=unsharp_profile,
                 )
                 ffmpeg_input_path = str(screen.get("cropped_video_path") or input_video_path)
                 if ffmpeg_input_path != input_video_path:
@@ -370,9 +386,11 @@ async def run_pro_v2_video_analysis(
                 "analysis_input": analysis_input,
                 "relaxed_margin": relaxed,
                 "apply_unsharp": apply_unsharp,
+                "unsharp_reason": unsharp_reason,
+                "unsharp_profile": unsharp_profile,
                 "ffmpeg_vf_prefix": ff_vf or "",
                 "impact_refine_aggressive": impact_use,
-                "picker_tuning": {k: pick_dict.get(k) for k in sorted(pick_dict.keys())[:20]},
+                "picker_tuning": {k: pick_dict.get(k) for k in sorted(pick_dict.keys())},
                 "dense_count": len(dense),
             }
 
@@ -411,18 +429,27 @@ async def run_pro_v2_video_analysis(
         if not all_core_pass:
             logger.warning(
                 "[PRO_V2][LOW_TRUST] analysis_trust=low_trust report_mode=limited review_round=%s "
-                "failed_phases=%s reasons=%s routing_ceiling=%s quality=%s analysis_input=%s",
+                "failed_phases=%s reasons=%s routing_ceiling=%s quality=%s use_deblur=%s heavy_club=%s "
+                "pose_priority=%s analysis_input=%s picker_tuning=%s",
                 review_round_done,
                 failed_phases,
                 retry_reasons_final[:12],
                 rp.expected_confidence_ceiling,
                 rp.quality_level,
+                rp.use_deblur,
+                rp.use_heavy_club_tracking,
+                rp.pose_priority,
                 routing_last_pass.get("analysis_input"),
+                routing_last_pass.get("picker_tuning"),
             )
         else:
             logger.info(
-                "[PRO_V2][LOW_TRUST] analysis_trust=high_trust report_mode=formal review_round=%s",
+                "[PRO_V2][LOW_TRUST] analysis_trust=high_trust report_mode=formal review_round=%s "
+                "quality=%s ceiling=%s picker_tuning=%s",
                 review_round_done,
+                rp.quality_level,
+                rp.expected_confidence_ceiling,
+                routing_last_pass.get("picker_tuning"),
             )
         logger.info(
             "[PRO_V2][REPORT_MODE] report_mode=%s keyframe_mismatch_notice=%s",

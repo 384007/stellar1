@@ -113,16 +113,22 @@ def run_pro_v2_screen_preprocess(
     *,
     relaxed_margin: float = 0.0,
     apply_unsharp: bool = False,
+    unsharp_profile: str = "normal",
 ) -> dict[str, Any]:
     """Detect/crop embedded screen video region. Raises RuntimeError when detection/crop fails.
 
     relaxed_margin: 0..0.12 expands crop outward (retry round 2) to include more context.
-    apply_unsharp: when True (routing use_deblur), run mild unsharp after crop to reduce screen blur.
+    apply_unsharp: when True (routing use_deblur or retry policy), unsharp after crop.
+    unsharp_profile: ``normal`` | ``strong`` — stronger pass for retry / missing-frame recovery.
     """
+    prof = str(unsharp_profile or "normal").strip().lower()
+    if prof not in ("normal", "strong"):
+        prof = "normal"
     logger.info(
-        "[PRO_V2][SCREEN] entered relaxed_margin=%.4f apply_unsharp=%s",
+        "[PRO_V2][SCREEN] entered relaxed_margin=%.4f apply_unsharp=%s unsharp_profile=%s",
         float(relaxed_margin or 0.0),
         "true" if apply_unsharp else "false",
+        prof,
     )
     work = Path(work_dir)
     work.mkdir(parents=True, exist_ok=True)
@@ -171,7 +177,9 @@ def run_pro_v2_screen_preprocess(
     out_path = str(work / "pro_v2_screen_cropped.mp4")
     crop_vf = f"crop={w}:{h}:{x}:{y}"
     if apply_unsharp:
-        crop_vf += ",unsharp=luma_msize_x=5:luma_msize_y=5:luma_amount=0.78"
+        amt = 1.05 if prof == "strong" else 0.78
+        crop_vf += f",unsharp=luma_msize_x=5:luma_msize_y=5:luma_amount={amt}"
+        logger.info("[PRO_V2][SCREEN] ffmpeg_unsharp luma_amount=%s profile=%s", amt, prof)
     cmd = [
         "ffmpeg",
         "-y",
