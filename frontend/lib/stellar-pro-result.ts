@@ -189,6 +189,8 @@ export function proExpandedToPlusViewModel(r: Record<string, any>): PlusAnalysis
     warning: typeof r.warning === "string" ? r.warning : undefined,
     screen_cropped_video_url:
       typeof r.screen_cropped_video_url === "string" ? r.screen_cropped_video_url : undefined,
+    screen_clean_video_url:
+      typeof r.screen_clean_video_url === "string" ? r.screen_clean_video_url : undefined,
     playback_video_url: typeof r.playback_video_url === "string" ? r.playback_video_url : undefined,
     routing_execution:
       r.routing_execution && typeof r.routing_execution === "object" && !Array.isArray(r.routing_execution)
@@ -270,6 +272,7 @@ export function expandStellarProForUi(raw: Record<string, any>): Record<string, 
     retry_reasons: raw.retry_reasons,
     keyframe_mismatch_notice: raw.keyframe_mismatch_notice,
     warning: raw.warning,
+    screen_clean_video_url: raw.screen_clean_video_url,
     screen_keyframe_review_applied: raw.screen_keyframe_review_applied,
     routing_strategy: raw.routing_strategy,
     routing_execution: raw.routing_execution,

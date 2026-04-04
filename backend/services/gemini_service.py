@@ -652,12 +652,12 @@ Return ONLY valid JSON:
 {{
   "review_round": {review_round},
   "core_frame_scores": {{
-    "takeaway": {{"score": 92, "pass_90": true, "confidence": 0.93}},
-    "backswing_mid": {{"score": 88, "pass_90": false, "confidence": 0.79}},
-    "top": {{"score": 95, "pass_90": true, "confidence": 0.95}},
-    "early_downswing": {{"score": 90, "pass_90": true, "confidence": 0.91}},
-    "impact": {{"score": 96, "pass_90": true, "confidence": 0.97}},
-    "release": {{"score": 91, "pass_90": true, "confidence": 0.90}}
+    "takeaway": {{"score": 92, "pass_90": true, "confidence": 0.93, "reason_codes": [], "comment_zh": "起杆位置与时机基本正确", "comment_en": "Takeaway timing and position are broadly correct"}},
+    "backswing_mid": {{"score": 88, "pass_90": false, "confidence": 0.79, "reason_codes": ["BACKSWING_MID_BELOW_90"], "comment_zh": "上杆中段偏晚", "comment_en": "Mid-backswing appears too late"}},
+    "top": {{"score": 95, "pass_90": true, "confidence": 0.95, "reason_codes": [], "comment_zh": "顶点识别清晰", "comment_en": "Top position is clear"}},
+    "early_downswing": {{"score": 90, "pass_90": true, "confidence": 0.91, "reason_codes": [], "comment_zh": "下杆早段基本合理", "comment_en": "Early downswing is plausible"}},
+    "impact": {{"score": 96, "pass_90": true, "confidence": 0.97, "reason_codes": [], "comment_zh": "触球点对齐良好", "comment_en": "Impact alignment is strong"}},
+    "release": {{"score": 91, "pass_90": true, "confidence": 0.90, "reason_codes": [], "comment_zh": "释放阶段可用", "comment_en": "Release frame is usable"}}
   }},
   "retry_required": true,
   "retry_reasons": ["BACKSWING_MID_BELOW_90"]
@@ -667,6 +667,8 @@ retry_required must be true if ANY core_frame_scores[*].pass_90 is false.
 retry_reasons: use UPPER_SNAKE tokens like TOP_BELOW_90, IMPACT_BELOW_90, RELEASE_BELOW_90, TAKEAWAY_BELOW_90, BACKSWING_MID_BELOW_90, EARLY_DOWNSWING_BELOW_90.
 
 confidence: 0.0-1.0 your confidence in that score.
+reason_codes: UPPER_SNAKE short tags for why score is below 90 (or [] if no issue).
+comment_zh/comment_en: one short sentence each.
 """
 
 PRO_V2_KF_REVIEW_PARTIAL = """You are a strict golf swing phase auditor for SCREEN / RE-RECORDED videos.
@@ -684,7 +686,7 @@ Return ONLY valid JSON:
 {{
   "review_round": {review_round},
   "core_frame_scores": {{
-    "<phase_key>": {{"score": 88, "pass_90": false, "confidence": 0.71}}
+    "<phase_key>": {{"score": 88, "pass_90": false, "confidence": 0.71, "reason_codes": ["TOP_BELOW_90"], "comment_zh": "关键帧偏晚", "comment_en": "Frame appears too late"}}
   }},
   "retry_required": true,
   "retry_reasons": ["TOP_BELOW_90"]
