@@ -1,0 +1,2 @@
+# For scripts/download_golfdb_swingnet_weights.sh (Google Drive → models/swingnet_1800.pth.tar)
+gdown>=5.0

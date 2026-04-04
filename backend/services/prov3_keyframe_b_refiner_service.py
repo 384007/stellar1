@@ -19,7 +19,9 @@ def run_b_refine(
     fail_reasons: List[str],
 ) -> RefineResult:
     _ = (analysis_video, preprocess_meta, analysis_frames, confidence)
-    refined = refine_with_b_layer(keyframes, enhanced_local_frames)
+    refined = refine_with_b_layer(
+        keyframes, enhanced_local_frames, analysis_id=analysis_id
+    )
     b_status, b_fail_reasons = run_b_gate(refined, fail_reasons)
     return RefineResult(
         analysis_id=analysis_id,

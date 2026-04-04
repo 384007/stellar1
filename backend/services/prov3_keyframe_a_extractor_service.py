@@ -14,8 +14,12 @@ def run_a_extract(
     preprocess_meta: Dict[str, object],
     analysis_frames: List[dict],
 ) -> ExtractResult:
-    _ = (analysis_video, preprocess_meta)
-    keyframes = infer_a_candidates(analysis_frames)
+    keyframes = infer_a_candidates(
+        analysis_frames,
+        analysis_video=analysis_video,
+        analysis_id=analysis_id,
+        preprocess_meta=preprocess_meta,
+    )
     a_status, fail_reasons = run_a_gate(keyframes)
     return ExtractResult(
         analysis_id=analysis_id,

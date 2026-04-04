@@ -6,6 +6,7 @@ from lib.prov3.keyframes.constants import TRUST_HIGH, TRUST_LOW, TRUST_MEDIUM
 from lib.prov3.keyframes.scoring import per_event_confidence
 from lib.prov3.keyframes.types import AnalyzeResponse
 from services.internal.low_trust_service import build_low_trust_result
+from services.golfdb_swingnet_service import clear_swingnet_ctx
 from services.prov3_keyframe_a_extractor_service import run_a_extract
 from services.prov3_keyframe_b_refiner_service import run_b_refine
 from services.prov3_keyframe_preprocess_service import run_preprocess
@@ -22,6 +23,7 @@ def run_keyframe_analyze(input_video: str, work_dir: str, *, screen_mode: bool =
     )
 
     if a_result.a_status == "pass":
+        clear_swingnet_ctx(pre.analysis_id)
         return AnalyzeResponse(
             analysis_id=pre.analysis_id,
             status="pass",

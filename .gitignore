@@ -19,6 +19,10 @@ backend/.conda-mmaction/
 # Downloaded MMAction2 checkpoints (keep only .gitkeep)
 backend/mmaction_models/*
 !backend/mmaction_models/.gitkeep
+# GolfDB / SwingNet checkpoints (use scripts/download_golfdb_swingnet_weights.sh)
+backend/models/*.pth
+backend/models/*.pth.tar
+!backend/models/.gitkeep
 # Official OpenMMLab wheels downloaded locally (never commit)
 .openmmlab-wheels/
 backend/.openmmlab-wheels/

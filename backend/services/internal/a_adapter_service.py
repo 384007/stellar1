@@ -1,13 +1,21 @@
 from __future__ import annotations
 
-from typing import Dict, List
+import logging
+import os
+from typing import Dict, List, Optional
 
 from lib.prov3.keyframes.constants import EVENT_SEQUENCE, TOP_K
+from services.golfdb_swingnet_service import (
+    PROV3_A_ENGINE_ID,
+    run_swingnet_extract,
+    swingnet_checkpoint_path,
+    swingnet_enabled,
+)
 
-# Internal adapter implementation wraps wmcnally/golfdb.
+logger = logging.getLogger(__name__)
 
 
-def infer_a_candidates(analysis_frames: List[dict]) -> List[Dict[str, object]]:
+def _heuristic_a_candidates(analysis_frames: List[dict]) -> List[Dict[str, object]]:
     if not analysis_frames:
         return []
 
@@ -36,3 +44,36 @@ def infer_a_candidates(analysis_frames: List[dict]) -> List[Dict[str, object]]:
             }
         )
     return outputs
+
+
+def infer_a_candidates(
+    analysis_frames: List[dict],
+    *,
+    analysis_video: Optional[str] = None,
+    analysis_id: Optional[str] = None,
+    preprocess_meta: Optional[Dict[str, object]] = None,
+) -> List[Dict[str, object]]:
+    """Pro v3 **A** = **wmcnally/golfdb SwingNet** when weights resolve; else heuristic only.
+
+    Weights: ``STELLAR_SWINGNET_CHECKPOINT`` or ``backend/models/swingnet_1800.pth.tar``.
+    """
+    _ = preprocess_meta
+    if (
+        swingnet_enabled()
+        and analysis_video
+        and analysis_id
+        and os.path.isfile(analysis_video)
+    ):
+        logger.info(
+            "[prov3][A] engine=%s checkpoint=%s",
+            PROV3_A_ENGINE_ID,
+            swingnet_checkpoint_path(),
+        )
+        kfs = run_swingnet_extract(analysis_video, analysis_id=analysis_id)
+        if kfs:
+            return kfs
+        logger.warning(
+            "[prov3][A] %s inference failed for this clip — heuristic A-path",
+            PROV3_A_ENGINE_ID,
+        )
+    return _heuristic_a_candidates(analysis_frames)
