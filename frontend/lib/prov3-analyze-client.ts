@@ -1,6 +1,37 @@
 import { makeFormData } from "@/lib/fetch-retry";
 import { buildProV3AnalyzeRequestUrl, normalizeProHttpApiBase } from "@/lib/prov3-endpoints";
 
+/** Modal/Render base URL used for the in-flight ``POST /pro-v3/analyze`` (for cancel). */
+let _prov3ActiveAnalyzeBase: string | null = null;
+
+export function clearProv3ActiveAnalyzeBase(): void {
+  _prov3ActiveAnalyzeBase = null;
+}
+
+/** Ask the worker to cooperatively stop the current Pro analyze (same process as the active POST). */
+export async function requestProv3AnalyzeCancel(
+  authHeaders: Record<string, string>,
+): Promise<{ ok: boolean }> {
+  const raw = _prov3ActiveAnalyzeBase;
+  if (!raw) return { ok: false };
+  const base = normalizeProHttpApiBase(raw);
+  if (!base) return { ok: false };
+  const url = `${base.replace(/\/+$/, "")}/pro-v3/analyze/cancel`;
+  try {
+    const ac = new AbortController();
+    const timer = setTimeout(() => ac.abort(), 12_000);
+    const r = await fetch(url, {
+      method: "POST",
+      headers: { ...authHeaders },
+      signal: ac.signal,
+    });
+    clearTimeout(timer);
+    return { ok: r.ok };
+  } catch {
+    return { ok: false };
+  }
+}
+
 export type RunProv3AnalyzeOptions = {
   modalUrls: string[];
   backendUrls: string[];
@@ -10,6 +41,10 @@ export type RunProv3AnalyzeOptions = {
   modalTimeoutMs: number;
   renderTimeoutMs: number;
   logPrefix: string;
+  /** Abort stops the client fetch; pair with ``requestProv3AnalyzeCancel`` so the worker stops too. */
+  abortSignal?: AbortSignal;
+  /** Shown when ``abortSignal`` fires (user clicked Stop). */
+  userCancelledMessage?: string;
 };
 
 export type Prov3AnalyzeResult = {
@@ -34,6 +69,9 @@ export function formatProAnalyzeHttpError(status: number, detail: string): strin
   const d = (detail || "").trim() || `HTTP ${status}`;
   if (status === 404) {
     return `Pro分析失败 [404]: ${d}。请确认 MODAL_BACKEND_URL 为 Modal 根地址（不要带 /pro-v3），且已部署含 POST /pro-v3/analyze 的镜像。`;
+  }
+  if (status === 422 && (d.includes("取消") || /cancel/i.test(d))) {
+    return d;
   }
   return `Pro分析失败 [${status}]: ${d}`;
 }
@@ -63,6 +101,8 @@ async function tryProv3ModalHosts(
   modalUrls: string[],
   modalTimeoutMs: number,
   logPrefix: string,
+  abortSignal: AbortSignal | undefined,
+  userCancelledMessage: string | undefined,
 ): Promise<Prov3AnalyzeResult | null> {
   let lastResponse: Response | null = null;
 
@@ -84,10 +124,22 @@ async function tryProv3ModalHosts(
         }
         const ctrl = new AbortController();
         modalConnCtrl = ctrl;
+        const t = setTimeout(() => ctrl.abort(), modalTimeoutMs);
+        const onUserAbort = () => {
+          clearTimeout(t);
+          ctrl.abort();
+        };
+        if (abortSignal) {
+          if (abortSignal.aborted) {
+            clearTimeout(t);
+            throw new Error(userCancelledMessage || "分析已停止");
+          }
+          abortSignal.addEventListener("abort", onUserAbort);
+        }
         try {
-          const t = setTimeout(() => ctrl.abort(), modalTimeoutMs);
           const analyzeUrl = buildProV3AnalyzeRequestUrl(mUrl);
           console.log(`${logPrefix} Pro Modal → ${analyzeUrl} (round ${hr + 1}, conn ${connAttempt + 1})`);
+          _prov3ActiveAnalyzeBase = mUrlRaw;
           const mRes = await fetch(analyzeUrl, {
             method: "POST",
             headers,
@@ -109,18 +161,26 @@ async function tryProv3ModalHosts(
           }
           return { response: mRes, route: "modal" };
         } catch (e) {
+          clearTimeout(t);
           const isAbort = e instanceof DOMException && e.name === "AbortError";
           const isConnect = !isAbort && e instanceof TypeError;
           console.warn(
             `${logPrefix} Modal ${isAbort ? "timed out" : "unreachable"} (${mUrl}): ${e instanceof Error ? e.message : e}`,
           );
           if (isAbort) {
+            if (abortSignal?.aborted) {
+              throw new Error(userCancelledMessage || "分析已停止");
+            }
             throw new Error(
               "分析等待超时：请勿重复提交。可稍后从历史查看是否已完成，或缩短视频后重试。",
             );
           }
           if (isConnect && connAttempt === 0) continue;
           if (!isConnect) break;
+        } finally {
+          if (abortSignal) {
+            abortSignal.removeEventListener("abort", onUserAbort);
+          }
         }
       }
     }
@@ -141,6 +201,8 @@ async function tryProv3BackendHosts(
   renderTimeoutMs: number,
   maxConn: number,
   logPrefix: string,
+  abortSignal: AbortSignal | undefined,
+  userCancelledMessage: string | undefined,
 ): Promise<Prov3AnalyzeResult | null> {
   if (backendUrls.length === 0) {
     return null;
@@ -160,34 +222,55 @@ async function tryProv3BackendHosts(
     }
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), renderTimeoutMs);
+    const onUserAbort = () => {
+      clearTimeout(timer);
+      controller.abort();
+    };
+    if (abortSignal) {
+      if (abortSignal.aborted) {
+        clearTimeout(timer);
+        throw new Error(userCancelledMessage || "分析已停止");
+      }
+      abortSignal.addEventListener("abort", onUserAbort);
+    }
     let connectAttempts = 0;
     let bRes: Response | null = null;
-    while (!bRes) {
-      try {
-        const analyzeUrl = buildProV3AnalyzeRequestUrl(bUrl);
-        console.log(`${logPrefix} Pro Render → ${analyzeUrl}`);
-        bRes = await fetch(analyzeUrl, {
-          method: "POST",
-          headers,
-          body: makeProv3FormData(blob, filename, screenMode),
-          signal: controller.signal,
-        });
-      } catch (e) {
-        const isAbort = e instanceof DOMException && e.name === "AbortError";
-        if (!isAbort && e instanceof TypeError && connectAttempts < maxConn) {
-          connectAttempts++;
-          await new Promise((r) => setTimeout(r, 10_000));
-          continue;
+    try {
+      while (!bRes) {
+        try {
+          const analyzeUrl = buildProV3AnalyzeRequestUrl(bUrl);
+          console.log(`${logPrefix} Pro Render → ${analyzeUrl}`);
+          _prov3ActiveAnalyzeBase = bUrlRaw;
+          bRes = await fetch(analyzeUrl, {
+            method: "POST",
+            headers,
+            body: makeProv3FormData(blob, filename, screenMode),
+            signal: controller.signal,
+          });
+        } catch (e) {
+          const isAbort = e instanceof DOMException && e.name === "AbortError";
+          if (!isAbort && e instanceof TypeError && connectAttempts < maxConn) {
+            connectAttempts++;
+            await new Promise((r) => setTimeout(r, 10_000));
+            continue;
+          }
+          clearTimeout(timer);
+          if (isAbort) {
+            if (abortSignal?.aborted) {
+              throw new Error(userCancelledMessage || "分析已停止");
+            }
+            throw new Error("Pro分析超时（6分钟），请压缩视频后重试");
+          }
+          throw new Error(`网络错误：${e instanceof Error ? e.message : "无法连接服务器"}`);
         }
-        clearTimeout(timer);
-        if (isAbort) {
-          throw new Error("Pro分析超时（6分钟），请压缩视频后重试");
-        }
-        throw new Error(`网络错误：${e instanceof Error ? e.message : "无法连接服务器"}`);
+        break;
       }
-      break;
+    } finally {
+      clearTimeout(timer);
+      if (abortSignal) {
+        abortSignal.removeEventListener("abort", onUserAbort);
+      }
     }
-    clearTimeout(timer);
     if (!bRes) continue;
     if (bRes.ok) return { response: bRes, route: "render" };
     if (bRes.status === 422 || bRes.status >= 500) {
@@ -225,6 +308,8 @@ export async function runProv3AnalyzeMultipart(
     ...authHeaders,
     ...(opts.cnNetworkHint ? { "X-Stellar-Network-Hint": "cn" } : {}),
   };
+  const abortSignal = opts.abortSignal;
+  const userCancelledMessage = opts.userCancelledMessage;
 
   const fromModal = await tryProv3ModalHosts(
     blob,
@@ -234,6 +319,8 @@ export async function runProv3AnalyzeMultipart(
     modalUrls,
     opts.modalTimeoutMs,
     opts.logPrefix,
+    abortSignal,
+    userCancelledMessage,
   );
   if (fromModal) return fromModal;
 
@@ -248,6 +335,8 @@ export async function runProv3AnalyzeMultipart(
       opts.renderTimeoutMs,
       maxConn,
       opts.logPrefix,
+      abortSignal,
+      userCancelledMessage,
     );
     if (fromRender) return fromRender;
   } else if (backendUrls.length > 0) {
@@ -264,5 +353,6 @@ export async function runProv3AnalyzeMultipart(
   );
   } finally {
     _prov3AnalyzeClientBusy = false;
+    clearProv3ActiveAnalyzeBase();
   }
 }

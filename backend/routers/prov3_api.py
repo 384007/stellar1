@@ -22,6 +22,14 @@ from fastapi.responses import FileResponse
 from lib.prov3.keyframes.types import ExtractRequest, RefineRequest
 from routers.auth import get_current_user
 from services.internal.prov3_ffmpeg import FFmpegNotFoundError
+from services.prov3_analyze_control import (
+    PROV3_ANALYZE_CANCELLED,
+    prov3_analyze_in_flight_count,
+    prov3_begin_analyze,
+    prov3_check_cancelled,
+    prov3_finish_analyze,
+    prov3_request_cancel,
+)
 from services.pro_prov3_analyze_service import run_pro_video_analyze_via_prov3
 from services.pro_prov3_gemini_enrich import enrich_pro_prov3_response
 from services.prov3_keyframe_a_extractor_service import run_a_extract
@@ -165,6 +173,17 @@ async def pro_v3_media_file(analysis_id: str, filename: str):
     return await _pro_media_file_handler(analysis_id, filename)
 
 
+@router_pro_v3.post("/analyze/cancel")
+async def prov3_analyze_cancel_http():
+    """Request cooperative cancellation of the current ``POST /pro-v3/analyze`` on this worker."""
+    prov3_request_cancel()
+    return {
+        "ok": True,
+        "in_flight": prov3_analyze_in_flight_count(),
+        "cancel_requested": True,
+    }
+
+
 async def _run_pro_analyze(
     request: Request,
     file: UploadFile,
@@ -237,80 +256,87 @@ async def _run_pro_analyze_body(
     suffix = Path(file.filename or "video.mp4").suffix or ".mp4"
     mp = media_prefix.rstrip("/")
 
-    with tempfile.TemporaryDirectory(prefix="stellar_pro_analyze_") as tmpdir:
-        input_path = str(Path(tmpdir) / f"input{suffix}")
-        work_dir = os.path.join(tmpdir, "work")
-        os.makedirs(work_dir, exist_ok=True)
-        body = await file.read()
-        if not body:
-            raise HTTPException(status_code=400, detail="Empty file")
-        with open(input_path, "wb") as f:
-            f.write(body)
-
-        try:
-            result = await asyncio.to_thread(
-                run_pro_video_analyze_via_prov3,
-                input_path,
-                work_dir,
-                screen_mode=screen_mode,
-                rough_impact_time_s=rough_impact_time_s,
-            )
-            result = await enrich_pro_prov3_response(result, region="global")
-            analysis_id = str(result.get("analysis_id") or "").strip()
-            if not analysis_id:
-                raise RuntimeError("pro_analyze failed: missing analysis_id")
-            media_dir = _safe_analysis_media_dir(analysis_id)
-            media_dir.mkdir(parents=True, exist_ok=True)
-
-            base = str(request.base_url).rstrip("/")
-
-            original_name = f"original{suffix}"
-            original_path = media_dir / original_name
-            with open(original_path, "wb") as f:
+    prov3_begin_analyze()
+    try:
+        with tempfile.TemporaryDirectory(prefix="stellar_pro_analyze_") as tmpdir:
+            input_path = str(Path(tmpdir) / f"input{suffix}")
+            work_dir = os.path.join(tmpdir, "work")
+            os.makedirs(work_dir, exist_ok=True)
+            body = await file.read()
+            if not body:
+                raise HTTPException(status_code=400, detail="Empty file")
+            with open(input_path, "wb") as f:
                 f.write(body)
-            original_video_url = f"{base}{mp}/media/{analysis_id}/{original_name}"
 
-            playback_src = Path(str(result.get("playback_video_url") or result.get("video_url") or ""))
-            playback_video_url = ""
-            if playback_src.exists() and playback_src.is_file():
-                playback_name = f"playback{playback_src.suffix or '.mp4'}"
-                playback_dst = media_dir / playback_name
-                shutil.copy2(playback_src, playback_dst)
-                playback_video_url = f"{base}{mp}/media/{analysis_id}/{playback_name}"
+            try:
+                result = await asyncio.to_thread(
+                    run_pro_video_analyze_via_prov3,
+                    input_path,
+                    work_dir,
+                    screen_mode=screen_mode,
+                    rough_impact_time_s=rough_impact_time_s,
+                    cancel_check=prov3_check_cancelled,
+                )
+                result = await enrich_pro_prov3_response(result, region="global")
+                analysis_id = str(result.get("analysis_id") or "").strip()
+                if not analysis_id:
+                    raise RuntimeError("pro_analyze failed: missing analysis_id")
+                media_dir = _safe_analysis_media_dir(analysis_id)
+                media_dir.mkdir(parents=True, exist_ok=True)
 
-            screen_cropped_video_url = ""
-            screen_src = Path(str(result.get("screen_cropped_video_url") or ""))
-            if screen_src.exists() and screen_src.is_file():
-                screen_name = f"screen_cropped{screen_src.suffix or '.mp4'}"
-                screen_dst = media_dir / screen_name
-                shutil.copy2(screen_src, screen_dst)
-                screen_cropped_video_url = f"{base}{mp}/media/{analysis_id}/{screen_name}"
+                base = str(request.base_url).rstrip("/")
 
-            contact_src = Path(str(result.get("contact_sheet_url") or ""))
-            if contact_src.exists() and contact_src.is_file():
-                contact_name = f"contact_sheet{contact_src.suffix or '.jpg'}"
-                contact_dst = media_dir / contact_name
-                shutil.copy2(contact_src, contact_dst)
-                result["contact_sheet_url"] = f"{base}{mp}/media/{analysis_id}/{contact_name}"
+                original_name = f"original{suffix}"
+                original_path = media_dir / original_name
+                with open(original_path, "wb") as f:
+                    f.write(body)
+                original_video_url = f"{base}{mp}/media/{analysis_id}/{original_name}"
 
-            result["original_video_url"] = original_video_url
-            result["video_url"] = original_video_url
-            result["playback_video_url"] = playback_video_url or original_video_url
-            if screen_cropped_video_url:
-                result["screen_cropped_video_url"] = screen_cropped_video_url
-            result["screen_mode"] = bool(screen_mode)
-            result["pro_http_path"] = mp
+                playback_src = Path(str(result.get("playback_video_url") or result.get("video_url") or ""))
+                playback_video_url = ""
+                if playback_src.exists() and playback_src.is_file():
+                    playback_name = f"playback{playback_src.suffix or '.mp4'}"
+                    playback_dst = media_dir / playback_name
+                    shutil.copy2(playback_src, playback_dst)
+                    playback_video_url = f"{base}{mp}/media/{analysis_id}/{playback_name}"
 
-            logger.info("[PRO_PROV3][MEDIA] original_video_url=%s", result["original_video_url"])
-            logger.info("[PRO_PROV3][MEDIA] playback_video_url=%s", result["playback_video_url"])
-            logger.info("[PRO_PROV3][MEDIA] video_url=%s", result["video_url"])
-            return result
-        except FFmpegNotFoundError as exc:
-            raise HTTPException(status_code=503, detail=str(exc)) from exc
-        except RuntimeError as exc:
-            raise HTTPException(status_code=422, detail=str(exc)) from exc
-        except Exception as exc:
-            raise HTTPException(status_code=500, detail=f"pro_analyze failed: {exc}") from exc
+                screen_cropped_video_url = ""
+                screen_src = Path(str(result.get("screen_cropped_video_url") or ""))
+                if screen_src.exists() and screen_src.is_file():
+                    screen_name = f"screen_cropped{screen_src.suffix or '.mp4'}"
+                    screen_dst = media_dir / screen_name
+                    shutil.copy2(screen_src, screen_dst)
+                    screen_cropped_video_url = f"{base}{mp}/media/{analysis_id}/{screen_name}"
+
+                contact_src = Path(str(result.get("contact_sheet_url") or ""))
+                if contact_src.exists() and contact_src.is_file():
+                    contact_name = f"contact_sheet{contact_src.suffix or '.jpg'}"
+                    contact_dst = media_dir / contact_name
+                    shutil.copy2(contact_src, contact_dst)
+                    result["contact_sheet_url"] = f"{base}{mp}/media/{analysis_id}/{contact_name}"
+
+                result["original_video_url"] = original_video_url
+                result["video_url"] = original_video_url
+                result["playback_video_url"] = playback_video_url or original_video_url
+                if screen_cropped_video_url:
+                    result["screen_cropped_video_url"] = screen_cropped_video_url
+                result["screen_mode"] = bool(screen_mode)
+                result["pro_http_path"] = mp
+
+                logger.info("[PRO_PROV3][MEDIA] original_video_url=%s", result["original_video_url"])
+                logger.info("[PRO_PROV3][MEDIA] playback_video_url=%s", result["playback_video_url"])
+                logger.info("[PRO_PROV3][MEDIA] video_url=%s", result["video_url"])
+                return result
+            except FFmpegNotFoundError as exc:
+                raise HTTPException(status_code=503, detail=str(exc)) from exc
+            except RuntimeError as exc:
+                if str(exc) == PROV3_ANALYZE_CANCELLED:
+                    raise HTTPException(status_code=422, detail="分析已取消") from exc
+                raise HTTPException(status_code=422, detail=str(exc)) from exc
+            except Exception as exc:
+                raise HTTPException(status_code=500, detail=f"pro_analyze failed: {exc}") from exc
+    finally:
+        prov3_finish_analyze()
 
 
 @router_pro_v3.post("/analyze")

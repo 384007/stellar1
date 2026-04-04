@@ -14,6 +14,7 @@ import {
   formatProAnalyzeHttpError,
   normalizeProv3UrlListsFromPrecheck,
   PRO_V3_EDGE_PRECHECK_PATH,
+  requestProv3AnalyzeCancel,
   runProv3AnalyzeMultipart,
   yieldUiBeforeHeavyParse,
 } from "@/lib/pro-v3-api";
@@ -142,7 +143,16 @@ export default function ProPage({ deepLinkAnalysisId }: { deepLinkAnalysisId?: s
   const cnNetworkHintRef = useRef(false);
   /** 防止双击/历史再次分析竞态导致重复 POST Modal。 */
   const analysisInFlightRef = useRef(false);
+  const proAnalyzeAbortRef = useRef<AbortController | null>(null);
   const deepLinkStartedForRef = useRef<string | null>(null);
+
+  const stopProAnalysis = useCallback(async () => {
+    const token = localStorage.getItem("stellar_token");
+    const authHeaders: Record<string, string> = {};
+    if (token && token.includes(".")) authHeaders["Authorization"] = `Bearer ${token}`;
+    await requestProv3AnalyzeCancel(authHeaders);
+    proAnalyzeAbortRef.current?.abort();
+  }, []);
 
   useEffect(() => {
     const token = localStorage.getItem("stellar_token");
@@ -423,6 +433,9 @@ export default function ProPage({ deepLinkAnalysisId }: { deepLinkAnalysisId?: s
       });
     }, 800);
 
+    const proAbort = new AbortController();
+    proAnalyzeAbortRef.current = proAbort;
+
     try {
       const token = localStorage.getItem("stellar_token");
       const authHeaders: Record<string, string> = {};
@@ -439,10 +452,19 @@ export default function ProPage({ deepLinkAnalysisId }: { deepLinkAnalysisId?: s
           modalTimeoutMs: cn ? 90_000 : 360_000,
           renderTimeoutMs: 360_000,
           logPrefix: "[pro]",
+          abortSignal: proAbort.signal,
+          userCancelledMessage: lang === "zh" ? "分析已停止" : "Analysis stopped",
         });
         res = out.response;
       } catch (e) {
         clearInterval(progressInterval);
+        const msg = e instanceof Error ? e.message : "";
+        if (msg === "分析已停止" || msg === "Analysis stopped") {
+          setError("");
+          setProcessingProScreenMode(false);
+          setStage("upload");
+          return;
+        }
         setError(
           e instanceof Error
             ? e.message
@@ -519,11 +541,21 @@ export default function ProPage({ deepLinkAnalysisId }: { deepLinkAnalysisId?: s
     } catch (err: unknown) {
       clearInterval(progressInterval);
       setProcessingProScreenMode(false);
-      setError(err instanceof Error ? err.message : "Analysis failed");
+      const msg = err instanceof Error ? err.message : "";
+      if (
+        msg === "分析已停止" ||
+        msg === "Analysis stopped" ||
+        msg.includes("分析已取消")
+      ) {
+        setError("");
+      } else {
+        setError(err instanceof Error ? err.message : "Analysis failed");
+      }
       setStage("upload");
     }
     } finally {
       analysisInFlightRef.current = false;
+      proAnalyzeAbortRef.current = null;
     }
   }
 
@@ -819,7 +851,13 @@ export default function ProPage({ deepLinkAnalysisId }: { deepLinkAnalysisId?: s
         )}
 
         {stage === "processing" && (
-          <AnalysisWaiting progress={progress} lang={lang} mode="pro" prov3ScreenMode={processingProScreenMode} />
+          <AnalysisWaiting
+            progress={progress}
+            lang={lang}
+            mode="pro"
+            prov3ScreenMode={processingProScreenMode}
+            onCancel={stopProAnalysis}
+          />
         )}
 
         {stage === "results" && result && (

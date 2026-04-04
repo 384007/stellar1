@@ -112,7 +112,14 @@ async def enrich_pro_prov3_response(
     region: str = "global",
 ) -> dict[str, Any]:
     """Mutates and returns ``minimal``: fill summary / issues / suggestions / training_plan from Gemini when enabled."""
+    from services.prov3_analyze_control import prov3_cancel_requested
+
     if not _prov3_gemini_enabled():
+        minimal.pop("_prov3_motion", None)
+        return minimal
+
+    if prov3_cancel_requested():
+        logger.info("[PRO_PROV3][GEMINI] skip — cancel requested before enrich")
         minimal.pop("_prov3_motion", None)
         return minimal
 
@@ -174,6 +181,11 @@ async def enrich_pro_prov3_response(
         keyframes=kf_motion,
         extras=extras,
     )
+
+    if prov3_cancel_requested():
+        logger.info("[PRO_PROV3][GEMINI] skip — cancel requested before AI report")
+        minimal.pop("_prov3_motion", None)
+        return minimal
 
     try:
         rep = await write_prov3_ai_report(

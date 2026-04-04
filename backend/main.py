@@ -398,6 +398,7 @@ _safe_load("routers.prov3_api", "", [])
 @app.get("/health")
 async def health_check():
     from routers.prov3_api import prov3_analyze_single_flight_active
+    from services.prov3_analyze_control import prov3_analyze_in_flight_count
     from services.golfdb_swingnet_paths import resolve_swingnet_checkpoint_path
     from services.internal.prov3_ffmpeg import FFmpegNotFoundError, ffmpeg_has_filter, ffmpeg_bin
 
@@ -449,6 +450,8 @@ async def health_check():
             "keyframes_note": "POST /pro-v3/keyframes/analyze is raw pipeline JSON only (no Gemini).",
             "analyze_single_flight": prov3_analyze_single_flight_active(),
             "analyze_single_flight_env": "STELLAR_PROV3_ANALYZE_SINGLE_FLIGHT=0 disables lock (concurrent analyze; OOM risk on Modal).",
+            "analyze_in_flight": prov3_analyze_in_flight_count(),
+            "analyze_cancel": "POST /pro-v3/analyze/cancel — cooperative stop for current worker run",
             "video": {
                 "target_analysis_fps": 240,
                 "pipeline": "cleanup -> analysis_240fps_timeline (minterpolate when available) -> frame_enhance",

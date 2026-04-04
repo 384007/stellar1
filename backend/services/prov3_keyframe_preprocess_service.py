@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 import uuid
 from pathlib import Path
-from typing import Dict
+from typing import Callable, Dict
 
 from lib.prov3.keyframes.types import PreprocessMeta, PreprocessResult
 from services.internal.frame_enhance_service import generate_analysis_frames
@@ -35,9 +35,15 @@ def run_preprocess(input_video: str, work_dir: str, *, screen_mode: bool = False
         analysis_id,
         screen_mode,
     )
+    if cancel_check:
+        cancel_check()
     cleanup = cleanup_video(input_video, local_dir, screen_mode=screen_mode)
+    if cancel_check:
+        cancel_check()
     timeline = build_analysis_timeline(str(cleanup["analysis_video"]), local_dir)
     afps = int(timeline.get("analysis_fps", 240))
+    if cancel_check:
+        cancel_check()
     frames = generate_analysis_frames(
         str(timeline["analysis_video"]),
         local_dir,

@@ -11,7 +11,7 @@ import base64
 import io
 import logging
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import cv2
 from PIL import Image, ImageDraw
@@ -171,6 +171,7 @@ def run_pro_video_analyze_via_prov3(
     *,
     screen_mode: bool = False,
     rough_impact_time_s: float | None = None,
+    cancel_check: Callable[[], None] | None = None,
 ) -> dict[str, Any]:
     """Synchronous end-to-end Pro response for ``POST /pro-v3/analyze`` (see ``routers.prov3_api``)."""
     _ = rough_impact_time_s
@@ -183,10 +184,19 @@ def run_pro_video_analyze_via_prov3(
         "true" if screen_mode else "false",
     )
 
-    prov3 = run_keyframe_analyze(input_video_path, str(work), screen_mode=screen_mode)
+    if cancel_check:
+        cancel_check()
+    prov3 = run_keyframe_analyze(
+        input_video_path,
+        str(work),
+        screen_mode=screen_mode,
+        cancel_check=cancel_check,
+    )
     dumped = prov3.model_dump(exclude={"analysis_video", "analysis_fps", "source_fps"})
     raw_kfs = list(dumped.get("keyframes") or [])
 
+    if cancel_check:
+        cancel_check()
     ui_keyframes = _build_ui_keyframes(raw_kfs, input_video_path)
     avg_c = _avg_confidence(ui_keyframes)
     total_score = round(min(100.0, max(0.0, avg_c * 100.0)), 1)

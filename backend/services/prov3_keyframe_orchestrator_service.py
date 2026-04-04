@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Dict
+from typing import Callable, Dict
 
 from lib.prov3.keyframes.constants import TRUST_HIGH, TRUST_LOW, TRUST_MEDIUM
 from lib.prov3.keyframes.scoring import per_event_confidence
@@ -12,9 +12,19 @@ from services.prov3_keyframe_b_refiner_service import run_b_refine
 from services.prov3_keyframe_preprocess_service import run_preprocess
 
 
-def run_keyframe_analyze(input_video: str, work_dir: str, *, screen_mode: bool = False) -> AnalyzeResponse:
-    pre = run_preprocess(input_video, work_dir, screen_mode=screen_mode)
+def run_keyframe_analyze(
+    input_video: str,
+    work_dir: str,
+    *,
+    screen_mode: bool = False,
+    cancel_check: Callable[[], None] | None = None,
+) -> AnalyzeResponse:
+    if cancel_check:
+        cancel_check()
+    pre = run_preprocess(input_video, work_dir, screen_mode=screen_mode, cancel_check=cancel_check)
 
+    if cancel_check:
+        cancel_check()
     a_result = run_a_extract(
         analysis_id=pre.analysis_id,
         analysis_video=pre.analysis_video,
@@ -35,6 +45,8 @@ def run_keyframe_analyze(input_video: str, work_dir: str, *, screen_mode: bool =
             source_fps=float(pre.preprocess_meta.source_fps),
         )
 
+    if cancel_check:
+        cancel_check()
     b_result = run_b_refine(
         analysis_id=pre.analysis_id,
         analysis_video=pre.analysis_video,

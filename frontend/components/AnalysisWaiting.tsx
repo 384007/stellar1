@@ -8,6 +8,8 @@ interface AnalysisWaitingProps {
   mode: "lite" | "pro" | "lab";
   /** Pro v3：对屏 / 重录路径（上传时 `screen_mode=true`）。 */
   prov3ScreenMode?: boolean;
+  /** Pro：请求后端协作取消并中止客户端等待。 */
+  onCancel?: () => void | Promise<void>;
 }
 
 type TechPoint = {
@@ -248,6 +250,7 @@ export default function AnalysisWaiting({
   lang,
   mode,
   prov3ScreenMode,
+  onCancel,
 }: AnalysisWaitingProps) {
   const screenModeBanner = prov3ScreenMode;
   const [currentTip, setCurrentTip] = useState(0);
@@ -386,6 +389,15 @@ export default function AnalysisWaiting({
         </div>
       ) : null}
       <p className="mb-1 text-xs text-white/40">{stageText}</p>
+      {onCancel && mode === "pro" ? (
+        <button
+          type="button"
+          onClick={() => void onCancel()}
+          className="mb-3 min-h-[44px] touch-manipulation rounded-xl border border-red-500/40 bg-red-500/10 px-5 py-2.5 text-xs font-semibold text-red-200/95 transition hover:bg-red-500/20"
+        >
+          {lang === "zh" ? "停止分析" : "Stop analysis"}
+        </button>
+      ) : null}
       <div className="mb-4 flex items-center gap-2">
         <span className="text-[10px] text-white/25 font-mono tabular-nums">
           {Math.floor(elapsed / 60).toString().padStart(2, "0")}:{(elapsed % 60).toString().padStart(2, "0")}

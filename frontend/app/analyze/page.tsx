@@ -24,6 +24,7 @@ import {
   formatProAnalyzeHttpError,
   normalizeProv3UrlListsFromPrecheck,
   PRO_V3_EDGE_PRECHECK_PATH,
+  requestProv3AnalyzeCancel,
   runProv3AnalyzeMultipart,
   yieldUiBeforeHeavyParse,
 } from "@/lib/pro-v3-api";
@@ -141,6 +142,15 @@ export default function AnalyzePage() {
   const [processingProScreenMode, setProcessingProScreenMode] = useState(false);
   /** 防止重复提交 Pro / Lite 分析流程。 */
   const analysisInFlightRef = useRef(false);
+  const proAnalyzeAbortRef = useRef<AbortController | null>(null);
+
+  const stopProAnalysis = useCallback(async () => {
+    const token = localStorage.getItem("stellar_token");
+    const authHeaders: Record<string, string> = {};
+    if (token && token.includes(".")) authHeaders["Authorization"] = `Bearer ${token}`;
+    await requestProv3AnalyzeCancel(authHeaders);
+    proAnalyzeAbortRef.current?.abort();
+  }, []);
 
   const CLUB_GROUPS = [
     { id: "WOOD", label_zh: "木杆", label_en: "Wood", clubs: ["1W", "3W", "5W"] },
@@ -213,6 +223,7 @@ export default function AnalyzePage() {
     filename: string,
     prov3ScreenMode?: boolean,
     modeOverride?: AnalysisMode,
+    proAbortSignal?: AbortSignal,
   ): Promise<AnalysisResult> {
     const isPro = (modeOverride ?? analysisMode) === "pro";
     if (!isPro) {
@@ -264,6 +275,8 @@ export default function AnalyzePage() {
           modalTimeoutMs: cnPro ? 90_000 : 360_000,
           renderTimeoutMs: 360_000,
           logPrefix: `[stellar-pro] ${mb}MB`,
+          abortSignal: proAbortSignal,
+          userCancelledMessage: lang === "zh" ? "分析已停止" : "Analysis stopped",
         },
       );
 
@@ -565,8 +578,17 @@ export default function AnalyzePage() {
       }
     }, 6000);
 
+    const proAbort = modeForRun === "pro" ? new AbortController() : null;
+    proAnalyzeAbortRef.current = proAbort;
+
     try {
-      const data = await sendFileForAnalysis(blob, filename, prov3ScreenMode, modeForRun);
+      const data = await sendFileForAnalysis(
+        blob,
+        filename,
+        prov3ScreenMode,
+        modeForRun,
+        proAbort?.signal,
+      );
       clearInterval(progressInterval);
       clearTimeout(clubFallbackTimer);
 
@@ -628,11 +650,21 @@ export default function AnalyzePage() {
       clearTimeout(clubFallbackTimer);
       setProgress(0);
       setProcessingProScreenMode(false);
-      setError(err instanceof Error ? err.message : "分析失败，请重试");
+      const msg = err instanceof Error ? err.message : "";
+      if (
+        msg === "分析已停止" ||
+        msg === "Analysis stopped" ||
+        msg.includes("分析已取消")
+      ) {
+        setError("");
+      } else {
+        setError(msg || "分析失败，请重试");
+      }
       setStage("upload");
     }
     } finally {
       analysisInFlightRef.current = false;
+      proAnalyzeAbortRef.current = null;
     }
   }
 
@@ -1208,6 +1240,7 @@ export default function AnalyzePage() {
               lang={lang}
               mode={analysisMode}
               prov3ScreenMode={processingProScreenMode}
+              onCancel={analysisMode === "pro" ? stopProAnalysis : undefined}
             />
 
             {/* Handedness confirmation popup — only when club was detected */}
