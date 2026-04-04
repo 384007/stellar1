@@ -147,6 +147,14 @@ image = (
         copy=True,
     )
     .run_commands("python /root/modal_bake_yolo.py")
+    # Pro v3 A/B: SwingNet (wmcnally/golfdb) — bake weights into image (~63MB). Script retries gdown + fails build if missing.
+    .run_commands("python -m pip install --no-cache-dir 'gdown>=5.2,<6'")
+    .add_local_file(
+        local_path=str(Path(__file__).resolve().parent / "tools" / "modal_bake_swingnet.py"),
+        remote_path="/root/modal_bake_swingnet.py",
+        copy=True,
+    )
+    .run_commands("python /root/modal_bake_swingnet.py")
     # psutil/ultralytics pip may satisfy numpy from PyPI; keep 1.26.x for torch+mmpy/mediapipe.
     .run_commands(
         "python -m pip install --no-cache-dir --use-deprecated=legacy-resolver --no-deps "
@@ -242,17 +250,20 @@ def _wire_stellar_model_paths() -> None:
 
 
 def _wire_swingnet_paths() -> None:
-    """Pro v3 A-path: SwingNet weights on Modal volume ``/models`` (see module docstring)."""
+    """Set ``STELLAR_SWINGNET_CHECKPOINT`` when a file exists: volume ``/models`` wins over baked ``/opt/stellar-weights``."""
     from pathlib import Path
 
     if (os.getenv("STELLAR_SWINGNET_CHECKPOINT") or "").strip():
         return
-    for name in ("swingnet_1800.pth.tar", "swingnet_1800.pth"):
-        p = Path("/models") / name
-        if p.is_file():
-            os.environ["STELLAR_SWINGNET_CHECKPOINT"] = str(p)
-            print(f"[modal] Pro v3 SwingNet checkpoint={p}", flush=True)
-            return
+    for base in (Path("/models"), Path("/opt/stellar-weights")):
+        for name in ("swingnet_1800.pth.tar", "swingnet_1800.pth"):
+            p = base / name
+            if p.is_file() and p.stat().st_size > 50_000_000:
+                os.environ["STELLAR_SWINGNET_CHECKPOINT"] = str(p)
+                print(f"[modal] Pro v3 SwingNet checkpoint={p} bytes={p.stat().st_size}", flush=True)
+                return
+            if p.is_file():
+                print(f"[modal] Pro v3 SwingNet skip too-small file={p} bytes={p.stat().st_size}", flush=True)
 
 
 # Scaling: no keep_warm / min_containers — idle workers scale to zero (cold start on next request).
@@ -274,6 +285,16 @@ def fastapi_app():
     _wire_stellar_model_paths()
     _wire_mmaction2_paths()
     _wire_swingnet_paths()
+
+    from pathlib import Path as _Path
+
+    for _p in (
+        _Path("/models/swingnet_1800.pth.tar"),
+        _Path("/opt/stellar-weights/swingnet_1800.pth.tar"),
+    ):
+        _ok = _p.is_file()
+        _sz = _p.stat().st_size if _ok else 0
+        print(f"[modal] swingnet probe path={_p} exists={_ok} bytes={_sz}", flush=True)
 
     _sha = os.environ.get("STELLAR_GIT_SHA", "unknown")
     _branch = os.environ.get("STELLAR_GIT_BRANCH", "unknown")

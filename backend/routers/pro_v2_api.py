@@ -15,6 +15,7 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, Uplo
 from fastapi.responses import FileResponse
 
 from routers.auth import get_current_user
+from services.internal.prov3_ffmpeg import FFmpegNotFoundError
 from services.pro_prov3_analyze_service import run_pro_video_analyze_via_prov3
 
 router = APIRouter(prefix="/pro-v2", tags=["pro-v2"])
@@ -143,6 +144,8 @@ async def pro_v2_analyze(
             logger.info("[PRO_PROV3][MEDIA] playback_video_url=%s", result["playback_video_url"])
             logger.info("[PRO_PROV3][MEDIA] video_url=%s", result["video_url"])
             return result
+        except FFmpegNotFoundError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
         except RuntimeError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         except Exception as exc:

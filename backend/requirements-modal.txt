@@ -10,6 +10,7 @@ google-generativeai==0.8.4
 google-cloud-aiplatform>=1.73.0
 mediapipe==0.10.21
 opencv-python-headless==4.10.0.84
+imageio-ffmpeg>=0.5.1,<0.7
 numpy<2
 Pillow==11.1.0
 python-dotenv==1.0.1

@@ -3,12 +3,8 @@
 - **A-path:** full-sequence SwingNet logits → eight event keyframes (+ top-k).
 - **B-path:** local probability-peak refinement using A-path caches.
 
-Weights are not committed. Fetch with ``backend/scripts/download_golfdb_swingnet_weights.sh`` (``pip install gdown``).
-
-Resolution order:
-
-1. ``STELLAR_SWINGNET_CHECKPOINT`` if the path exists.
-2. Else ``backend/models/swingnet_1800.pth.tar`` or ``backend/models/swingnet_1800.pth``.
+Weights: baked at ``/opt/stellar-weights`` on Modal image build; volume ``/models``; local ``backend/models/``.
+Non-Modal: auto-download from Google Drive on first model load unless ``STELLAR_SWINGNET_AUTO_DOWNLOAD=0``.
 
 Upstream: https://github.com/wmcnally/golfdb — preprocessing matches ``test_video.py`` (160² letterbox, ImageNet norm).
 """
@@ -17,7 +13,10 @@ from __future__ import annotations
 
 import logging
 import os
+import subprocess
+import sys
 import threading
+from pathlib import Path
 from typing import Any
 
 import cv2
@@ -42,10 +41,70 @@ _MODEL: EventDetector | None = None
 _MODEL_CKPT: str | None = None
 _MODEL_DEVICE: torch.device | None = None
 _MODEL_LOCK = threading.Lock()
+_DOWNLOAD_LOCK = threading.Lock()
+_DOWNLOAD_ATTEMPTED = False
+
+_SWINGNET_DRIVE_URL = "https://drive.google.com/uc?id=1MBIDwHSM8OKRbxS8YfyRLnUBAdt0nupW"
+
+
+def _runtime_is_modal() -> bool:
+    return (os.getenv("STELLAR_RUNTIME") or "").strip().lower() == "modal" or bool(
+        (os.getenv("MODAL_REGION") or "").strip()
+    )
+
+
+def _auto_download_swingnet_allowed() -> bool:
+    if _runtime_is_modal():
+        return False
+    v = (os.getenv("STELLAR_SWINGNET_AUTO_DOWNLOAD") or "1").strip().lower()
+    return v not in ("0", "false", "no", "off")
+
+
+def _ensure_swingnet_weights_download() -> None:
+    """First Pro v3 A inference on non-Modal: fetch weights into backend/models if missing."""
+    global _DOWNLOAD_ATTEMPTED
+    if not _auto_download_swingnet_allowed():
+        return
+    if resolve_swingnet_checkpoint_path():
+        return
+    with _DOWNLOAD_LOCK:
+        if resolve_swingnet_checkpoint_path():
+            return
+        if _DOWNLOAD_ATTEMPTED:
+            return
+        _DOWNLOAD_ATTEMPTED = True
+        dest = Path(__file__).resolve().parents[1] / "models" / "swingnet_1800.pth.tar"
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        logger.warning(
+            "[SwingNet] no checkpoint — auto-download to %s (set STELLAR_SWINGNET_AUTO_DOWNLOAD=0 to skip)",
+            dest,
+        )
+        try:
+            subprocess.run(
+                [sys.executable, "-m", "pip", "install", "-q", "gdown>=5.2"],
+                check=True,
+                timeout=300,
+            )
+            subprocess.run(
+                [
+                    sys.executable,
+                    "-c",
+                    f"import gdown; gdown.download({_SWINGNET_DRIVE_URL!r}, {str(dest)!r}, quiet=False)",
+                ],
+                check=True,
+                timeout=900,
+            )
+        except Exception as exc:
+            logger.error("[SwingNet] auto-download failed: %s", exc)
+            return
+        if dest.is_file() and dest.stat().st_size > 50_000_000:
+            logger.info("[SwingNet] auto-download OK bytes=%s", dest.stat().st_size)
+        else:
+            logger.error("[SwingNet] auto-download invalid or too small: %s", dest)
 
 
 def swingnet_checkpoint_path() -> str:
-    """Resolved weight file (env → ``backend/models`` → ``/models`` on Modal)."""
+    """Resolved weight file (env → baked/volume/local paths)."""
     return resolve_swingnet_checkpoint_path()
 
 
@@ -64,6 +123,7 @@ def _device() -> torch.device:
 
 def _load_model() -> tuple[EventDetector, torch.device]:
     global _MODEL, _MODEL_CKPT, _MODEL_DEVICE
+    _ensure_swingnet_weights_download()
     ckpt = swingnet_checkpoint_path()
     dev = _device()
     with _MODEL_LOCK:

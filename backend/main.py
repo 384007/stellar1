@@ -3,7 +3,6 @@ import contextlib
 import logging
 import os
 import re
-import shutil
 import subprocess
 import sys
 import time
@@ -75,12 +74,22 @@ def _modal_echo(msg: str) -> None:
     print(msg, flush=True, file=sys.stderr)
 
 
-def _verify_ffmpeg_at_startup() -> None:
-    """Log ffmpeg -version once; fail loudly in hosted runtimes if missing."""
+def _verify_ffmpeg_at_startup() -> bool:
+    """Resolve ffmpeg (PATH, env, or imageio-ffmpeg bundle), log -version once; return False if unavailable."""
+    from services.internal.prov3_ffmpeg import FFmpegNotFoundError, ffmpeg_bin
+
     log = logging.getLogger("startup")
     try:
+        exe = ffmpeg_bin()
+    except FFmpegNotFoundError as e:
+        msg = str(e)
+        log.error("[ffmpeg] %s", msg)
+        if detect_runtime() in ("modal", "render"):
+            raise RuntimeError(msg) from e
+        return False
+    try:
         proc = subprocess.run(
-            ["ffmpeg", "-version"],
+            [exe, "-version"],
             capture_output=True,
             text=True,
             timeout=20,
@@ -92,20 +101,23 @@ def _verify_ffmpeg_at_startup() -> None:
             log.error("[ffmpeg] %s", msg)
             if detect_runtime() in ("modal", "render"):
                 raise RuntimeError(msg)
-            return
+            return False
         log.info("[ffmpeg] %s", first_line)
         if detect_runtime() == "modal":
             _modal_echo(f"[ffmpeg] {first_line}")
     except FileNotFoundError:
-        msg = "ffmpeg not found on PATH"
+        msg = "ffmpeg binary missing after resolve"
         log.error("[ffmpeg] %s", msg)
         if detect_runtime() in ("modal", "render"):
             raise RuntimeError(msg) from None
+        return False
     except subprocess.TimeoutExpired:
         msg = "ffmpeg -version timed out"
         log.error("[ffmpeg] %s", msg)
         if detect_runtime() in ("modal", "render"):
             raise RuntimeError(msg)
+        return False
+    return True
 
 
 def _configure_modal_logging() -> None:
@@ -137,19 +149,21 @@ if detect_runtime() == "modal":
 
 def _verify_ffmpeg_cli() -> None:
     """
-    Ensure `ffmpeg` is on PATH and runnable. Logs ffmpeg -version output once; raises on failure.
-    Uses stdout print so Render/Modal log streams reliably show the probe (not only logging handlers).
+    Ensure resolved ffmpeg (PATH / STELLAR_FFMPEG_BINARY / imageio-ffmpeg) is runnable.
+    Logs ffmpeg -version output once; raises on failure.
     """
+    from services.internal.prov3_ffmpeg import ffmpeg_bin
+
     log = logging.getLogger("startup")
     try:
         proc = subprocess.run(
-            ["ffmpeg", "-version"],
+            [ffmpeg_bin(), "-version"],
             capture_output=True,
             text=True,
             timeout=30,
         )
     except FileNotFoundError as e:
-        msg = "ffmpeg not found on PATH — install the ffmpeg system package in the deployment image"
+        msg = "ffmpeg binary not executable after resolve"
         print(f"[stellar-ai] ERROR {msg}", flush=True, file=sys.stderr)
         log.error("%s: %s", msg, e)
         raise RuntimeError(msg) from e
@@ -210,13 +224,8 @@ FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:3000")
 async def _startup():
     """Launch background keep-alive loop and pre-warm heavy models."""
     logging.getLogger("services.gemini_service").setLevel(logging.INFO)
-    _verify_ffmpeg_at_startup()
-
-    if detect_runtime() == "local" and shutil.which("ffmpeg") is None:
-        logging.getLogger("startup").warning(
-            "Skipping ffmpeg CLI verification (local, ffmpeg not on PATH); install ffmpeg for video pipelines."
-        )
-    else:
+    ffmpeg_ok = _verify_ffmpeg_at_startup()
+    if ffmpeg_ok:
         await asyncio.to_thread(_verify_ffmpeg_cli)
 
     render_service_url = os.getenv("RENDER_EXTERNAL_URL", "")

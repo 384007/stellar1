@@ -16,7 +16,12 @@ def run_preprocess(input_video: str, work_dir: str, *, screen_mode: bool = False
 
     cleanup = cleanup_video(input_video, local_dir, screen_mode=screen_mode)
     timeline = build_analysis_timeline(str(cleanup["analysis_video"]), local_dir)
-    frames = generate_analysis_frames(str(timeline["analysis_video"]), local_dir)
+    afps = int(timeline.get("analysis_fps", 240))
+    frames = generate_analysis_frames(
+        str(timeline["analysis_video"]),
+        local_dir,
+        analysis_fps=afps,
+    )
 
     meta = PreprocessMeta(
         source_fps=float(cleanup.get("source_fps", 30.0)),

@@ -5,6 +5,8 @@ from pathlib import Path
 
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 
+from services.internal.prov3_ffmpeg import FFmpegNotFoundError
+
 from lib.prov3.keyframes.types import ExtractRequest, RefineRequest
 from services.prov3_keyframe_a_extractor_service import run_a_extract
 from services.prov3_keyframe_b_refiner_service import run_b_refine
@@ -23,7 +25,12 @@ async def prov3_preprocess(file: UploadFile = File(...), screen_mode: bool = For
         if not payload:
             raise HTTPException(status_code=400, detail="Empty file")
         input_path.write_bytes(payload)
-        result = run_preprocess(str(input_path), tmpdir, screen_mode=screen_mode)
+        try:
+            result = run_preprocess(str(input_path), tmpdir, screen_mode=screen_mode)
+        except FFmpegNotFoundError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        except RuntimeError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
         return result.model_dump()
 
 
@@ -62,5 +69,10 @@ async def prov3_analyze(file: UploadFile = File(...), screen_mode: bool = Form(d
         if not payload:
             raise HTTPException(status_code=400, detail="Empty file")
         input_path.write_bytes(payload)
-        result = run_keyframe_analyze(str(input_path), tmpdir, screen_mode=screen_mode)
+        try:
+            result = run_keyframe_analyze(str(input_path), tmpdir, screen_mode=screen_mode)
+        except FFmpegNotFoundError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        except RuntimeError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
         return result.model_dump()

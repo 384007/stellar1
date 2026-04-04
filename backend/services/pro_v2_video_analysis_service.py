@@ -283,6 +283,7 @@ async def run_pro_v2_video_analysis(
     trust_core_ai_all_pass = True
     pro_v2_debug_payload = None
     screen_keyframe_audit = None
+    invariant_reroute = False
 
     if screen_mode:
         route = await run_pro_v2_ai_routing(input_video_path, screen_mode_requested=True)
@@ -476,214 +477,284 @@ async def run_pro_v2_video_analysis(
                 retry_reasons_final[:8],
             )
 
-        visual_gate = run_keyframe_visual_diversity_gate(keyframes)
-
-        # Re-resolve ROI for the same pass as routing_last_pass (final keyframes)
-        _ai = str(routing_last_pass.get("analysis_input") or "")
-        screen_pipeline_cropped = _ai in ("screen_cropped", "screen_clean")
-        # 对屏预处理失败或未裁切时走 raw：与「上传实拍」同等 dense 规则，且不要求 ROI（避免实拍误开屏幕模式即 HARD_STOP / 全拒）
-        dense_health = evaluate_dense_motion_health(
-            dense, t0, t1, ff.duration_s, screen_mode=screen_pipeline_cropped
-        )
-        logger.info(
-            "[PRO_V2][DENSE_DEBUG] dense_count=%s passed=%s reasons=%s swing_window=(%.4f,%.4f) screen_strict=%s",
-            len(dense),
-            dense_health.get("passed"),
-            dense_health.get("reason_codes"),
-            t0,
-            t1,
-            screen_pipeline_cropped,
-        )
-
-        if screen_pipeline_cropped and final_screen_bundle_at_pass:
-            roi_health: dict[str, Any] = dict(final_screen_bundle_at_pass.get("roi_health_eval") or {})
-        else:
-            roi_health = {
-                "passed": False,
-                "reason_codes": ["SCREEN_PIPELINE_NOT_CROPPED"],
-                "area_ratio": 0.0,
-                "detection_confidence": 0.0,
-                "crop_box": None,
-                "center_norm": None,
-                "source_size": {"w": 0, "h": 0},
+        _ai_final = str(routing_last_pass.get("analysis_input") or "")
+        if _ai_final not in ("screen_cropped", "screen_clean"):
+            # 用户选对屏但未能稳定检出内嵌画面：不混用「半套屏幕规则」，整段重跑标准 Pro v2（与 screen_mode=False 同管道）
+            logger.info(
+                "[PRO_V2][INVARIANT_REROUTE] analysis_id=%s no_embedded_crop_after_screen_passes=%s — "
+                "full standard motion + formal report",
+                analysis_id,
+                routing_last_pass.get("attempt"),
+            )
+            invariant_reroute = True
+            screen_cropped_video_path = None
+            screen_clean_video_path = None
+            ff, t0, t1, dense, keyframes = _run_motion_pipeline_once(
+                ffmpeg_input_path=input_video_path,
+                work=work,
+                rough_impact_time_s=rough_impact_time_s,
+                analysis_input="raw",
+                picker_tuning=None,
+                impact_refine_aggressive=False,
+                analysis_vf_prefix=None,
+                dense_pose_priority=False,
+                dense_club_emphasis=0.0,
+                min_dense_frames=16,
+                legacy_picker_variant=0,
+            )
+            keyframes, display_source_kind, _ = render_display_keyframes_from_sources(
+                keyframes,
+                screen_clean_video_path=None,
+                screen_cropped_video_path=None,
+                raw_video_path=input_video_path,
+            )
+            routing_last_pass = {
+                "attempt": -1,
+                "analysis_input": "raw",
+                "pro_v2_invariant_reroute": True,
+                "reroute_reason": "no_embedded_display_crop",
+                "display_source_kind": display_source_kind,
+                "dense_count": len(dense),
             }
-            logger.info(
-                "[PRO_V2][SCREEN_DEBUG] roi_health forced_fail analysis_input=%s had_bundle=%s",
-                _ai,
-                final_screen_bundle_at_pass is not None,
+            routing_full_out = {
+                **(routing_exec_static or {}),
+                "last_pass": routing_last_pass,
+                "invariant_reroute": True,
+            }
+            review_round_done = 0
+            core_frame_scores = {}
+            retry_reasons_final = []
+            analysis_trust = "high_trust"
+            report_mode = "formal"
+            keyframe_mismatch_notice = False
+            trust_structural_ok = True
+            trust_core_ai_all_pass = True
+            pro_v2_debug_payload = None
+            screen_keyframe_audit = None
+            motion_context = _build_motion_context(
+                fps=ff.fps,
+                swing_t0=t0,
+                swing_t1=t1,
+                dense=dense,
+                keyframes=keyframes,
+                extras={
+                    "screen_mode": False,
+                    "screen_mode_user_requested": True,
+                    "pro_v2_effective_pipeline": "standard_invariant",
+                    "routing_strategy": route,
+                    "routing_execution": routing_full_out,
+                },
             )
-
-        roi_required_for_structure = screen_pipeline_cropped
-        structural_ok = (
-            (bool(roi_health.get("passed")) if roi_required_for_structure else True)
-            and bool(dense_health.get("passed"))
-            and bool(visual_gate.get("passed"))
-            and not bool(visual_gate.get("duplicate_pairs"))
-        )
-        gate_reason_codes = list(
-            dict.fromkeys(
-                list(roi_health.get("reason_codes") or [])
-                + list(dense_health.get("reason_codes") or [])
-                + list(visual_gate.get("reason_codes") or [])
-            )
-        )
-
-        all_core_pass = all(
-            bool((core_frame_scores.get(k) or {}).get("pass_90")) for k in CORE_PHASE_ORDER
-        )
-        formal_allowed = bool(all_core_pass and structural_ok)
-        analysis_trust = "high_trust" if formal_allowed else "low_trust"
-        report_mode = "formal" if formal_allowed else "limited"
-        keyframe_mismatch_notice = not formal_allowed
-        retry_reasons_final = list(dict.fromkeys(list(retry_reasons_final) + gate_reason_codes))
-
-        failed_phases = [k for k in CORE_PHASE_ORDER if not (core_frame_scores.get(k) or {}).get("pass_90")]
-        if not formal_allowed:
-            logger.warning(
-                "[PRO_V2][LOW_TRUST] analysis_trust=%s report_mode=%s formal_allowed=%s structural_ok=%s "
-                "all_core_ai_pass=%s review_round=%s failed_phases=%s gate_reasons=%s ai_reasons=%s "
-                "dup_pairs=%s routing_ceiling=%s quality=%s analysis_input=%s",
-                analysis_trust,
-                report_mode,
-                formal_allowed,
-                structural_ok,
-                all_core_pass,
-                review_round_done,
-                failed_phases,
-                gate_reason_codes[:16],
-                [r for r in retry_reasons_final if r not in gate_reason_codes][:8],
-                (visual_gate.get("duplicate_pairs") or [])[:6],
-                rp.expected_confidence_ceiling,
-                rp.quality_level,
-                routing_last_pass.get("analysis_input"),
-            )
+            report = await write_pro_v2_ai_report(motion_context, region=region, report_mode="formal")
         else:
+            _ai = _ai_final
+            screen_pipeline_cropped = True
+            visual_gate = run_keyframe_visual_diversity_gate(keyframes)
+
+            dense_health = evaluate_dense_motion_health(
+                dense, t0, t1, ff.duration_s, screen_mode=True
+            )
             logger.info(
-                "[PRO_V2][LOW_TRUST] analysis_trust=high_trust formal_allowed=true structural_ok=true "
-                "review_round=%s quality=%s ceiling=%s",
-                review_round_done,
-                rp.quality_level,
-                rp.expected_confidence_ceiling,
+                "[PRO_V2][DENSE_DEBUG] dense_count=%s passed=%s reasons=%s swing_window=(%.4f,%.4f)",
+                len(dense),
+                dense_health.get("passed"),
+                dense_health.get("reason_codes"),
+                t0,
+                t1,
             )
 
-        screen_keyframe_audit = {
-            "structural_gates_passed": structural_ok,
-            "all_core_ai_pass_90": all_core_pass,
-            "roi_passed": bool(roi_health.get("passed")) if roi_required_for_structure else True,
-            "roi_gate_skipped": not roi_required_for_structure,
-            "dense_motion_passed": bool(dense_health.get("passed")),
-            "visual_gate_passed": bool(visual_gate.get("passed")),
-            "formal_report_allowed": formal_allowed,
-            "reason_codes": gate_reason_codes,
-            "duplicate_pairs": visual_gate.get("duplicate_pairs") or [],
-            "summary_zh": (
-                "关键帧审核未通过，结论受限。"
-                if not formal_allowed
-                else "关键帧结构与视觉校验通过，且核心帧 AI 达门槛。"
-            ),
-            "summary_en": (
-                "Keyframe audit failed; conclusions are limited."
-                if not formal_allowed
-                else "Structural and visual keyframe checks passed."
-            ),
-        }
-        pro_v2_debug_payload = {
-            "analysis_240_path": ff.analysis_240_path,
-            "playback_path": ff.playback_path,
-            "swing_window_s": [round(t0, 4), round(t1, 4)],
-            "analysis_input": routing_last_pass.get("analysis_input"),
-            "screen_preprocess": {
-                "crop_box": (final_screen_bundle_at_pass or {}).get("crop_box"),
-                "confidence": (final_screen_bundle_at_pass or {}).get("confidence"),
-                "source_frame_size": (final_screen_bundle_at_pass or {}).get("source_frame_size"),
-                "screen_clean_video_path": screen_clean_video_path,
-                "roi_health": roi_health,
-            },
-            "dense_motion_health": dense_health,
-            "keyframe_visual_gate": visual_gate,
-            "keyframes_lineup": [
+            if final_screen_bundle_at_pass:
+                roi_health: dict[str, Any] = dict(final_screen_bundle_at_pass.get("roi_health_eval") or {})
+            else:
+                roi_health = {
+                    "passed": False,
+                    "reason_codes": ["SCREEN_PIPELINE_NOT_CROPPED"],
+                    "area_ratio": 0.0,
+                    "detection_confidence": 0.0,
+                    "crop_box": None,
+                    "center_norm": None,
+                    "source_size": {"w": 0, "h": 0},
+                }
+                logger.info(
+                    "[PRO_V2][SCREEN_DEBUG] roi_health missing_bundle analysis_input=%s",
+                    _ai,
+                )
+
+            structural_ok = (
+                bool(roi_health.get("passed"))
+                and bool(dense_health.get("passed"))
+                and bool(visual_gate.get("passed"))
+                and not bool(visual_gate.get("duplicate_pairs"))
+            )
+            gate_reason_codes = list(
+                dict.fromkeys(
+                    list(roi_health.get("reason_codes") or [])
+                    + list(dense_health.get("reason_codes") or [])
+                    + list(visual_gate.get("reason_codes") or [])
+                )
+            )
+    
+            all_core_pass = all(
+                bool((core_frame_scores.get(k) or {}).get("pass_90")) for k in CORE_PHASE_ORDER
+            )
+            formal_allowed = bool(all_core_pass and structural_ok)
+            analysis_trust = "high_trust" if formal_allowed else "low_trust"
+            report_mode = "formal" if formal_allowed else "limited"
+            keyframe_mismatch_notice = not formal_allowed
+            retry_reasons_final = list(dict.fromkeys(list(retry_reasons_final) + gate_reason_codes))
+    
+            failed_phases = [k for k in CORE_PHASE_ORDER if not (core_frame_scores.get(k) or {}).get("pass_90")]
+            if not formal_allowed:
+                logger.warning(
+                    "[PRO_V2][LOW_TRUST] analysis_trust=%s report_mode=%s formal_allowed=%s structural_ok=%s "
+                    "all_core_ai_pass=%s review_round=%s failed_phases=%s gate_reasons=%s ai_reasons=%s "
+                    "dup_pairs=%s routing_ceiling=%s quality=%s analysis_input=%s",
+                    analysis_trust,
+                    report_mode,
+                    formal_allowed,
+                    structural_ok,
+                    all_core_pass,
+                    review_round_done,
+                    failed_phases,
+                    gate_reason_codes[:16],
+                    [r for r in retry_reasons_final if r not in gate_reason_codes][:8],
+                    (visual_gate.get("duplicate_pairs") or [])[:6],
+                    rp.expected_confidence_ceiling,
+                    rp.quality_level,
+                    routing_last_pass.get("analysis_input"),
+                )
+            else:
+                logger.info(
+                    "[PRO_V2][LOW_TRUST] analysis_trust=high_trust formal_allowed=true structural_ok=true "
+                    "review_round=%s quality=%s ceiling=%s",
+                    review_round_done,
+                    rp.quality_level,
+                    rp.expected_confidence_ceiling,
+                )
+    
+            screen_keyframe_audit = {
+                "structural_gates_passed": structural_ok,
+                "all_core_ai_pass_90": all_core_pass,
+                "roi_passed": bool(roi_health.get("passed")),
+                "roi_gate_skipped": False,
+                "dense_motion_passed": bool(dense_health.get("passed")),
+                "visual_gate_passed": bool(visual_gate.get("passed")),
+                "formal_report_allowed": formal_allowed,
+                "reason_codes": gate_reason_codes,
+                "duplicate_pairs": visual_gate.get("duplicate_pairs") or [],
+                "summary_zh": (
+                    "关键帧审核未通过，结论受限。"
+                    if not formal_allowed
+                    else "关键帧结构与视觉校验通过，且核心帧 AI 达门槛。"
+                ),
+                "summary_en": (
+                    "Keyframe audit failed; conclusions are limited."
+                    if not formal_allowed
+                    else "Structural and visual keyframe checks passed."
+                ),
+            }
+            pro_v2_debug_payload = {
+                "analysis_240_path": ff.analysis_240_path,
+                "playback_path": ff.playback_path,
+                "swing_window_s": [round(t0, 4), round(t1, 4)],
+                "analysis_input": routing_last_pass.get("analysis_input"),
+                "screen_preprocess": {
+                    "crop_box": (final_screen_bundle_at_pass or {}).get("crop_box"),
+                    "confidence": (final_screen_bundle_at_pass or {}).get("confidence"),
+                    "source_frame_size": (final_screen_bundle_at_pass or {}).get("source_frame_size"),
+                    "screen_clean_video_path": screen_clean_video_path,
+                    "roi_health": roi_health,
+                },
+                "dense_motion_health": dense_health,
+                "keyframe_visual_gate": visual_gate,
+                "keyframes_lineup": [
+                    {
+                        "phase": k.get("phase"),
+                        "analysis_timestamp": k.get("timestamp"),
+                        "frame_index": k.get("frame_index"),
+                        "display_source_kind": k.get("display_source_kind"),
+                        "display_source_timestamp": k.get("display_source_timestamp"),
+                        "display_source_frame_index": k.get("display_source_frame_index"),
+                        "display_render_ok": k.get("display_render_ok"),
+                        "display_render_error": k.get("display_render_error"),
+                    }
+                    for k in keyframes
+                ],
+                "picker_tuning": routing_last_pass.get("picker_tuning"),
+                "trust_gate_reason_codes": gate_reason_codes,
+            }
+            trust_structural_ok = structural_ok
+            trust_core_ai_all_pass = all_core_pass
+            logger.info(
+                "[PRO_V2][REPORT_MODE] report_mode=%s keyframe_mismatch_notice=%s",
+                report_mode,
+                keyframe_mismatch_notice,
+            )
+    
+            routing_full = {**(routing_exec_static or {}), "last_pass": routing_last_pass}
+            routing_full_out = routing_full
+            motion_context = _build_motion_context(
+                fps=ff.fps,
+                swing_t0=t0,
+                swing_t1=t1,
+                dense=dense,
+                keyframes=keyframes,
+                extras=_trust_extras(
+                    route=route,
+                    routing_execution=routing_full,
+                    analysis_input=str(routing_last_pass.get("analysis_input") or analysis_input),
+                    analysis_trust=analysis_trust,
+                    report_mode=report_mode,
+                    review_round=review_round_done,
+                    core_frame_scores=core_frame_scores,
+                    keyframe_mismatch_notice=keyframe_mismatch_notice,
+                    retry_reasons=retry_reasons_final,
+                ),
+            )
+            motion_context["structural_gates_passed"] = structural_ok
+            motion_context["structural_gate_reason_codes"] = gate_reason_codes[:12]
+            motion_context["analysis_keyframes"] = [
                 {
                     "phase": k.get("phase"),
-                    "analysis_timestamp": k.get("timestamp"),
-                    "frame_index": k.get("frame_index"),
-                    "display_source_kind": k.get("display_source_kind"),
-                    "display_source_timestamp": k.get("display_source_timestamp"),
-                    "display_source_frame_index": k.get("display_source_frame_index"),
-                    "display_render_ok": k.get("display_render_ok"),
-                    "display_render_error": k.get("display_render_error"),
+                    "analysis_timestamp": float(k.get("timestamp") or 0.0),
+                    "analysis_frame_index": int(k.get("frame_index") or 0),
                 }
                 for k in keyframes
-            ],
-            "picker_tuning": routing_last_pass.get("picker_tuning"),
-            "trust_gate_reason_codes": gate_reason_codes,
-        }
-        trust_structural_ok = structural_ok
-        trust_core_ai_all_pass = all_core_pass
-        logger.info(
-            "[PRO_V2][REPORT_MODE] report_mode=%s keyframe_mismatch_notice=%s",
-            report_mode,
-            keyframe_mismatch_notice,
-        )
-
-        routing_full = {**(routing_exec_static or {}), "last_pass": routing_last_pass}
-        routing_full_out = routing_full
-        motion_context = _build_motion_context(
-            fps=ff.fps,
-            swing_t0=t0,
-            swing_t1=t1,
-            dense=dense,
-            keyframes=keyframes,
-            extras=_trust_extras(
-                route=route,
-                routing_execution=routing_full,
-                analysis_input=str(routing_last_pass.get("analysis_input") or analysis_input),
-                analysis_trust=analysis_trust,
-                report_mode=report_mode,
-                review_round=review_round_done,
-                core_frame_scores=core_frame_scores,
-                keyframe_mismatch_notice=keyframe_mismatch_notice,
-                retry_reasons=retry_reasons_final,
-            ),
-        )
-        motion_context["structural_gates_passed"] = structural_ok
-        motion_context["structural_gate_reason_codes"] = gate_reason_codes[:12]
-        motion_context["screen_fallback_raw"] = _ai == "raw"
-        motion_context["analysis_keyframes"] = [
-            {
-                "phase": k.get("phase"),
-                "analysis_timestamp": float(k.get("timestamp") or 0.0),
-                "analysis_frame_index": int(k.get("frame_index") or 0),
-            }
-            for k in keyframes
-        ]
-        motion_context["display_keyframes"] = [
-            {
-                "phase": k.get("phase"),
-                "display_source_kind": k.get("display_source_kind"),
-                "display_source_timestamp": float(k.get("display_source_timestamp") or 0.0),
-                "display_source_frame_index": int(k.get("display_source_frame_index") or -1),
-                "display_render_ok": bool(k.get("display_render_ok")),
-                "display_render_error": str(k.get("display_render_error") or ""),
-            }
-            for k in keyframes
-        ]
-        # 不再 HARD_STOP：占位报告在客户端像「没出报告」。仍用 formal_allowed → report_mode 与 audit 表达信任度。
-        would_legacy_hard_stop = bool(not formal_allowed and (
-            any(str(c).startswith("SCREEN_ROI_") or str(c).startswith("DENSE_") for c in gate_reason_codes)
-            or "KEYFRAME_VISUAL_DUPLICATE" in gate_reason_codes
-            or "LATE_STRIP_COLLAPSED" in gate_reason_codes
-            or "KEYFRAME_INDEX_COLLAPSE" in gate_reason_codes
-            or bool(visual_gate.get("duplicate_pairs"))
-        ))
-        if would_legacy_hard_stop:
-            logger.warning(
-                "[PRO_V2][REPORT_ALWAYS_GEMINI] analysis_id=%s would_legacy_hard_stop=True reasons=%s",
-                analysis_id,
-                gate_reason_codes[:14],
-            )
-            motion_context["legacy_would_hard_stop"] = True
-            motion_context["legacy_hard_stop_reasons"] = gate_reason_codes[:16]
-        report = await write_pro_v2_ai_report(motion_context, region=region, report_mode=report_mode)
+            ]
+            motion_context["display_keyframes"] = [
+                {
+                    "phase": k.get("phase"),
+                    "display_source_kind": k.get("display_source_kind"),
+                    "display_source_timestamp": float(k.get("display_source_timestamp") or 0.0),
+                    "display_source_frame_index": int(k.get("display_source_frame_index") or -1),
+                    "display_render_ok": bool(k.get("display_render_ok")),
+                    "display_render_error": str(k.get("display_render_error") or ""),
+                }
+                for k in keyframes
+            ]
+            hard_stop = bool(not formal_allowed and (
+                any(str(c).startswith("SCREEN_ROI_") or str(c).startswith("DENSE_") for c in gate_reason_codes)
+                or "KEYFRAME_VISUAL_DUPLICATE" in gate_reason_codes
+                or "LATE_STRIP_COLLAPSED" in gate_reason_codes
+                or "KEYFRAME_INDEX_COLLAPSE" in gate_reason_codes
+                or bool(visual_gate.get("duplicate_pairs"))
+            ))
+            if hard_stop:
+                logger.warning("[PRO_V2][REPORT_HARD_STOP] analysis_id=%s reasons=%s", analysis_id, gate_reason_codes[:14])
+                report = {
+                    "total_score": 0,
+                    "scores": {"grip": 0, "stance": 0, "backswing": 0, "downswing": 0, "follow_through": 0},
+                    "issues": ["Keyframe structural/visual validation failed; conclusions are limited."],
+                    "issues_zh": ["关键帧未通过结构与视觉校验，结论受限。"],
+                    "suggestions": ["Please re-upload a clearer clip or disable Screen Mode and retry."],
+                    "suggestions_zh": ["请重新上传更清晰视频，或关闭 Screen Mode 后重试。"],
+                    "summary": "Key frames did not pass verification; conclusions are limited.",
+                    "summary_zh": "关键帧不符，结论受限。关键帧未通过结构与视觉校验，结论受限。",
+                    "training_plan": {},
+                    "ai_provider": "pro_v2_hard_stop",
+                }
+            else:
+                report = await write_pro_v2_ai_report(motion_context, region=region, report_mode=report_mode)
     else:
         ffmpeg_input_path = input_video_path
         logger.info("[PRO_V2][PIPELINE] analysis_input=raw (non-screen)")
@@ -741,6 +812,7 @@ async def run_pro_v2_video_analysis(
 
     src_frames = _source_frame_count(ff.analysis_240_path)
 
+    effective_screen_mode = bool(screen_mode and not invariant_reroute)
     minimal: dict[str, Any] = {
         "analysis_id": analysis_id,
         "status": "completed",
@@ -764,33 +836,31 @@ async def run_pro_v2_video_analysis(
             "duration_s": ff.duration_s,
             "source_frame_count": src_frames,
         },
-        "pro_v2_screen_pipeline": bool(screen_mode),
-        "screen_mode": bool(screen_mode),
+        "pro_v2_screen_pipeline": effective_screen_mode,
+        "screen_mode": effective_screen_mode,
         "analysis_trust": analysis_trust,
         "report_mode": report_mode,
         "review_round": review_round_done,
-        "core_frame_scores": core_frame_scores if screen_mode else {},
-        "retry_required": bool(screen_mode and (not trust_core_ai_all_pass)),
-        "retry_reasons": retry_reasons_final if screen_mode else [],
-        "keyframe_mismatch_notice": keyframe_mismatch_notice if screen_mode else False,
+        "core_frame_scores": core_frame_scores if effective_screen_mode else {},
+        "retry_required": bool(effective_screen_mode and (not trust_core_ai_all_pass)),
+        "retry_reasons": retry_reasons_final if effective_screen_mode else [],
+        "keyframe_mismatch_notice": keyframe_mismatch_notice if effective_screen_mode else False,
         "warning": "",
-        "screen_keyframe_review_applied": bool(screen_mode),
+        "screen_keyframe_review_applied": bool(effective_screen_mode),
+        "screen_mode_user_requested": bool(screen_mode),
+        "pro_v2_invariant_reroute": invariant_reroute,
     }
-    if screen_mode:
-        _last_ai = str(routing_last_pass.get("analysis_input") or "")
-        minimal["screen_fallback_raw"] = _last_ai == "raw"
-        if _last_ai == "raw":
-            hint_zh = (
-                "未检测到内嵌屏幕区域，已按全画面实拍分析。"
-                "若为手机对屏录制，请提高对比度或改用「上传/拍摄」模式。"
-            )
-            minimal["screen_fallback_hint_zh"] = hint_zh
-            if not keyframe_mismatch_notice:
-                minimal["warning"] = hint_zh
-    if screen_mode and keyframe_mismatch_notice:
+    if invariant_reroute:
+        minimal["pro_v2_reroute_banner_zh"] = (
+            "智能切换：未检出稳定内嵌屏幕，已启用与「上传实拍」完全一致的 Pro v2 标准管道——"
+            "八相位运动关键帧与完整正式教练报告。"
+        )
+        minimal["pro_v2_reroute_banner_en"] = (
+            "Smart switch: no stable embedded display detected. Running full standard Pro v2 — "
+            "eight motion keyframes and a complete formal coaching report, same as direct capture."
+        )
+    if effective_screen_mode and keyframe_mismatch_notice:
         wline = LIMITED_NOTICE_ZH
-        if minimal.get("screen_fallback_raw") and minimal.get("screen_fallback_hint_zh"):
-            wline = f"{minimal['screen_fallback_hint_zh']} {wline}"
         if not trust_structural_ok:
             wline += "（ROI/运动曲线/视觉去重未通过）"
         elif not trust_core_ai_all_pass:
@@ -804,9 +874,9 @@ async def run_pro_v2_video_analysis(
         minimal["screen_cropped_video_url"] = screen_cropped_video_path
     if screen_clean_video_path:
         minimal["screen_clean_video_url"] = screen_clean_video_path
-    if screen_mode and pro_v2_debug_payload is not None:
+    if effective_screen_mode and pro_v2_debug_payload is not None:
         minimal["pro_v2_debug"] = {**pro_v2_debug_payload, "contact_sheet_path": sheet_path}
-    if screen_mode and screen_keyframe_audit is not None:
+    if effective_screen_mode and screen_keyframe_audit is not None:
         minimal["screen_keyframe_audit"] = screen_keyframe_audit
 
     logger.info("[PRO_V2] done analysis_id=%s kfs=%s", analysis_id, len(keyframes))
