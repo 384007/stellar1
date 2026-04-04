@@ -203,4 +203,5 @@ def run_pro_v2_screen_preprocess(
         "cropped_video_path": out_path,
         "crop_box": {"x": x, "y": y, "w": w, "h": h},
         "confidence": round(confidence, 3),
+        "source_frame_size": {"w": frame_w, "h": frame_h},
     }

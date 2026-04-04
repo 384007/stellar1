@@ -194,6 +194,14 @@ export function proExpandedToPlusViewModel(r: Record<string, any>): PlusAnalysis
       r.routing_execution && typeof r.routing_execution === "object" && !Array.isArray(r.routing_execution)
         ? (r.routing_execution as PlusAnalysisResult["routing_execution"])
         : undefined,
+    screen_keyframe_audit:
+      r.screen_keyframe_audit && typeof r.screen_keyframe_audit === "object" && !Array.isArray(r.screen_keyframe_audit)
+        ? (r.screen_keyframe_audit as PlusAnalysisResult["screen_keyframe_audit"])
+        : undefined,
+    pro_v2_debug:
+      r.pro_v2_debug && typeof r.pro_v2_debug === "object" && !Array.isArray(r.pro_v2_debug)
+        ? (r.pro_v2_debug as PlusAnalysisResult["pro_v2_debug"])
+        : undefined,
   };
 }
 
@@ -265,5 +273,7 @@ export function expandStellarProForUi(raw: Record<string, any>): Record<string, 
     screen_keyframe_review_applied: raw.screen_keyframe_review_applied,
     routing_strategy: raw.routing_strategy,
     routing_execution: raw.routing_execution,
+    screen_keyframe_audit: raw.screen_keyframe_audit,
+    pro_v2_debug: raw.pro_v2_debug,
   };
 }

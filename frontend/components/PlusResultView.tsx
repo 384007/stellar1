@@ -105,6 +105,21 @@ export interface PlusAnalysisResult {
   playback_video_url?: string | null;
   /** Screen pipeline: how routing_strategy mapped to last backend pass (debug / transparency). */
   routing_execution?: Record<string, unknown> | null;
+  /** ROI / dense motion / visual-dedupe gate outcome + reasons (Screen Mode). */
+  screen_keyframe_audit?: {
+    structural_gates_passed?: boolean;
+    all_core_ai_pass_90?: boolean;
+    roi_passed?: boolean;
+    dense_motion_passed?: boolean;
+    visual_gate_passed?: boolean;
+    formal_report_allowed?: boolean;
+    reason_codes?: string[];
+    duplicate_pairs?: string[][];
+    summary_zh?: string;
+    summary_en?: string;
+  };
+  /** Backend debug bundle: paths, dense stats, keyframe lineup, visual gate (Screen Mode). */
+  pro_v2_debug?: Record<string, unknown>;
 }
 
 export interface PoseFrame {
@@ -1515,6 +1530,90 @@ export default function PlusResultView({ result, lang, externalVideoSrc, backend
           </div>
           {result.keyframe_mismatch_notice && (result.warning || "").trim() ? (
             <p className="text-sm font-semibold text-amber-200/95 leading-snug">{result.warning}</p>
+          ) : null}
+          {result.screen_keyframe_audit ? (
+            <div
+              className={`rounded-lg border p-3 space-y-2 ${
+                result.screen_keyframe_audit.formal_report_allowed
+                  ? "border-emerald-500/25 bg-emerald-500/[0.05]"
+                  : "border-amber-500/30 bg-amber-500/[0.08]"
+              }`}
+            >
+              <p className="text-[10px] uppercase tracking-wider text-white/45">
+                {lang === "zh" ? "关键帧审核（结构 / 运动 / 视觉）" : "Keyframe audit (ROI / motion / visual)"}
+              </p>
+              <p className="text-xs text-white/75 leading-snug">
+                {lang === "zh"
+                  ? result.screen_keyframe_audit.summary_zh || "—"
+                  : result.screen_keyframe_audit.summary_en || "—"}
+              </p>
+              <ul className="grid grid-cols-2 gap-x-2 gap-y-1 text-[10px] text-white/55">
+                <li>
+                  ROI:{" "}
+                  {result.screen_keyframe_audit.roi_passed
+                    ? lang === "zh"
+                      ? "通过"
+                      : "OK"
+                    : lang === "zh"
+                      ? "未通过"
+                      : "Fail"}
+                </li>
+                <li>
+                  {lang === "zh" ? "运动曲线" : "Dense motion"}:{" "}
+                  {result.screen_keyframe_audit.dense_motion_passed
+                    ? lang === "zh"
+                      ? "通过"
+                      : "OK"
+                    : lang === "zh"
+                      ? "未通过"
+                      : "Fail"}
+                </li>
+                <li>
+                  {lang === "zh" ? "视觉去重" : "Visual dedupe"}:{" "}
+                  {result.screen_keyframe_audit.visual_gate_passed
+                    ? lang === "zh"
+                      ? "通过"
+                      : "OK"
+                    : lang === "zh"
+                      ? "未通过"
+                      : "Fail"}
+                </li>
+                <li>
+                  {lang === "zh" ? "核心帧 AI≥90" : "Core AI ≥90"}:{" "}
+                  {result.screen_keyframe_audit.all_core_ai_pass_90
+                    ? lang === "zh"
+                      ? "是"
+                      : "Yes"
+                    : lang === "zh"
+                      ? "否"
+                      : "No"}
+                </li>
+              </ul>
+              {(result.screen_keyframe_audit.reason_codes?.length ?? 0) > 0 ? (
+                <div className="space-y-1">
+                  <p className="text-[9px] text-white/40 uppercase tracking-wider">
+                    {lang === "zh" ? "原因代码" : "Reason codes"}
+                  </p>
+                  <ul className="font-mono text-[9px] text-amber-200/90 break-all space-y-0.5">
+                    {(result.screen_keyframe_audit.reason_codes ?? []).slice(0, 14).map((c) => (
+                      <li key={c}>{c}</li>
+                    ))}
+                  </ul>
+                </div>
+              ) : null}
+              {(result.screen_keyframe_audit.duplicate_pairs?.length ?? 0) > 0 ? (
+                <div className="space-y-1">
+                  <p className="text-[9px] text-white/40 uppercase tracking-wider">
+                    {lang === "zh" ? "视觉过于相近的相邻阶段" : "Adjacent phases too similar"}
+                  </p>
+                  <ul className="font-mono text-[9px] text-white/60">
+                    {(result.screen_keyframe_audit.duplicate_pairs ?? []).map((pair, i) => (
+                      <li key={i}>{pair.join(" ↔ ")}</li>
+                    ))}
+                  </ul>
+                </div>
+              ) : null}
+            </div>
           ) : null}
           {result.screen_cropped_video_url ? (
             <div className="space-y-1">
