@@ -397,6 +397,7 @@ _safe_load("routers.prov3_keyframes", "", ["prov3-keyframes"])
 @app.get("/health")
 async def health_check():
     from services.golfdb_swingnet_paths import resolve_swingnet_checkpoint_path
+    from services.internal.prov3_ffmpeg import FFmpegNotFoundError, ffmpeg_has_filter, ffmpeg_bin
 
     gemini_key = os.getenv("GEMINI_API_KEY", "")
     jwt_secret = os.getenv("JWT_SECRET", "")
@@ -409,6 +410,17 @@ async def health_check():
         or (os.getenv("https_proxy") or "").strip()
     )
     _sw_ck = resolve_swingnet_checkpoint_path()
+
+    _ff_ok = False
+    _mci = False
+    try:
+        ffmpeg_bin()
+        _ff_ok = True
+        _mci = bool(ffmpeg_has_filter("minterpolate"))
+    except FFmpegNotFoundError:
+        _ff_ok = False
+        _mci = False
+
     payload = {
         "status": "healthy",
         "service": "stellar-ai",
@@ -418,8 +430,23 @@ async def health_check():
         "routers_loaded": _EXPECTED_ROUTER_LOADS - len(_load_errors),
         "load_errors": _load_errors or None,
         "prov3": {
+            "engine": "prov3",
+            "pro_http_route": "POST /pro-v2/analyze",
+            "pro_http_note": "Path stays /pro-v2 for stable frontend contract; handler runs Pro v3 keyframes (+ optional Gemini report).",
             "pro_http": "POST /pro-v2/analyze -> Pro v3 keyframe pipeline",
             "api": "POST /api/prov3/keyframes/analyze",
+            "video": {
+                "target_analysis_fps": 240,
+                "pipeline": "cleanup -> analysis_240fps_timeline (minterpolate when available) -> frame_enhance",
+                "ffmpeg_resolvable": _ff_ok,
+                "minterpolate_available": _mci,
+            },
+            "ab_weights": {
+                "a_engine": "wmcnally/golfdb:SwingNet (eight events + top-k)",
+                "b_engine": "same SwingNet prob tensor — local peak refine (no second checkpoint)",
+                "swingnet_weights_present": bool(_sw_ck),
+                "swingnet_checkpoint": _sw_ck or None,
+            },
             "swingnet_engine": "wmcnally/golfdb:SwingNet",
             "swingnet_weights_present": bool(_sw_ck),
             "swingnet_checkpoint": _sw_ck or None,

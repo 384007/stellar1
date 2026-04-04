@@ -1,6 +1,8 @@
-"""Pro HTTP product response built only from the Pro v3 keyframe pipeline.
+"""Pro HTTP product response from the Pro v3 keyframe pipeline + optional Gemini report layer.
 
-No imports from legacy Pro v2 orchestrators, Plus routes, or Gemini report writers.
+Keyframes and thumbnails are Pro v3 only. Long-form summary / suggestions / training_plan are filled
+asynchronously in ``enrich_pro_prov3_response`` (see ``pro_prov3_gemini_enrich``) using the same
+motion_context contract as Pro v2 text-only reports.
 """
 
 from __future__ import annotations
@@ -182,7 +184,7 @@ def run_pro_video_analyze_via_prov3(
     )
 
     prov3 = run_keyframe_analyze(input_video_path, str(work), screen_mode=screen_mode)
-    dumped = prov3.model_dump()
+    dumped = prov3.model_dump(exclude={"analysis_video", "analysis_fps", "source_fps"})
     raw_kfs = list(dumped.get("keyframes") or [])
 
     ui_keyframes = _build_ui_keyframes(raw_kfs, input_video_path)
@@ -281,7 +283,13 @@ def run_pro_video_analyze_via_prov3(
             "status": status,
             "trust_level": trust,
             "fail_reasons": fail_reasons,
-            "analysis_fps": int(ANALYSIS_FPS),
+            "analysis_fps": int(prov3.analysis_fps or ANALYSIS_FPS),
+        },
+        "_prov3_motion": {
+            "analysis_video": str(prov3.analysis_video or ""),
+            "analysis_fps": float(prov3.analysis_fps or ANALYSIS_FPS),
+            "source_fps": float(prov3.source_fps or 30.0),
+            "screen_mode": bool(screen_mode),
         },
     }
 

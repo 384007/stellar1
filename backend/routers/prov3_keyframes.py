@@ -75,4 +75,4 @@ async def prov3_analyze(file: UploadFile = File(...), screen_mode: bool = Form(d
             raise HTTPException(status_code=503, detail=str(exc)) from exc
         except RuntimeError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
-        return result.model_dump()
+        return result.model_dump(exclude={"analysis_video", "analysis_fps", "source_fps"})

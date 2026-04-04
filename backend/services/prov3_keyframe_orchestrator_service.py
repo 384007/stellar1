@@ -30,6 +30,9 @@ def run_keyframe_analyze(input_video: str, work_dir: str, *, screen_mode: bool =
             trust_level=TRUST_HIGH,
             keyframes=a_result.keyframes,
             fail_reasons=[],
+            analysis_video=pre.analysis_video,
+            analysis_fps=int(pre.preprocess_meta.analysis_fps),
+            source_fps=float(pre.preprocess_meta.source_fps),
         )
 
     b_result = run_b_refine(
@@ -50,6 +53,9 @@ def run_keyframe_analyze(input_video: str, work_dir: str, *, screen_mode: bool =
             trust_level=TRUST_MEDIUM,
             keyframes=b_result.refined_keyframes,
             fail_reasons=[],
+            analysis_video=pre.analysis_video,
+            analysis_fps=int(pre.preprocess_meta.analysis_fps),
+            source_fps=float(pre.preprocess_meta.source_fps),
         )
 
     low_trust = build_low_trust_result(
@@ -57,4 +63,9 @@ def run_keyframe_analyze(input_video: str, work_dir: str, *, screen_mode: bool =
         keyframes=[item.model_dump() for item in b_result.refined_keyframes],
         fail_reasons=b_result.fail_reasons,
     )
-    return AnalyzeResponse(**low_trust)
+    return AnalyzeResponse(
+        **low_trust,
+        analysis_video=pre.analysis_video,
+        analysis_fps=int(pre.preprocess_meta.analysis_fps),
+        source_fps=float(pre.preprocess_meta.source_fps),
+    )

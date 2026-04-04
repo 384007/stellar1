@@ -55,6 +55,10 @@ class AnalyzeResponse(BaseModel):
     trust_level: Literal["high", "medium", "low"]
     keyframes: List[KeyframeSelection]
     fail_reasons: List[str] = Field(default_factory=list)
+    # Populated for downstream Gemini / motion summary (240fps analysis clip on disk).
+    analysis_video: str = ""
+    analysis_fps: int = 240
+    source_fps: float = 30.0
 
 
 class ExtractRequest(BaseModel):

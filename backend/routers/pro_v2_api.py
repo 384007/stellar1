@@ -17,6 +17,7 @@ from fastapi.responses import FileResponse
 from routers.auth import get_current_user
 from services.internal.prov3_ffmpeg import FFmpegNotFoundError
 from services.pro_prov3_analyze_service import run_pro_video_analyze_via_prov3
+from services.pro_prov3_gemini_enrich import enrich_pro_prov3_response
 
 router = APIRouter(prefix="/pro-v2", tags=["pro-v2"])
 logger = logging.getLogger(__name__)
@@ -96,6 +97,7 @@ async def pro_v2_analyze(
                 screen_mode=screen_mode,
                 rough_impact_time_s=rough_impact_time_s,
             )
+            result = await enrich_pro_prov3_response(result, region="global")
             analysis_id = str(result.get("analysis_id") or "").strip()
             if not analysis_id:
                 raise RuntimeError("pro_analyze failed: missing analysis_id")
