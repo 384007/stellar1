@@ -184,13 +184,14 @@ export default function AnalyzePage() {
     }
 
     if (isPro) {
-      // Pro mode: precheck (fast auth from Edge) → Modal first → Render fallback.
+      // Pro mode: precheck (Edge) → always try Modal first (all regions, including CN).
+      // Render runs only when NEXT_PUBLIC_PRO_V2_RENDER_FALLBACK=true; cnNetworkHint never reorders hosts.
       // Never proxy through the CF Worker — its 30 s wall-clock limit kills long analyses.
       const token = localStorage.getItem("stellar_token");
       const authHeaders: Record<string, string> = {};
       if (token && token.includes(".")) authHeaders["Authorization"] = `Bearer ${token}`;
 
-      // ① Precheck — Modal / Render URL lists (analyze: Modal first, then Render, all regions)
+      // ① Precheck — Modal + Render URL lists; try order is Modal → Render (Render opt-in via env, same for CN)
       const defaultBackend =
         process.env.NEXT_PUBLIC_BACKEND_URL || "https://stellar1-backend.onrender.com";
       let proNetworkHint = "";

@@ -1,8 +1,12 @@
 /**
  * Pro v2 upload targets: primary + optional fallbacks for CN / unstable backends.
  *
- * **China IP (`network_hint: cn`):** adds `X-Stellar-Network-Hint: cn` for Pro v2. Pro analysis is
- * Modal-only unless `NEXT_PUBLIC_PRO_V2_RENDER_FALLBACK=true`. Use `MODAL_BACKEND_CN_EXTRA` / etc. for mirrors.
+ * **All regions (including China):** the client always attempts **Modal (GPU) first**. It does not
+ * put Render ahead of Modal when `network_hint` is `cn`. China only adds `X-Stellar-Network-Hint: cn`
+ * (workers can tune Gemini/copy) and slightly more aggressive **Render** connect retries **when**
+ * `NEXT_PUBLIC_PRO_V2_RENDER_FALLBACK=true` — that flag is off by default (Modal-only + Modal HTTP retries).
+ *
+ * Prepend mirrors that work from mainland via `MODAL_BACKEND_CN_EXTRA` / `BACKEND_URL_CN_EXTRA`.
  *
  * Configure on CF Pages / Worker (same pattern as MODAL_BACKEND_URL):
  * - MODAL_BACKEND_URL           — primary Modal base (no trailing slash)

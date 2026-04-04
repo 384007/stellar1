@@ -164,9 +164,14 @@ async function tryProV2BackendHosts(
 }
 
 /**
- * Pro v2: Modal only by default (all regions). Same host is retried on 422/429/5xx before giving up.
- * Set NEXT_PUBLIC_PRO_V2_RENDER_FALLBACK=true to opt into Render after Modal fails.
- * `cnNetworkHint` adds `X-Stellar-Network-Hint: cn` and extra Render connect retries when fallback is on.
+ * Pro v2 routing (same for CN and non-CN):
+ *
+ * 1. **Modal first** — every region uses the same host order. `cnNetworkHint` does **not** reorder Modal vs Render.
+ * 2. **cnNetworkHint** — only adds `X-Stellar-Network-Hint: cn` and raises Render `maxConn` when Render is used.
+ * 3. **Render** — attempted only after Modal returns no usable in-process result **and**
+ *    `NEXT_PUBLIC_PRO_V2_RENDER_FALLBACK=true` (default off: Modal-only traffic, Modal retries 422/429/5xx on-host).
+ *
+ * Default remains Modal-only (no Render) unless that env flag is set.
  */
 export async function runProV2AnalyzeMultipart(
   blob: Blob,
@@ -182,6 +187,7 @@ export async function runProV2AnalyzeMultipart(
     ...(opts.cnNetworkHint ? { "X-Stellar-Network-Hint": "cn" } : {}),
   };
 
+  // Pass 1 — Modal (GPU); exhaustive retries on same URL before next Modal host.
   const fromModal = await tryProV2ModalHosts(
     blob,
     filename,
@@ -193,6 +199,7 @@ export async function runProV2AnalyzeMultipart(
   );
   if (fromModal) return fromModal;
 
+  // Pass 2 — Render/API only when explicitly enabled (still never CN-first).
   if (proV2RenderFallbackEnabled() && backendUrls.length > 0) {
     console.log(`${opts.logPrefix} Modal gave no usable response; Render fallback enabled via env`);
     const fromRender = await tryProV2BackendHosts(
