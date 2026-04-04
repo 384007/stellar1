@@ -282,6 +282,10 @@ def fastapi_app():
     os.environ["STELLAR_RUNTIME"] = "modal"
     # Pro on Modal: slim router set — no legacy /stellar-pro; HTTP Pro is /pro-v3 only (see routers.prov3_api).
     os.environ["STELLAR_MODAL_PRO_V3_ONLY"] = "1"
+    # Single-flight lock (409 on second POST) is off by default on Modal — avoids false 409 from retries / overlap.
+    # To enforce one analyze per worker: set Modal secret STELLAR_PROV3_ANALYZE_SINGLE_FLIGHT=1
+    if "STELLAR_PROV3_ANALYZE_SINGLE_FLIGHT" not in os.environ:
+        os.environ["STELLAR_PROV3_ANALYZE_SINGLE_FLIGHT"] = "0"
     _wire_stellar_model_paths()
     _wire_mmaction2_paths()
     _wire_swingnet_paths()
@@ -301,9 +305,10 @@ def fastapi_app():
     _bt = os.environ.get("STELLAR_BUILD_TIME", "unknown")
     _line = f"[modal] build_info git_sha={_sha} branch={_branch} build_time={_bt}"
     print(_line, flush=True, file=sys.stderr)
+    _sf = os.environ.get("STELLAR_PROV3_ANALYZE_SINGLE_FLIGHT", "0")
     _pro = (
         f"[modal] pro_v3_api POST /pro-v3/analyze GET /pro-v3/media/* POST /pro-v3/keyframes/* asgi=main:app "
-        f"STELLAR_MODAL_PRO_V3_ONLY=1 actual_sha={_sha}"
+        f"STELLAR_MODAL_PRO_V3_ONLY=1 STELLAR_PROV3_ANALYZE_SINGLE_FLIGHT={_sf} actual_sha={_sha}"
     )
     print(_pro, flush=True, file=sys.stderr)
 
