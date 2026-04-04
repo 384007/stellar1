@@ -16,6 +16,13 @@ export type ProV2AnalyzeResult = {
   route: "modal" | "render";
 };
 
+/** Lets the browser paint (e.g. progress 96%) before synchronous JSON parse on the main thread. */
+export function yieldUiBeforeHeavyParse(): Promise<void> {
+  return new Promise((resolve) => {
+    requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+  });
+}
+
 /** Opt-in only: default is Modal-only so traffic and errors stay on Modal (Render skipped). */
 export function proV2RenderFallbackEnabled(): boolean {
   return process.env.NEXT_PUBLIC_PRO_V2_RENDER_FALLBACK === "true";

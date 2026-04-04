@@ -23,7 +23,7 @@ import {
   DEFAULT_PRO_V2_MODAL_URL,
   normalizeProV2UrlListsFromPrecheck,
 } from "@/lib/pro-v2-endpoints";
-import { runProV2AnalyzeMultipart } from "@/lib/pro-v2-analyze-client";
+import { runProV2AnalyzeMultipart, yieldUiBeforeHeavyParse } from "@/lib/pro-v2-analyze-client";
 import {
   consumeReanalyzeFromHistoryPayload,
   fetchVideoBlobForHistoryReanalyze,
@@ -269,7 +269,14 @@ export default function AnalyzePage() {
         try { detail = (await res.json()).detail || detail; } catch { /* ignore */ }
         throw new Error(`Pro分析失败 [${res.status}]: ${detail}`);
       }
-      const rawPro = await res.json();
+      await yieldUiBeforeHeavyParse();
+      const rawText = await res.text();
+      let rawPro: Record<string, unknown>;
+      try {
+        rawPro = JSON.parse(rawText) as Record<string, unknown>;
+      } catch {
+        throw new Error("Pro 分析返回数据无法解析，请重试");
+      }
       return expandStellarProForUi(rawPro) as AnalysisResult;
     }
 

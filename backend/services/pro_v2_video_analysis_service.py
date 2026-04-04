@@ -477,21 +477,25 @@ async def run_pro_v2_video_analysis(
             )
 
         visual_gate = run_keyframe_visual_diversity_gate(keyframes)
+
+        # Re-resolve ROI for the same pass as routing_last_pass (final keyframes)
+        _ai = str(routing_last_pass.get("analysis_input") or "")
+        screen_pipeline_cropped = _ai in ("screen_cropped", "screen_clean")
+        # 对屏预处理失败或未裁切时走 raw：与「上传实拍」同等 dense 规则，且不要求 ROI（避免实拍误开屏幕模式即 HARD_STOP / 全拒）
         dense_health = evaluate_dense_motion_health(
-            dense, t0, t1, ff.duration_s, screen_mode=True
+            dense, t0, t1, ff.duration_s, screen_mode=screen_pipeline_cropped
         )
         logger.info(
-            "[PRO_V2][DENSE_DEBUG] dense_count=%s passed=%s reasons=%s swing_window=(%.4f,%.4f)",
+            "[PRO_V2][DENSE_DEBUG] dense_count=%s passed=%s reasons=%s swing_window=(%.4f,%.4f) screen_strict=%s",
             len(dense),
             dense_health.get("passed"),
             dense_health.get("reason_codes"),
             t0,
             t1,
+            screen_pipeline_cropped,
         )
 
-        # Re-resolve ROI for the same pass as routing_last_pass (final keyframes)
-        _ai = str(routing_last_pass.get("analysis_input") or "")
-        if _ai in ("screen_cropped", "screen_clean") and final_screen_bundle_at_pass:
+        if screen_pipeline_cropped and final_screen_bundle_at_pass:
             roi_health: dict[str, Any] = dict(final_screen_bundle_at_pass.get("roi_health_eval") or {})
         else:
             roi_health = {
@@ -509,8 +513,9 @@ async def run_pro_v2_video_analysis(
                 final_screen_bundle_at_pass is not None,
             )
 
+        roi_required_for_structure = screen_pipeline_cropped
         structural_ok = (
-            bool(roi_health.get("passed"))
+            (bool(roi_health.get("passed")) if roi_required_for_structure else True)
             and bool(dense_health.get("passed"))
             and bool(visual_gate.get("passed"))
             and not bool(visual_gate.get("duplicate_pairs"))
@@ -564,7 +569,8 @@ async def run_pro_v2_video_analysis(
         screen_keyframe_audit = {
             "structural_gates_passed": structural_ok,
             "all_core_ai_pass_90": all_core_pass,
-            "roi_passed": bool(roi_health.get("passed")),
+            "roi_passed": bool(roi_health.get("passed")) if roi_required_for_structure else True,
+            "roi_gate_skipped": not roi_required_for_structure,
             "dense_motion_passed": bool(dense_health.get("passed")),
             "visual_gate_passed": bool(visual_gate.get("passed")),
             "formal_report_allowed": formal_allowed,
@@ -641,6 +647,7 @@ async def run_pro_v2_video_analysis(
         )
         motion_context["structural_gates_passed"] = structural_ok
         motion_context["structural_gate_reason_codes"] = gate_reason_codes[:12]
+        motion_context["screen_fallback_raw"] = _ai == "raw"
         motion_context["analysis_keyframes"] = [
             {
                 "phase": k.get("phase"),
@@ -660,29 +667,23 @@ async def run_pro_v2_video_analysis(
             }
             for k in keyframes
         ]
-        hard_stop = bool(not formal_allowed and (
+        # 不再 HARD_STOP：占位报告在客户端像「没出报告」。仍用 formal_allowed → report_mode 与 audit 表达信任度。
+        would_legacy_hard_stop = bool(not formal_allowed and (
             any(str(c).startswith("SCREEN_ROI_") or str(c).startswith("DENSE_") for c in gate_reason_codes)
             or "KEYFRAME_VISUAL_DUPLICATE" in gate_reason_codes
             or "LATE_STRIP_COLLAPSED" in gate_reason_codes
             or "KEYFRAME_INDEX_COLLAPSE" in gate_reason_codes
             or bool(visual_gate.get("duplicate_pairs"))
         ))
-        if hard_stop:
-            logger.warning("[PRO_V2][REPORT_HARD_STOP] analysis_id=%s reasons=%s", analysis_id, gate_reason_codes[:14])
-            report = {
-                "total_score": 0,
-                "scores": {"grip": 0, "stance": 0, "backswing": 0, "downswing": 0, "follow_through": 0},
-                "issues": ["Keyframe structural/visual validation failed; conclusions are limited."],
-                "issues_zh": ["关键帧未通过结构与视觉校验，结论受限。"],
-                "suggestions": ["Please re-upload a clearer clip or disable Screen Mode and retry."],
-                "suggestions_zh": ["请重新上传更清晰视频，或关闭 Screen Mode 后重试。"],
-                "summary": "Key frames did not pass verification; conclusions are limited.",
-                "summary_zh": "关键帧不符，结论受限。关键帧未通过结构与视觉校验，结论受限。",
-                "training_plan": {},
-                "ai_provider": "pro_v2_hard_stop",
-            }
-        else:
-            report = await write_pro_v2_ai_report(motion_context, region=region, report_mode=report_mode)
+        if would_legacy_hard_stop:
+            logger.warning(
+                "[PRO_V2][REPORT_ALWAYS_GEMINI] analysis_id=%s would_legacy_hard_stop=True reasons=%s",
+                analysis_id,
+                gate_reason_codes[:14],
+            )
+            motion_context["legacy_would_hard_stop"] = True
+            motion_context["legacy_hard_stop_reasons"] = gate_reason_codes[:16]
+        report = await write_pro_v2_ai_report(motion_context, region=region, report_mode=report_mode)
     else:
         ffmpeg_input_path = input_video_path
         logger.info("[PRO_V2][PIPELINE] analysis_input=raw (non-screen)")
@@ -775,8 +776,21 @@ async def run_pro_v2_video_analysis(
         "warning": "",
         "screen_keyframe_review_applied": bool(screen_mode),
     }
+    if screen_mode:
+        _last_ai = str(routing_last_pass.get("analysis_input") or "")
+        minimal["screen_fallback_raw"] = _last_ai == "raw"
+        if _last_ai == "raw":
+            hint_zh = (
+                "未检测到内嵌屏幕区域，已按全画面实拍分析。"
+                "若为手机对屏录制，请提高对比度或改用「上传/拍摄」模式。"
+            )
+            minimal["screen_fallback_hint_zh"] = hint_zh
+            if not keyframe_mismatch_notice:
+                minimal["warning"] = hint_zh
     if screen_mode and keyframe_mismatch_notice:
         wline = LIMITED_NOTICE_ZH
+        if minimal.get("screen_fallback_raw") and minimal.get("screen_fallback_hint_zh"):
+            wline = f"{minimal['screen_fallback_hint_zh']} {wline}"
         if not trust_structural_ok:
             wline += "（ROI/运动曲线/视觉去重未通过）"
         elif not trust_core_ai_all_pass:

@@ -27,7 +27,8 @@ def _clamp_box(x: int, y: int, w: int, h: int, fw: int, fh: int) -> tuple[int, i
 
 def _score_candidate(x: int, y: int, w: int, h: int, fw: int, fh: int, rectangularity: float) -> float:
     area_ratio = (w * h) / float(max(1, fw * fh))
-    if area_ratio < 0.18 or area_ratio > 0.99:
+    # 略放宽：竖屏对屏里模拟器窗口可能只占画面 12%–20%
+    if area_ratio < 0.11 or area_ratio > 0.99:
         return -1.0
     ar = w / float(max(1, h))
     if ar < 0.9 or ar > 2.6:
@@ -59,11 +60,12 @@ def _trim_inner_noise(gray: np.ndarray, box: tuple[int, int, int, int]) -> tuple
     return x, y, w, h
 
 
-def _detect_screen_box(frame: np.ndarray) -> tuple[int, int, int, int, float] | None:
+def _detect_screen_box(frame: np.ndarray, *, soft_edges: bool = False) -> tuple[int, int, int, int, float] | None:
     fh, fw = frame.shape[:2]
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
     blur = cv2.GaussianBlur(gray, (5, 5), 0)
-    edges = cv2.Canny(blur, 40, 140)
+    lo, hi = (26, 88) if soft_edges else (40, 140)
+    edges = cv2.Canny(blur, lo, hi)
     edges = cv2.dilate(edges, np.ones((3, 3), np.uint8), iterations=1)
 
     contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
@@ -140,6 +142,8 @@ def run_pro_v2_screen_preprocess(
     frame_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH) or 0) or 1920
     frame_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0) or 1080
     sample_count = 20
+    if total > 0:
+        sample_count = int(max(20, min(36, max(total // 3, 20))))
     idxs = np.linspace(0, max(0, total - 1), num=sample_count, dtype=int) if total > 0 else np.array([], dtype=int)
 
     boxes: list[tuple[int, int, int, int]] = []
@@ -154,10 +158,34 @@ def run_pro_v2_screen_preprocess(
             x, y, w, h, conf = box
             boxes.append((x, y, w, h))
             scores.append(conf)
-    cap.release()
 
     if len(boxes) < 3:
+        logger.warning(
+            "[PRO_V2][SCREEN] few candidates (%s) — retry with softer edge detection",
+            len(boxes),
+        )
+        boxes.clear()
+        scores.clear()
+        for idx in idxs.tolist():
+            cap.set(cv2.CAP_PROP_POS_FRAMES, int(idx))
+            ok, frame = cap.read()
+            if not ok or frame is None:
+                continue
+            box = _detect_screen_box(frame, soft_edges=True)
+            if box:
+                x, y, w, h, conf = box
+                boxes.append((x, y, w, h))
+                scores.append(conf)
+
+    cap.release()
+
+    if len(boxes) < 1:
         raise RuntimeError("screen preprocess failed: insufficient screen box candidates")
+    if len(boxes) < 3:
+        logger.warning(
+            "[PRO_V2][SCREEN] using median of %s box candidates (ideal>=3)",
+            len(boxes),
+        )
 
     arr = np.array(boxes, dtype=np.float32)
     x, y, w, h = np.median(arr, axis=0).astype(int).tolist()

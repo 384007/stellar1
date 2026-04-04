@@ -12,7 +12,7 @@ import {
   DEFAULT_PRO_V2_MODAL_URL,
   normalizeProV2UrlListsFromPrecheck,
 } from "@/lib/pro-v2-endpoints";
-import { runProV2AnalyzeMultipart } from "@/lib/pro-v2-analyze-client";
+import { runProV2AnalyzeMultipart, yieldUiBeforeHeavyParse } from "@/lib/pro-v2-analyze-client";
 import {
   slimAnalysisResultForHistoryTransport,
   slimAnalysisResultForServerHistory,
@@ -406,7 +406,19 @@ export default function ProPage() {
       }
 
       setProgress(96);
-      const raw = await res.json();
+      await yieldUiBeforeHeavyParse();
+      const rawText = await res.text();
+      let raw: Record<string, unknown>;
+      try {
+        raw = JSON.parse(rawText) as Record<string, unknown>;
+      } catch (parseErr) {
+        console.error("[pro] response JSON parse failed:", parseErr);
+        throw new Error(
+          lang === "zh"
+            ? "分析结果数据异常，请重试"
+            : "Invalid analysis response. Please try again.",
+        );
+      }
       let data: ProAnalysisResult;
       try {
         data = expandStellarProForUi(raw) as ProAnalysisResult;

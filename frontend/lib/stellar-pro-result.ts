@@ -182,6 +182,9 @@ export function proExpandedToPlusViewModel(r: Record<string, any>): PlusAnalysis
         ? (r.training_plan as PlusAnalysisResult["training_plan"])
         : undefined,
     screen_mode: Boolean(r.screen_mode),
+    screen_fallback_raw: Boolean(r.screen_fallback_raw),
+    screen_fallback_hint_zh:
+      typeof r.screen_fallback_hint_zh === "string" ? r.screen_fallback_hint_zh : undefined,
     analysis_trust: typeof r.analysis_trust === "string" ? r.analysis_trust : undefined,
     report_mode: typeof r.report_mode === "string" ? r.report_mode : undefined,
     review_round: typeof r.review_round === "number" ? r.review_round : undefined,
@@ -270,6 +273,8 @@ export function expandStellarProForUi(raw: Record<string, any>): Record<string, 
     contact_sheet_url: raw.contact_sheet_url ?? null,
     video_url: raw.video_url ?? null,
     screen_mode: raw.screen_mode,
+    screen_fallback_raw: raw.screen_fallback_raw,
+    screen_fallback_hint_zh: raw.screen_fallback_hint_zh,
     analysis_trust: raw.analysis_trust,
     report_mode: raw.report_mode,
     review_round: raw.review_round,
