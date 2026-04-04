@@ -1,4 +1,4 @@
-"""Pro v2 screen-mode preprocess: detect inner video region and crop before main v2 chain."""
+"""Pro v2 screen-mode preprocess: detect inner video region and build cropped + clean mp4."""
 
 from __future__ import annotations
 
@@ -194,13 +194,37 @@ def run_pro_v2_screen_preprocess(
     if proc.returncode != 0:
         raise RuntimeError(f"screen preprocess failed: ffmpeg crop failed ({proc.stderr[-300:]})")
 
-    logger.info("[PRO_V2][SCREEN] screen_mode_detected=true")
-    logger.info("[PRO_V2][SCREEN] crop_box=%s", {"x": x, "y": y, "w": w, "h": h})
-    logger.info("[PRO_V2][SCREEN] confidence=%.3f", confidence)
-    logger.info("[PRO_V2][SCREEN] cropped_video_path=%s", out_path)
+    clean_path = str(work / "screen_clean.mp4")
+    clean_vf = "crop=trunc(iw*0.985/2)*2:trunc(ih*0.985/2)*2:trunc((iw-ow)/2):trunc((ih-oh)/2)"
+    if apply_unsharp:
+        clean_vf += ",unsharp=luma_msize_x=5:luma_msize_y=5:luma_amount=0.58"
+    clean_cmd = [
+        "ffmpeg",
+        "-y",
+        "-i",
+        out_path,
+        "-vf",
+        clean_vf,
+        "-c:v",
+        "libx264",
+        "-pix_fmt",
+        "yuv420p",
+        "-an",
+        clean_path,
+    ]
+    clean_proc = subprocess.run(clean_cmd, capture_output=True, text=True)
+    if clean_proc.returncode != 0:
+        raise RuntimeError(f"screen preprocess failed: clean mp4 build failed ({clean_proc.stderr[-300:]})")
+
+    logger.info("[PRO_V2][SCREEN_CLEAN] screen_mode_detected=true")
+    logger.info("[PRO_V2][SCREEN_CLEAN] crop_box=%s", {"x": x, "y": y, "w": w, "h": h})
+    logger.info("[PRO_V2][SCREEN_CLEAN] confidence=%.3f", confidence)
+    logger.info("[PRO_V2][SCREEN_CLEAN] cropped_video_path=%s", out_path)
+    logger.info("[PRO_V2][SCREEN_CLEAN] clean_video_path=%s", clean_path)
     return {
         "screen_mode_detected": True,
         "cropped_video_path": out_path,
+        "clean_video_path": clean_path,
         "crop_box": {"x": x, "y": y, "w": w, "h": h},
         "confidence": round(confidence, 3),
         "source_frame_size": {"w": frame_w, "h": frame_h},

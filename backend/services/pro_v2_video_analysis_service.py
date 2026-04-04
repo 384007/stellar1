@@ -21,6 +21,7 @@ from services.pro_v2_keyframe_picker_service import pick_eight_keyframes_motion_
 from services.pro_v2_ai_routing_service import run_pro_v2_ai_routing
 from services.pro_v2_keyframe_review_service import CORE_PHASE_ORDER, run_core_keyframe_review_round
 from services.pro_v2_keyframe_visual_gate_service import run_keyframe_visual_diversity_gate
+from services.pro_v2_final_keyframe_render_service import render_display_keyframes_from_sources
 from services.pro_v2_report_service import LIMITED_NOTICE_ZH, pop_pro_v2_report_meta, write_pro_v2_ai_report
 from services.pro_v2_screen_trust_gates import evaluate_dense_motion_health, evaluate_screen_roi_health
 from services.pro_v2_screen_preprocess_service import run_pro_v2_screen_preprocess
@@ -148,7 +149,7 @@ def _build_motion_context(
 
 
 def _screen_motion_flag(analysis_input: str) -> bool:
-    return analysis_input == "screen_cropped"
+    return analysis_input in ("screen_cropped", "screen_clean")
 
 
 def _run_motion_pipeline_once(
@@ -267,6 +268,7 @@ async def run_pro_v2_video_analysis(
     keyframes: list[dict[str, Any]] = []
     analysis_input = "raw"
     screen_cropped_video_path: str | None = None
+    screen_clean_video_path: str | None = None
     review_round_done = 0
     core_frame_scores: dict[str, Any] = {}
     retry_reasons_final: list[str] = []
@@ -356,10 +358,11 @@ async def run_pro_v2_video_analysis(
                     apply_unsharp=apply_unsharp,
                     unsharp_profile=unsharp_profile,
                 )
-                ffmpeg_input_path = str(screen.get("cropped_video_path") or input_video_path)
+                screen_clean_video_path = str(screen.get("clean_video_path") or "")
+                ffmpeg_input_path = str(screen.get("clean_video_path") or screen.get("cropped_video_path") or input_video_path)
                 if ffmpeg_input_path != input_video_path:
-                    screen_cropped_video_path = ffmpeg_input_path
-                    analysis_input = "screen_cropped"
+                    screen_cropped_video_path = str(screen.get("cropped_video_path") or "")
+                    analysis_input = "screen_clean" if screen.get("clean_video_path") else "screen_cropped"
                     sz = screen.get("source_frame_size") or {}
                     fw = int(sz.get("w") or 0)
                     fh = int(sz.get("h") or 0)
@@ -417,6 +420,15 @@ async def run_pro_v2_video_analysis(
                 "picker_tuning": {k: pick_dict.get(k) for k in sorted(pick_dict.keys())},
                 "dense_count": len(dense),
             }
+            keyframes, display_source_kind, render_missing_reasons = render_display_keyframes_from_sources(
+                keyframes,
+                screen_clean_video_path=screen_clean_video_path,
+                screen_cropped_video_path=screen_cropped_video_path,
+                raw_video_path=input_video_path,
+            )
+            routing_last_pass["display_source_kind"] = display_source_kind
+            if render_missing_reasons:
+                retry_reasons_final = list(dict.fromkeys(list(retry_reasons_final) + render_missing_reasons))
 
             rev = await run_core_keyframe_review_round(
                 keyframes,
@@ -428,10 +440,11 @@ async def run_pro_v2_video_analysis(
             retry_reasons_final = list(rev.get("retry_reasons") or [])
             need_retry = bool(rev.get("retry_required"))
             logger.info(
-                "[PRO_V2][KF_REVIEW] review_round=%s retry_required=%s analysis_input=%s picker_variant=%s",
+                "[PRO_V2][KF_REVIEW] review_round=%s retry_required=%s analysis_input=%s display_source=%s picker_variant=%s",
                 review_round_done,
                 need_retry,
                 analysis_input,
+                display_source_kind,
                 pick_dict.get("legacy_picker_variant"),
             )
             final_screen_bundle_at_pass = iteration_screen_bundle
@@ -448,10 +461,18 @@ async def run_pro_v2_video_analysis(
         dense_health = evaluate_dense_motion_health(
             dense, t0, t1, ff.duration_s, screen_mode=True
         )
+        logger.info(
+            "[PRO_V2][DENSE_DEBUG] dense_count=%s passed=%s reasons=%s swing_window=(%.4f,%.4f)",
+            len(dense),
+            dense_health.get("passed"),
+            dense_health.get("reason_codes"),
+            t0,
+            t1,
+        )
 
         # Re-resolve ROI for the same pass as routing_last_pass (final keyframes)
         _ai = str(routing_last_pass.get("analysis_input") or "")
-        if _ai == "screen_cropped" and final_screen_bundle_at_pass:
+        if _ai in ("screen_cropped", "screen_clean") and final_screen_bundle_at_pass:
             roi_health: dict[str, Any] = dict(final_screen_bundle_at_pass.get("roi_health_eval") or {})
         else:
             roi_health = {
@@ -473,6 +494,7 @@ async def run_pro_v2_video_analysis(
             bool(roi_health.get("passed"))
             and bool(dense_health.get("passed"))
             and bool(visual_gate.get("passed"))
+            and not bool(visual_gate.get("duplicate_pairs"))
         )
         gate_reason_codes = list(
             dict.fromkeys(
@@ -549,6 +571,7 @@ async def run_pro_v2_video_analysis(
                 "crop_box": (final_screen_bundle_at_pass or {}).get("crop_box"),
                 "confidence": (final_screen_bundle_at_pass or {}).get("confidence"),
                 "source_frame_size": (final_screen_bundle_at_pass or {}).get("source_frame_size"),
+                "screen_clean_video_path": screen_clean_video_path,
                 "roi_health": roi_health,
             },
             "dense_motion_health": dense_health,
@@ -557,6 +580,8 @@ async def run_pro_v2_video_analysis(
                 {
                     "phase": k.get("phase"),
                     "frame_index": k.get("frame_index"),
+                    "display_source_kind": k.get("display_source_kind"),
+                    "display_source_frame_index": k.get("display_source_frame_index"),
                     "timestamp": k.get("timestamp"),
                 }
                 for k in keyframes
@@ -594,7 +619,29 @@ async def run_pro_v2_video_analysis(
         )
         motion_context["structural_gates_passed"] = structural_ok
         motion_context["structural_gate_reason_codes"] = gate_reason_codes[:12]
-        report = await write_pro_v2_ai_report(motion_context, region=region, report_mode=report_mode)
+        hard_stop = bool(not formal_allowed and (
+            any(str(c).startswith("SCREEN_ROI_") or str(c).startswith("DENSE_") for c in gate_reason_codes)
+            or "KEYFRAME_VISUAL_DUPLICATE" in gate_reason_codes
+            or "LATE_STRIP_COLLAPSED" in gate_reason_codes
+            or "KEYFRAME_INDEX_COLLAPSE" in gate_reason_codes
+            or bool(visual_gate.get("duplicate_pairs"))
+        ))
+        if hard_stop:
+            logger.warning("[PRO_V2][REPORT_HARD_STOP] analysis_id=%s reasons=%s", analysis_id, gate_reason_codes[:14])
+            report = {
+                "total_score": 0,
+                "scores": {"grip": 0, "stance": 0, "backswing": 0, "downswing": 0, "follow_through": 0},
+                "issues": ["Keyframe structural/visual validation failed; conclusions are limited."],
+                "issues_zh": ["关键帧未通过结构与视觉校验，结论受限。"],
+                "suggestions": ["Please re-upload a clearer clip or disable Screen Mode and retry."],
+                "suggestions_zh": ["请重新上传更清晰视频，或关闭 Screen Mode 后重试。"],
+                "summary": "Key frames did not pass verification; conclusions are limited.",
+                "summary_zh": "关键帧不符，结论受限。关键帧未通过结构与视觉校验，结论受限。",
+                "training_plan": {},
+                "ai_provider": "pro_v2_hard_stop",
+            }
+        else:
+            report = await write_pro_v2_ai_report(motion_context, region=region, report_mode=report_mode)
     else:
         ffmpeg_input_path = input_video_path
         logger.info("[PRO_V2][PIPELINE] analysis_input=raw (non-screen)")
@@ -700,6 +747,8 @@ async def run_pro_v2_video_analysis(
         minimal["routing_execution"] = routing_full_out
     if screen_cropped_video_path:
         minimal["screen_cropped_video_url"] = screen_cropped_video_path
+    if screen_clean_video_path:
+        minimal["screen_clean_video_url"] = screen_clean_video_path
     if screen_mode and pro_v2_debug_payload is not None:
         minimal["pro_v2_debug"] = {**pro_v2_debug_payload, "contact_sheet_path": sheet_path}
     if screen_mode and screen_keyframe_audit is not None:

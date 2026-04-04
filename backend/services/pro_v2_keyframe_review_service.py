@@ -34,14 +34,21 @@ _MIN_B64_LEN = 48
 
 def _empty_scores() -> dict[str, dict[str, Any]]:
     return {
-        k: {"score": 0, "pass_90": False, "confidence": 0.0}
+        k: {
+            "score": 0,
+            "pass_90": False,
+            "confidence": 0.0,
+            "reason_codes": [],
+            "comment_zh": "",
+            "comment_en": "",
+        }
         for k in CORE_PHASE_ORDER
     }
 
 
 def _parse_score_entry(raw: Any, *, confidence_ceiling: float | None = None) -> dict[str, Any]:
     if not isinstance(raw, dict):
-        return {"score": 0, "pass_90": False, "confidence": 0.0}
+        return {"score": 0, "pass_90": False, "confidence": 0.0, "reason_codes": [], "comment_zh": "", "comment_en": ""}
     try:
         sc = int(round(float(raw.get("score", 0))))
     except (TypeError, ValueError):
@@ -55,7 +62,16 @@ def _parse_score_entry(raw: Any, *, confidence_ceiling: float | None = None) -> 
     conf = max(0.0, min(1.0, conf))
     if confidence_ceiling is not None:
         conf = min(conf, float(confidence_ceiling))
-    return {"score": sc, "pass_90": pass90, "confidence": round(conf, 4)}
+    reason_codes = raw.get("reason_codes")
+    reasons = [str(x).strip().upper() for x in reason_codes] if isinstance(reason_codes, list) else []
+    return {
+        "score": sc,
+        "pass_90": pass90,
+        "confidence": round(conf, 4),
+        "reason_codes": reasons[:8],
+        "comment_zh": str(raw.get("comment_zh") or "").strip()[:200],
+        "comment_en": str(raw.get("comment_en") or "").strip()[:200],
+    }
 
 
 def merge_ai_core_scores(
@@ -143,8 +159,16 @@ async def run_core_keyframe_review_round(
         row = by_phase.get(picker_phase)
         b64 = str((row or {}).get("image_base64") or "").strip()
         if not _usable_b64(b64):
-            base[core_key] = {"score": 0, "pass_90": False, "confidence": 0.0}
-            missing_reasons.append(CORE_TO_MISSING_REASON.get(core_key, f"{core_key.upper()}_IMAGE_MISSING"))
+            mr = CORE_TO_MISSING_REASON.get(core_key, f"{core_key.upper()}_IMAGE_MISSING")
+            base[core_key] = {
+                "score": 0,
+                "pass_90": False,
+                "confidence": 0.0,
+                "reason_codes": [mr],
+                "comment_zh": "关键帧缺失或解码失败",
+                "comment_en": "Keyframe missing or decode failed",
+            }
+            missing_reasons.append(mr)
         else:
             valid_pairs.append((core_key, b64))
 

@@ -97,11 +97,19 @@ export interface PlusAnalysisResult {
   review_round?: number;
   core_frame_scores?: Record<
     string,
-    { score?: number | null; pass_90?: boolean | null; confidence?: number | null }
+    {
+      score?: number | null;
+      pass_90?: boolean | null;
+      confidence?: number | null;
+      reason_codes?: string[];
+      comment_zh?: string;
+      comment_en?: string;
+    }
   >;
   keyframe_mismatch_notice?: boolean;
   warning?: string;
   screen_cropped_video_url?: string | null;
+  screen_clean_video_url?: string | null;
   playback_video_url?: string | null;
   /** Screen pipeline: how routing_strategy mapped to last backend pass (debug / transparency). */
   routing_execution?: Record<string, unknown> | null;
@@ -1615,6 +1623,14 @@ export default function PlusResultView({ result, lang, externalVideoSrc, backend
               ) : null}
             </div>
           ) : null}
+          {result.screen_clean_video_url ? (
+            <div className="space-y-1">
+              <p className="text-[10px] uppercase tracking-wider text-white/40">
+                {lang === "zh" ? "标准化 screen_clean.mp4 预览" : "Standardized screen_clean.mp4 preview"}
+              </p>
+              <video className="w-full max-h-48 rounded-lg border border-white/10 bg-black" controls playsInline preload="metadata" src={result.screen_clean_video_url} />
+            </div>
+          ) : null}
           {result.screen_cropped_video_url ? (
             <div className="space-y-1">
               <p className="text-[10px] uppercase tracking-wider text-white/40">
@@ -1665,6 +1681,20 @@ export default function PlusResultView({ result, lang, externalVideoSrc, backend
                           <span className="ml-1 text-amber-300/90 text-[10px]">&lt;90</span>
                         ) : null}
                       </span>
+                    </li>
+                  );
+                })}
+              </ul>
+              <ul className="grid gap-1 text-[10px] text-white/55">
+                {(["takeaway", "backswing_mid", "top", "early_downswing", "impact", "release"] as const).map((key) => {
+                  const row = result.core_frame_scores?.[key];
+                  const cmt = lang === "zh" ? row?.comment_zh : row?.comment_en;
+                  const rs = row?.reason_codes?.slice(0, 3).join(", ");
+                  return (
+                    <li key={`cmt-${key}`} className="rounded border border-white/10 bg-white/[0.02] px-2 py-1">
+                      <span className="text-white/40">{(lang === "zh" ? PRO_V2_CORE_SCORE_LABELS[key].zh : PRO_V2_CORE_SCORE_LABELS[key].en)}: </span>
+                      <span>{cmt || "—"}</span>
+                      {rs ? <span className="ml-1 font-mono text-amber-200/80">[{rs}]</span> : null}
                     </li>
                   );
                 })}
