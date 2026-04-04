@@ -9,6 +9,7 @@
  */
 
 import { NextRequest, NextResponse } from "next/server";
+import { getRequestContext } from "@cloudflare/next-on-pages";
 import {
   isLabEnabled,
   getCfEnvVal,
@@ -24,6 +25,7 @@ import {
   updateLabJobResult,
   getLabJob,
   updateLabJobSummary,
+  updateLabJobVideoR2Key,
 } from "@/lib/lab-db";
 import {
   authenticateRequest,
@@ -44,6 +46,26 @@ import {
 export const runtime = "edge";
 
 let _schemaEnsured = false;
+
+function getR2Bucket() {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    return (getRequestContext().env as any).R2_BUCKET || null;
+  } catch {
+    return null;
+  }
+}
+
+function labSourceFileExtension(file: File): string {
+  const ext = (file.name?.split(".").pop() || "").toLowerCase();
+  if (["mp4", "webm", "mov", "m4v", "avi", "jpg", "jpeg", "png", "webp"].includes(ext)) return ext === "jpeg" ? "jpg" : ext;
+  const t = (file.type || "").toLowerCase();
+  if (t.includes("webm")) return "webm";
+  if (t.includes("quicktime") || t.includes("mov")) return "mov";
+  if (t.includes("png")) return "png";
+  if (t.startsWith("image/")) return "jpg";
+  return "mp4";
+}
 
 const QWEN_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions";
 const QWEN_MODEL = "qwen-vl-max-latest";
@@ -581,6 +603,30 @@ export async function POST(request: NextRequest) {
         if (snippet) await updateLabJobSummary(db, jobId, snippet);
       } catch (storeErr) {
         console.error("[lab] D1 store result error (non-fatal):", storeErr instanceof Error ? storeErr.message : storeErr);
+      }
+    }
+
+    // Best-effort: keep source media in R2 so unified history can "re-analyze" Shot Lab later.
+    if (db && dbReady && file && file.size > 0) {
+      try {
+        const r2 = getR2Bucket();
+        if (r2) {
+          const buf = await file.arrayBuffer();
+          const ext = labSourceFileExtension(file);
+          const key = `lab-videos/${user_id}/${jobId}.${ext}`;
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          await (r2 as any).put(key, buf, {
+            httpMetadata: {
+              contentType: file.type || "application/octet-stream",
+            },
+          });
+          await updateLabJobVideoR2Key(db, jobId, key);
+        }
+      } catch (persistErr) {
+        console.warn(
+          "[lab] R2 source persist (non-fatal):",
+          persistErr instanceof Error ? persistErr.message : persistErr,
+        );
       }
     }
 

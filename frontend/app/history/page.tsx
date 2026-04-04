@@ -636,7 +636,11 @@ export default function HistoryPage() {
   }
 
   function goReanalyzeFromRecord(rec: AnalysisRecord) {
-    if (rec.type === "lab") return;
+    if (rec.type === "lab") {
+      queueReanalyzeFromHistory({ analysisId: rec.id, page: "shot-lab" });
+      router.push("/shot-lab");
+      return;
+    }
     const page: ReanalyzeFromHistoryPayload["page"] =
       rec.type === "plus" ? "plus" : rec.type === "pro" ? "pro" : "analyze";
     const analysisMode: "lite" | "pro" | undefined = page === "analyze" ? "lite" : undefined;
@@ -1399,6 +1403,13 @@ export default function HistoryPage() {
                           >
                             {lang === "zh" ? "复盘" : "Review"}
                           </a>
+                          <button
+                            type="button"
+                            onClick={() => goReanalyzeFromRecord(rec)}
+                            className="rounded-lg border border-violet-500/35 bg-violet-500/10 px-3 py-2 text-xs font-medium text-violet-200/90 transition hover:bg-violet-500/15 touch-manipulation"
+                          >
+                            {lang === "zh" ? "重新分析" : "Re-analyze"}
+                          </button>
                         </div>
                       </div>
                     </div>

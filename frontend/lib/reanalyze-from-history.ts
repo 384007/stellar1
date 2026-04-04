@@ -4,7 +4,7 @@ export const REANALYZE_FROM_HISTORY_KEY = "stellar_reanalyze_from_history_v1";
 
 export type ReanalyzeFromHistoryPayload = {
   analysisId: string;
-  page: "analyze" | "pro" | "plus";
+  page: "analyze" | "pro" | "plus" | "shot-lab";
   /** 仅 `/analyze`：与历史记录类型对应的模式（Pro 记录走 `/pro`，此处一般为 lite） */
   analysisMode?: "lite" | "pro";
   videoUrl?: string;
@@ -23,7 +23,9 @@ export function consumeReanalyzeFromHistoryPayload(): ReanalyzeFromHistoryPayloa
     sessionStorage.removeItem(REANALYZE_FROM_HISTORY_KEY);
     const p = JSON.parse(raw) as ReanalyzeFromHistoryPayload;
     if (!p?.analysisId || !p?.page) return null;
-    if (p.page !== "analyze" && p.page !== "pro" && p.page !== "plus") return null;
+    if (p.page !== "analyze" && p.page !== "pro" && p.page !== "plus" && p.page !== "shot-lab") {
+      return null;
+    }
     return p;
   } catch {
     return null;
@@ -34,11 +36,34 @@ function extFromMime(mime: string): string {
   const m = (mime || "").toLowerCase();
   if (m.includes("webm")) return "webm";
   if (m.includes("quicktime")) return "mov";
+  if (m.includes("png")) return "png";
+  if (m.startsWith("image/")) return "jpg";
   return "mp4";
 }
 
 export function reanalyzeHistoryFilename(blob: Blob): string {
   return `history-reanalyze.${extFromMime(blob.type)}`;
+}
+
+/**
+ * Shot Lab：从 R2 拉取该 job 备份的源媒体（需登录；与 analyses 的 IndexedDB 无关）。
+ */
+export async function fetchLabVideoBlobForReanalyze(jobId: string): Promise<Blob | null> {
+  const token =
+    typeof localStorage !== "undefined" ? localStorage.getItem("stellar_token") : null;
+  if (!token) return null;
+  try {
+    const r = await fetch(`/api/lab/video/${encodeURIComponent(jobId)}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (r.ok) {
+      const blob = await r.blob();
+      if (blob.size > 0) return blob;
+    }
+  } catch {
+    /* ignore */
+  }
+  return null;
 }
 
 /**

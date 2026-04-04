@@ -19,6 +19,11 @@ import type {
   FieldsVisibility,
   LabTrendPoint,
 } from "@/lib/lab-types";
+import {
+  consumeReanalyzeFromHistoryPayload,
+  fetchLabVideoBlobForReanalyze,
+  reanalyzeHistoryFilename,
+} from "@/lib/reanalyze-from-history";
 
 type Stage = "upload" | "processing" | "results";
 type Lang = "en" | "zh";
@@ -277,12 +282,7 @@ export default function ShotLabPage() {
     preloadPoseModel();
   }, [router]);
 
-  useEffect(() => {
-    if (authChecked) loadHistory();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [authChecked]);
-
-  async function loadHistory() {
+  const loadHistory = useCallback(async () => {
     const token = localStorage.getItem("stellar_token");
     if (!token) return;
     setHistoryLoading(true);
@@ -295,7 +295,11 @@ export default function ShotLabPage() {
       }
     } catch { /* ignore */ }
     setHistoryLoading(false);
-  }
+  }, []);
+
+  useEffect(() => {
+    if (authChecked) void loadHistory();
+  }, [authChecked, loadHistory]);
 
   const openHistoryRecord = useCallback(
     async (item: LabHistoryItem) => {
@@ -414,7 +418,7 @@ export default function ShotLabPage() {
     }
   }, []);
 
-  const handleUpload = useCallback(async (file: File) => {
+  const submitLabAnalysisFile = useCallback(async (file: File) => {
     setStage("processing");
     setError("");
     setProgress(0);
@@ -500,7 +504,7 @@ export default function ShotLabPage() {
       setQuotaInfo(data.quota);
       setStage("results");
       setResultTab("metrics");
-      loadHistory();
+      void loadHistory();
     } catch (err) {
       clearInterval(progressInterval);
       setProgress(0);
@@ -511,7 +515,32 @@ export default function ShotLabPage() {
       }
       setStage("upload");
     }
-  }, [fetchUnifiedPrediction, lang]);
+  }, [fetchUnifiedPrediction, lang, loadHistory]);
+
+  const handleUpload = useCallback((file: File) => {
+    void submitLabAnalysisFile(file);
+  }, [submitLabAnalysisFile]);
+
+  useEffect(() => {
+    if (!authChecked) return;
+    const p = consumeReanalyzeFromHistoryPayload();
+    if (!p || p.page !== "shot-lab") return;
+    void (async () => {
+      const blob = await fetchLabVideoBlobForReanalyze(p.analysisId);
+      if (!blob || blob.size === 0) {
+        setError(
+          lang === "zh"
+            ? "无法加载该 Shot Lab 的备份媒体（旧记录可能未存档）。请重新上传后再分析。"
+            : "Could not load backed-up media for this Shot Lab job. Upload again, or use a newer completed session.",
+        );
+        return;
+      }
+      const fname = reanalyzeHistoryFilename(blob);
+      const file = new File([blob], fname, { type: blob.type || "application/octet-stream" });
+      await submitLabAnalysisFile(file);
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [authChecked, lang, submitLabAnalysisFile]);
 
   async function loadTrend() {
     const token = localStorage.getItem("stellar_token");

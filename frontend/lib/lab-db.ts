@@ -67,6 +67,12 @@ export async function ensureLabSchema(db: DB): Promise<void> {
       console.warn("[lab-db] ensureLabSchema:", e instanceof Error ? e.message : e);
     }
   }
+
+  try {
+    await db.prepare("ALTER TABLE lab_jobs ADD COLUMN video_r2_key TEXT DEFAULT ''").run();
+  } catch {
+    /* column already exists */
+  }
 }
 
 // ── Usage / quota ──
@@ -152,6 +158,15 @@ export async function updateLabJobResult(
   await db
     .prepare("UPDATE lab_jobs SET status = ?, result_json = ?, updated_at = ? WHERE id = ?")
     .bind(status, resultJson, now, jobId)
+    .run();
+}
+
+/** R2 key for re-analyze from history (best-effort after successful Lab run). */
+export async function updateLabJobVideoR2Key(db: DB, jobId: string, videoR2Key: string): Promise<void> {
+  const now = new Date().toISOString();
+  await db
+    .prepare("UPDATE lab_jobs SET video_r2_key = ?, updated_at = ? WHERE id = ?")
+    .bind(videoR2Key, now, jobId)
     .run();
 }
 
