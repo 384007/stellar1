@@ -98,6 +98,8 @@ export interface PlusAnalysisResult {
   _plus_usage?: { used: number; remaining: number; limit: number | null; is_pro: boolean };
   /** Pro v2 screen-mode pipeline (Modal `/pro-v2/analyze`) */
   screen_mode?: boolean;
+  screen_fallback_raw?: boolean;
+  screen_fallback_hint_zh?: string;
   analysis_trust?: "high_trust" | "low_trust" | string;
   report_mode?: "formal" | "limited" | string;
   review_round?: number;
@@ -114,9 +116,6 @@ export interface PlusAnalysisResult {
   >;
   keyframe_mismatch_notice?: boolean;
   warning?: string;
-  /** Pro v2：屏幕模式但未检出内嵌屏，后端按全画面 raw 分析 */
-  screen_fallback_raw?: boolean;
-  screen_fallback_hint_zh?: string;
   screen_cropped_video_url?: string | null;
   screen_clean_video_url?: string | null;
   playback_video_url?: string | null;
@@ -127,7 +126,6 @@ export interface PlusAnalysisResult {
     structural_gates_passed?: boolean;
     all_core_ai_pass_90?: boolean;
     roi_passed?: boolean;
-    roi_gate_skipped?: boolean;
     dense_motion_passed?: boolean;
     visual_gate_passed?: boolean;
     formal_report_allowed?: boolean;
@@ -1555,23 +1553,9 @@ export default function PlusResultView({ result, lang, externalVideoSrc, backend
                   : "Report: formal"}
             </span>
           </div>
-          {(() => {
-            const banner = String(result.warning || result.screen_fallback_hint_zh || "").trim();
-            if (!banner) return null;
-            if (result.keyframe_mismatch_notice) {
-              return (
-                <p className="text-sm font-semibold text-amber-200/95 leading-snug">{banner}</p>
-              );
-            }
-            if (result.screen_fallback_raw) {
-              return (
-                <p className="text-xs text-sky-100/90 leading-snug rounded-lg border border-sky-400/25 bg-sky-500/[0.08] px-3 py-2">
-                  {banner}
-                </p>
-              );
-            }
-            return null;
-          })()}
+          {result.keyframe_mismatch_notice && (result.warning || "").trim() ? (
+            <p className="text-sm font-semibold text-amber-200/95 leading-snug">{result.warning}</p>
+          ) : null}
           {result.screen_keyframe_audit ? (
             <div
               className={`rounded-lg border p-3 space-y-2 ${
@@ -1611,17 +1595,13 @@ export default function PlusResultView({ result, lang, externalVideoSrc, backend
                 </li>
                 <li>
                   ROI:{" "}
-                  {result.screen_keyframe_audit.roi_gate_skipped
+                  {result.screen_keyframe_audit.roi_passed
                     ? lang === "zh"
-                      ? "跳过（实拍/未检出内嵌屏）"
-                      : "Skipped (full-frame)"
-                    : result.screen_keyframe_audit.roi_passed
-                      ? lang === "zh"
-                        ? "通过"
-                        : "OK"
-                      : lang === "zh"
-                        ? "未通过"
-                        : "Fail"}
+                      ? "通过"
+                      : "OK"
+                    : lang === "zh"
+                      ? "未通过"
+                      : "Fail"}
                 </li>
                 <li>
                   {lang === "zh" ? "运动曲线" : "Dense motion"}:{" "}

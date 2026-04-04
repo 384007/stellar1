@@ -372,12 +372,17 @@ async function saveJsonToR2(
   json: string
 ): Promise<boolean> {
   if (!r2) return false;
-  try {
-    await r2.put(key, json, { httpMetadata: { contentType: "application/json" } });
-    return true;
-  } catch {
-    return false;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      await r2.put(key, json, { httpMetadata: { contentType: "application/json" } });
+      return true;
+    } catch {
+      if (attempt < 2) {
+        await new Promise((r) => setTimeout(r, 250 * (attempt + 1)));
+      }
+    }
   }
+  return false;
 }
 
 export async function GET(request: NextRequest) {
