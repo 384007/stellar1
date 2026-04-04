@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import secrets
 import shutil
 import tempfile
 from pathlib import Path
@@ -42,6 +43,19 @@ def _modal_pro_single_flight_enabled() -> bool:
         return True
     v3 = (os.getenv("STELLAR_MODAL_PRO_V3_ONLY") or "").strip().lower()
     return v3 in ("1", "true", "yes")
+
+
+def _single_flight_disabled_by_env() -> bool:
+    """Set ``STELLAR_PROV3_ANALYZE_SINGLE_FLIGHT=0`` to allow concurrent ``POST /pro-v3/analyze`` (OOM risk on Modal)."""
+    v = (os.getenv("STELLAR_PROV3_ANALYZE_SINGLE_FLIGHT") or "").strip().lower()
+    return v in ("0", "false", "no", "off")
+
+
+def prov3_analyze_single_flight_active() -> bool:
+    """Used by ``/health`` and ``_run_pro_analyze`` — when True, a second analyze gets HTTP 409 while one holds the lock."""
+    if _single_flight_disabled_by_env():
+        return False
+    return _modal_pro_single_flight_enabled()
 
 
 router_pro_v3 = APIRouter(prefix="/pro-v3", tags=["pro-v3"])
@@ -165,17 +179,33 @@ async def _run_pro_analyze(
         raise HTTPException(status_code=403, detail="Pro membership required")
 
     _pro_analyze_ingress_echo(ingress_tag, request)
-    logger.info("[PRO_PROV3][API] path=%s screen_mode=%s", request.url.path, "true" if screen_mode else "false")
+    rid = (request.headers.get("x-request-id") or "").strip() or secrets.token_hex(4)
+    client = getattr(request.client, "host", None) or ""
+    logger.info(
+        "[PRO_PROV3][API] rid=%s path=%s screen_mode=%s client=%s",
+        rid,
+        request.url.path,
+        "true" if screen_mode else "false",
+        client,
+    )
 
-    if _modal_pro_single_flight_enabled():
+    if prov3_analyze_single_flight_active():
         try:
             await asyncio.wait_for(_MODAL_PRO_ANALYZE_LOCK.acquire(), timeout=0)
         except asyncio.TimeoutError:
-            logger.warning("[PRO_PROV3][API] reject concurrent analyze (Modal single-flight)")
+            logger.warning(
+                "[PRO_PROV3][LOCK] rid=%s reject 409 — another analyze holds the lock (or stuck job). "
+                "If you did not start two analyses, the previous request may still be running after a client timeout.",
+                rid,
+            )
             raise HTTPException(
                 status_code=409,
-                detail="当前已有视频在分析中，请稍后再试。",
+                detail=(
+                    "当前已有视频在分析中，请稍后再试。"
+                    "若您只提交了一次，可能是上一次分析仍在后台处理（例如前端已超时但服务端未结束），请等待几分钟后再试。"
+                ),
             ) from None
+        logger.info("[PRO_PROV3][LOCK] rid=%s acquired", rid)
         try:
             return await _run_pro_analyze_body(
                 request,
@@ -186,6 +216,7 @@ async def _run_pro_analyze(
             )
         finally:
             _MODAL_PRO_ANALYZE_LOCK.release()
+            logger.info("[PRO_PROV3][LOCK] rid=%s released", rid)
 
     return await _run_pro_analyze_body(
         request,
