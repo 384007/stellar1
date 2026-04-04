@@ -8,8 +8,6 @@ interface AnalysisWaitingProps {
   mode: "lite" | "pro" | "lab";
   /** Pro v3：对屏 / 重录路径（上传时 `screen_mode=true`）。 */
   prov3ScreenMode?: boolean;
-  /** @deprecated 使用 prov3ScreenMode */
-  proV2ScreenMode?: boolean;
 }
 
 type TechPoint = {
@@ -250,9 +248,8 @@ export default function AnalysisWaiting({
   lang,
   mode,
   prov3ScreenMode,
-  proV2ScreenMode,
 }: AnalysisWaitingProps) {
-  const screenModeBanner = prov3ScreenMode ?? proV2ScreenMode;
+  const screenModeBanner = prov3ScreenMode;
   const [currentTip, setCurrentTip] = useState(0);
   const [currentPersona, setCurrentPersona] = useState(0);
   const [fadeState, setFadeState] = useState<"in" | "out">("in");

@@ -2,7 +2,7 @@
 
 Keyframes and thumbnails are Pro v3 only. Long-form summary / suggestions / training_plan are filled
 asynchronously in ``enrich_pro_prov3_response`` (see ``pro_prov3_gemini_enrich``) using the same
-motion_context contract as Pro v2 text-only reports.
+motion_context contract for text-only Gemini reports.
 """
 
 from __future__ import annotations
@@ -172,7 +172,7 @@ def run_pro_video_analyze_via_prov3(
     screen_mode: bool = False,
     rough_impact_time_s: float | None = None,
 ) -> dict[str, Any]:
-    """Synchronous end-to-end Pro response for ``POST /pro-v3/analyze`` (HTTP path is router-specific; Modal uses /pro-v3 only)."""
+    """Synchronous end-to-end Pro response for ``POST /pro-v3/analyze`` (see ``routers.prov3_api``)."""
     _ = rough_impact_time_s
     work = Path(work_dir)
     work.mkdir(parents=True, exist_ok=True)

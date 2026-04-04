@@ -1,4 +1,4 @@
-"""Pro v2 — swing window from combined motion score (sustained run, not single spike)."""
+"""Pro v3 — swing window from combined motion score (sustained run, not single spike)."""
 
 from __future__ import annotations
 
@@ -80,7 +80,7 @@ def find_swing_window_seconds(
         t1 = max(0.01, duration_s * 0.98)
         t0 = max(0.0, duration_s * 0.05)
         logger.info(
-            "[PRO_V2][SWING_WINDOW] fallback_short_samples swing_t0=%.4f swing_t1=%.4f score_peak=n/a chosen_run=n/a",
+            "[PROV3][SWING_WINDOW] fallback_short_samples swing_t0=%.4f swing_t1=%.4f score_peak=n/a chosen_run=n/a",
             t0,
             t1,
         )
@@ -143,7 +143,7 @@ def find_swing_window_seconds(
         t1 = max(0.01, duration_s * 0.98)
         t0 = max(0.0, duration_s * 0.05)
         logger.info(
-            "[PRO_V2][SWING_WINDOW] fallback_no_run swing_t0=%.4f swing_t1=%.4f score_peak=n/a chosen_run=n/a",
+            "[PROV3][SWING_WINDOW] fallback_no_run swing_t0=%.4f swing_t1=%.4f score_peak=n/a chosen_run=n/a",
             t0,
             t1,
         )
@@ -175,7 +175,7 @@ def find_swing_window_seconds(
         t1 = min(duration_s, t0 + min_swing_s)
 
     logger.info(
-        "[PRO_V2][SWING_WINDOW] score_peak=%.5f chosen_run=(%s,%s) swing_t0=%.4f swing_t1=%.4f dur=%.4f",
+        "[PROV3][SWING_WINDOW] score_peak=%.5f chosen_run=(%s,%s) swing_t0=%.4f swing_t1=%.4f dur=%.4f",
         score_peak,
         fi0,
         fi1,

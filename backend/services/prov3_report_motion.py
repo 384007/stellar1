@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from services.pro_v2_dense_scan_service import DenseFrame, dense_scan_swing_region
-from services.pro_v2_swing_window_service import find_swing_window_seconds
+from services.prov3_dense_scan_service import DenseFrame, dense_scan_swing_region
+from services.prov3_swing_window_service import find_swing_window_seconds
 
 __all__ = ["DenseFrame", "dense_scan_swing_region", "find_swing_window_seconds"]

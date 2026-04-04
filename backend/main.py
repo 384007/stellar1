@@ -368,10 +368,9 @@ def _env_truthy(*keys: str) -> bool:
     return False
 
 
-# Modal GPU image: skip legacy ``/stellar-pro`` router (smaller surface). Prefer STELLAR_MODAL_PRO_V3_ONLY;
-# STELLAR_MODAL_PRO_V2_ONLY is still read here as a legacy alias for the same slim-Modal flag (older secrets).
-_MODAL_PRO_SLIM = _env_truthy("STELLAR_MODAL_PRO_V3_ONLY", "STELLAR_MODAL_PRO_V2_ONLY")
-_EXPECTED_ROUTER_LOADS = 7 if _MODAL_PRO_SLIM else 8
+# Modal GPU image: skip legacy ``/stellar-pro`` router (smaller surface).
+_MODAL_PRO_SLIM = _env_truthy("STELLAR_MODAL_PRO_V3_ONLY")
+_EXPECTED_ROUTER_LOADS = 6 if _MODAL_PRO_SLIM else 7
 
 
 def _safe_load(module_path: str, prefix: str, tags: list[str]):
@@ -393,8 +392,7 @@ with _suppress_native_stderr():
 _safe_load("routers.news", "", ["News"])
 if not _MODAL_PRO_SLIM:
     _safe_load("routers.stellar_pro_api", "", ["stellar-pro"])
-_safe_load("routers.pro_v2_api", "", [])
-_safe_load("routers.prov3_keyframes", "", ["prov3-keyframes"])
+_safe_load("routers.prov3_api", "", [])
 
 
 @app.get("/health")
@@ -434,15 +432,20 @@ async def health_check():
         "load_errors": _load_errors or None,
         "prov3": {
             "engine": "prov3",
+            "api_prefix": "/pro-v3",
             "route_naming": {
-                "primary": "POST /pro-v3/analyze",
+                "analyze": "POST /pro-v3/analyze",
                 "media": "GET /pro-v3/media/{analysis_id}/{filename}",
-                "env_STELLAR_MODAL_PRO_V3_ONLY": "If set, Modal skips /stellar-pro; Pro is /pro-v3 only (see routers.pro_v2_api).",
+                "keyframes_preprocess": "POST /pro-v3/keyframes/preprocess",
+                "keyframes_extract": "POST /pro-v3/keyframes/extract",
+                "keyframes_refine": "POST /pro-v3/keyframes/refine",
+                "keyframes_analyze": "POST /pro-v3/keyframes/analyze",
+                "env_STELLAR_MODAL_PRO_V3_ONLY": "If set, Modal skips /stellar-pro; Pro is /pro-v3 only (routers.prov3_api).",
             },
             "pro_http_route": "POST /pro-v3/analyze",
-            "pro_http_note": "Modal workers: Pro HTTP and media URLs use the /pro-v3 prefix only.",
-            "pro_http": "POST /pro-v3/analyze -> Pro v3 keyframe pipeline (+ optional Gemini report)",
-            "api": "POST /api/prov3/keyframes/analyze",
+            "pro_http_note": "All Pro v3 HTTP routes live under /pro-v3 (product + keyframes).",
+            "pro_http": "POST /pro-v3/analyze -> keyframes + optional Gemini + media URLs",
+            "keyframes_note": "POST /pro-v3/keyframes/analyze is raw pipeline JSON only (no Gemini).",
             "video": {
                 "target_analysis_fps": 240,
                 "pipeline": "cleanup -> analysis_240fps_timeline (minterpolate when available) -> frame_enhance",

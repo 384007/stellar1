@@ -1,6 +1,6 @@
 """Pro v3 关键帧之后的 Gemini 文案报告（motion_context + 多 pass + 本地兜底）。
 
-实现上与历史 ``pro_v2_report_service`` 共用同一套 prompt/解析；此处仅使用 ``prov3`` 对外命名与日志标签。
+Motion 报告与 ``prov3_text_report_service`` / Gemini prompt 对齐；对外统一 ``prov3`` 命名与日志标签。
 若浏览器先于服务端结束而断开，Modal 上仍可能打满日志但前端看不到报告——请对齐客户端超时与 Modal task 超时。
 """
 
@@ -13,7 +13,7 @@ from typing import Any
 
 import cv2
 
-from services.pro_v2_report_service import pop_prov3_report_meta, write_prov3_ai_report
+from services.prov3_text_report_service import pop_prov3_report_meta, write_prov3_ai_report
 from services.prov3_report_motion import DenseFrame, dense_scan_swing_region, find_swing_window_seconds
 
 logger = logging.getLogger(__name__)

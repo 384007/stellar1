@@ -1,4 +1,4 @@
-"""Pro v2 — dense motion features inside swing window (OpenCV only)."""
+"""Pro v3 — dense motion features inside swing window (OpenCV only)."""
 
 from __future__ import annotations
 
@@ -147,7 +147,7 @@ def dense_scan_swing_region(
     peak_count = int(np.sum(is_peak))
     valley_count = int(np.sum(is_valley))
     logger.info(
-        "[PRO_V2][DENSE] dense_count=%s motion_peak_count=%s motion_valley_count=%s stride=%s span=%s "
+        "[PROV3][DENSE] dense_count=%s motion_peak_count=%s motion_valley_count=%s stride=%s span=%s "
         "screen_mode=%s pose_priority=%s club_emphasis=%.3f",
         len(out),
         peak_count,

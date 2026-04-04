@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 def build_keyframe_metrics_payload(keyframes: list[dict[str, Any]]) -> dict[str, Any]:
     """Numeric phase timeline for the report prompt (no base64)."""
     return {
-        "motion_engine": "stellar_pro_v2",
+        "motion_engine": "stellar_pro_v3",
         "phases": [
             {
                 "phase": k.get("phase"),

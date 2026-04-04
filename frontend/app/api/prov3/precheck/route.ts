@@ -1,16 +1,16 @@
 /**
- * /api/pro/precheck  — lightweight Edge route (<1 s)
+ * POST /api/prov3/precheck — lightweight Edge route (<1 s)
  *
  * 1. Validates the Pro JWT (signed token only — rejects local-* tokens)
  * 2. Optionally verifies is_pro against D1 for ground truth
  * 3. Returns { allowed, is_pro, modal_url, backend_url, modal_urls, backend_urls, token }
- *    (multi-endpoint lists for Pro v2 client failover; modal_url/backend_url stay first entries)
+ *    (multi-endpoint lists for Pro v3 client failover; modal_url/backend_url stay first entries)
  */
 
 import { NextRequest, NextResponse } from "next/server";
 import { jwtVerify } from "jose";
 import { getRequestContext } from "@cloudflare/next-on-pages";
-import { buildProV2BackendUrlList, buildProV2ModalUrlList } from "@/lib/pro-v2-endpoints";
+import { buildProv3BackendUrlList, buildProv3ModalUrlList } from "@/lib/prov3-endpoints";
 
 export const runtime = "edge";
 
@@ -55,7 +55,7 @@ export async function POST(request: NextRequest) {
   if (token.startsWith("local-")) {
     return NextResponse.json(
       { detail: "登录凭证已失效，请重新登录", allowed: false },
-      { status: 401 }
+      { status: 401 },
     );
   }
 
@@ -75,7 +75,7 @@ export async function POST(request: NextRequest) {
 
   try {
     const { payload } = await jwtVerify(token, new TextEncoder().encode(jwtSecret));
-    isPro = !!(payload.is_pro);
+    isPro = !!payload.is_pro;
     userId = (payload.user_id as string) || "";
   } catch {
     return NextResponse.json({ detail: "登录已过期，请重新登录", allowed: false }, { status: 401 });
@@ -102,13 +102,13 @@ export async function POST(request: NextRequest) {
   if (!isPro) {
     return NextResponse.json(
       { detail: "您不是 Pro 用户，请先升级", allowed: false, is_pro: false },
-      { status: 403 }
+      { status: 403 },
     );
   }
 
   const mainlandCn = cfClientCountry(request) === "CN";
-  const modalUrls = buildProV2ModalUrlList(getCfEnv, mainlandCn);
-  const backendUrls = buildProV2BackendUrlList(getCfEnv, mainlandCn, BACKEND_FALLBACK);
+  const modalUrls = buildProv3ModalUrlList(getCfEnv, mainlandCn);
+  const backendUrls = buildProv3BackendUrlList(getCfEnv, mainlandCn, BACKEND_FALLBACK);
   const modalUrl = modalUrls[0] || "";
   const backendUrl = backendUrls[0] || BACKEND_FALLBACK;
 

@@ -158,7 +158,7 @@ interface ParsedResult {
     distance_debug?: Record<string, unknown>;
   };
   training_plan?: Record<string, { focus: string; drills: string[]; duration: string }>;
-  /** Pro v2 / PlusResultView：屏幕模式分析 */
+  /** Pro / PlusResultView：屏幕模式分析 */
   screen_mode?: boolean;
 }
 

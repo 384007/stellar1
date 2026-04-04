@@ -21,9 +21,12 @@ import { expandStellarProForUi } from "@/lib/stellar-pro-result";
 import { pruneLocalStellarHistoryRecords } from "@/lib/pro-history-retention";
 import {
   DEFAULT_PROV3_MODAL_URL,
+  formatProAnalyzeHttpError,
   normalizeProv3UrlListsFromPrecheck,
-} from "@/lib/pro-v2-endpoints";
-import { runProv3AnalyzeMultipart, yieldUiBeforeHeavyParse } from "@/lib/pro-v2-analyze-client";
+  PRO_V3_EDGE_PRECHECK_PATH,
+  runProv3AnalyzeMultipart,
+  yieldUiBeforeHeavyParse,
+} from "@/lib/pro-v3-api";
 import {
   consumeReanalyzeFromHistoryPayload,
   fetchVideoBlobForHistoryReanalyze,
@@ -127,7 +130,7 @@ export default function AnalyzePage() {
   const [showClubPicker, setShowClubPicker] = useState(false);
   const backendBaseRef = useRef<string>(process.env.NEXT_PUBLIC_BACKEND_URL || "https://stellar1-backend.onrender.com");
   const lastBlobRef = useRef<{ blob: Blob; filename: string } | null>(null);
-  /** Pro v2 screen preprocess: set before opening 实拍 when source is 对屏拍摄 (screen tab). */
+  /** Pro v3 对屏路径：在打开实拍前标记来源为拍屏 tab。 */
   const screenCaptureForProv3Ref = useRef(false);
   const [processingClub, setProcessingClub] = useState<ClubDetection | null>(null);
   const processingClubRef = useRef<ClubDetection | null>(null);
@@ -136,7 +139,7 @@ export default function AnalyzePage() {
   const [showHandPopup, setShowHandPopup] = useState(false);
   const handRef = useRef<"R" | "L">("R");
   const [processingProScreenMode, setProcessingProScreenMode] = useState(false);
-  /** 防止重复提交 Pro v2 / 分析流程。 */
+  /** 防止重复提交 Pro / Lite 分析流程。 */
   const analysisInFlightRef = useRef(false);
 
   const CLUB_GROUPS = [
@@ -213,12 +216,12 @@ export default function AnalyzePage() {
   ): Promise<AnalysisResult> {
     const isPro = (modeOverride ?? analysisMode) === "pro";
     if (!isPro) {
-      console.warn("[stellar v2] 当前为 LITE 模式：请求走 /api/analyze（Cloudflare Edge），不会进入 Modal 日志。");
+      console.warn("[stellar-analyze] 当前为 LITE 模式：请求走 /api/analyze（Cloudflare Edge），不会进入 Modal 日志。");
     }
 
     if (isPro) {
       // Pro mode: precheck (Edge) → always try Modal first (all regions, including CN).
-      // Render runs only when NEXT_PUBLIC_PRO_V2_RENDER_FALLBACK=true; cnNetworkHint never reorders hosts.
+      // Render runs only when NEXT_PUBLIC_PROV3_RENDER_FALLBACK=true; cnNetworkHint never reorders hosts.
       // Never proxy through the CF Worker — its 30 s wall-clock limit kills long analyses.
       const token = localStorage.getItem("stellar_token");
       const authHeaders: Record<string, string> = {};
@@ -231,7 +234,7 @@ export default function AnalyzePage() {
       let modalUrls: string[] = [DEFAULT_PROV3_MODAL_URL];
       let backendUrls: string[] = [defaultBackend];
       try {
-        const pc = await fetch("/api/pro/precheck", {
+        const pc = await fetch(PRO_V3_EDGE_PRECHECK_PATH, {
           method: "POST",
           headers: token ? { Authorization: `Bearer ${token}` } : {},
         });
@@ -260,16 +263,19 @@ export default function AnalyzePage() {
           // Match /pro: Pro v3 on Modal often exceeds 2–3 minutes (SwingNet + dense + Gemini).
           modalTimeoutMs: cnPro ? 90_000 : 360_000,
           renderTimeoutMs: 360_000,
-          logPrefix: `[stellar v2] ${mb}MB`,
+          logPrefix: `[stellar-pro] ${mb}MB`,
         },
       );
 
       const runtimeHeader = res.headers.get("x-stellar-runtime") || "unknown";
-      console.log(`[stellar v2] Pro response: ${res.status} (served_by=${proServedBy}, runtime=${runtimeHeader})`);
+      console.log(`[stellar-pro] Pro response: ${res.status} (served_by=${proServedBy}, runtime=${runtimeHeader})`);
       if (!res.ok) {
         let detail = `HTTP ${res.status}`;
-        try { detail = (await res.json()).detail || detail; } catch { /* ignore */ }
-        throw new Error(`Pro分析失败 [${res.status}]: ${detail}`);
+        try {
+          const j = await res.json();
+          detail = typeof j?.detail === "string" ? j.detail : detail;
+        } catch { /* ignore */ }
+        throw new Error(formatProAnalyzeHttpError(res.status, detail));
       }
       await yieldUiBeforeHeavyParse();
       const rawText = await res.text();
@@ -343,7 +349,7 @@ export default function AnalyzePage() {
       throw new Error(`网络错误：${e instanceof Error ? e.message : "无法连接服务器"}`);
     }
 
-    console.log(`[stellar v2] Lite Edge response: ${res.status}`);
+    console.log(`[stellar-analyze] Lite Edge response: ${res.status}`);
 
     if (!res.ok) {
       let detail = `HTTP ${res.status}`;

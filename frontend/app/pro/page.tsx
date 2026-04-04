@@ -11,9 +11,12 @@ import type { PoseSnapshot } from "@/components/KeyframeStrip";
 import { saveAnalysisVideo } from "@/lib/video-store";
 import {
   DEFAULT_PROV3_MODAL_URL,
+  formatProAnalyzeHttpError,
   normalizeProv3UrlListsFromPrecheck,
-} from "@/lib/pro-v2-endpoints";
-import { runProv3AnalyzeMultipart, yieldUiBeforeHeavyParse } from "@/lib/pro-v2-analyze-client";
+  PRO_V3_EDGE_PRECHECK_PATH,
+  runProv3AnalyzeMultipart,
+  yieldUiBeforeHeavyParse,
+} from "@/lib/pro-v3-api";
 import {
   slimAnalysisResultForHistoryTransport,
   slimAnalysisResultForServerHistory,
@@ -128,13 +131,13 @@ export default function ProPage({ deepLinkAnalysisId }: { deepLinkAnalysisId?: s
   const screenRecRef = useRef<MediaRecorder | null>(null);
   const screenChunksRef = useRef<Blob[]>([]);
   const screenTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  /** Pro v2 screen preprocess: true when 对屏拍摄 (screen tab) before opening 实拍. */
+  /** Pro v3 对屏预处理：拍屏 tab 进入、尚未打开实拍时为 true。 */
   const screenCaptureForProv3Ref = useRef(false);
-  /** After Pro v2 screen-mode analyze, open 姿势诊断 first (report text); upload path stays 视频分析 first. */
+  /** 对屏模式分析完成后先打开姿势诊断（报告文案）；上传主路径仍以视频分析为先。 */
   const prov3ScreenOpenDiagnosisTabRef = useRef(false);
 
   const backendUrlsRef = useRef<string[]>(["https://stellar1-backend.onrender.com"]);
-  /** Default until /api/pro/precheck returns — avoids skipping Modal if user analyzes before precheck finishes. */
+  /** Default until Pro v3 precheck returns — avoids skipping Modal if user analyzes before precheck finishes. */
   const modalUrlsRef = useRef<string[]>([DEFAULT_PROV3_MODAL_URL]);
   const cnNetworkHintRef = useRef(false);
   /** 防止双击/历史再次分析竞态导致重复 POST Modal。 */
@@ -157,7 +160,7 @@ export default function ProPage({ deepLinkAnalysisId }: { deepLinkAnalysisId?: s
     }
 
     // Verify pro status server-side and get backend URLs
-    fetch("/api/pro/precheck", {
+    fetch(PRO_V3_EDGE_PRECHECK_PATH, {
       method: "POST",
       headers: { Authorization: `Bearer ${token}` },
     })
@@ -458,9 +461,9 @@ export default function ProPage({ deepLinkAnalysisId }: { deepLinkAnalysisId?: s
         let detail = "Pro analysis failed";
         try {
           const errData = await res.json();
-          detail = errData.detail || detail;
+          detail = typeof errData?.detail === "string" ? errData.detail : detail;
         } catch { /* ignore */ }
-        throw new Error(detail);
+        throw new Error(formatProAnalyzeHttpError(res.status, detail));
       }
 
       setProgress(96);

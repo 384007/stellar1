@@ -12,13 +12,11 @@ export type ReanalyzeFromHistoryPayload = {
    * Pro v3：原分析为屏幕模式时保留；再次分析时传给 `screen_mode` 表单字段。
    */
   prov3ScreenMode?: boolean;
-  /** @deprecated 旧 session 键名，读取时仍兼容 */
-  proV2ScreenMode?: boolean;
 };
 
-/** 从重新分析 payload 解析是否对屏（兼容历史 `proV2ScreenMode`）。 */
+/** 从重新分析 payload 解析是否对屏。 */
 export function reanalyzePayloadProv3ScreenMode(p: ReanalyzeFromHistoryPayload): boolean {
-  return Boolean(p.prov3ScreenMode ?? p.proV2ScreenMode);
+  return Boolean(p.prov3ScreenMode);
 }
 
 export function queueReanalyzeFromHistory(p: ReanalyzeFromHistoryPayload): void {

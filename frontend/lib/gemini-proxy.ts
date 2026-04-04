@@ -15,7 +15,7 @@
  *   QWEN_API_KEY          — Qwen fallback key (dashscope.aliyuncs.com)
  *
  * Modal/Render (Python `gemini_service`): set the same GEMINI_PROXY_* secrets on Modal/Render
- * so Pro v2 / Plus AI tries those hosts before generativelanguage.googleapis.com (browser→worker
+ * so Pro / Plus AI tries those hosts before generativelanguage.googleapis.com (browser→worker
  * often has no CF-IPCountry header).
  */
 
@@ -26,7 +26,7 @@ export const GEMINI_DIRECT = "https://generativelanguage.googleapis.com";
  * - CN: proxies first (direct Google is blocked by GFW), Google last as hail-mary
  * - non-CN: Google direct only (proxies add latency, not needed)
  *
- * Pro v2 browser uploads send `X-Stellar-Network-Hint: cn` when precheck marks CN; set the same
+ * Pro browser uploads send `X-Stellar-Network-Hint: cn` when precheck marks CN; set the same
  * `GEMINI_PROXY_*` secrets on Modal/Render so the report step can reach Gemini from the worker.
  */
 export function getGeminiHosts(getCfEnv: (key: string) => string, isCN = false): string[] {

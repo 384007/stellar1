@@ -1,5 +1,5 @@
 /**
- * Pro analyze (`POST /pro-v3/analyze`) returns a minimal JSON contract. Expand to the shape
+ * Pro v3 product response (`POST /pro-v3/analyze` — see `routers.prov3_api`). Expand to the shape
  * the Pro UI still expects (skeleton / prediction placeholders).
  */
 
@@ -207,9 +207,9 @@ export function proExpandedToPlusViewModel(r: Record<string, any>): PlusAnalysis
       r.screen_keyframe_audit && typeof r.screen_keyframe_audit === "object" && !Array.isArray(r.screen_keyframe_audit)
         ? (r.screen_keyframe_audit as PlusAnalysisResult["screen_keyframe_audit"])
         : undefined,
-    pro_v2_debug:
-      r.pro_v2_debug && typeof r.pro_v2_debug === "object" && !Array.isArray(r.pro_v2_debug)
-        ? (r.pro_v2_debug as PlusAnalysisResult["pro_v2_debug"])
+    prov3_debug:
+      r.prov3_debug && typeof r.prov3_debug === "object" && !Array.isArray(r.prov3_debug)
+        ? (r.prov3_debug as PlusAnalysisResult["prov3_debug"])
         : undefined,
   };
 }
@@ -288,6 +288,6 @@ export function expandStellarProForUi(raw: Record<string, any>): Record<string, 
     routing_strategy: raw.routing_strategy,
     routing_execution: raw.routing_execution,
     screen_keyframe_audit: raw.screen_keyframe_audit,
-    pro_v2_debug: raw.pro_v2_debug,
+    prov3_debug: raw.prov3_debug,
   };
 }

@@ -22,7 +22,7 @@ MMAction2 + MMPose + extras: `backend/requirements-modal.txt` (no torch/ultralyt
   At runtime `fastapi_app` sets STELLAR_MMACTION2_* unless STELLAR_ACTION_BACKEND=disabled.
   Optional volume: `/models/tsn_kinetics400.pth` (and matching config name) overrides baked weights.
 
-ASGI entry: ``main:app``. Modal Pro 仅注册 ``POST /pro-v3/analyze`` 与 ``GET /pro-v3/media/...``；不注册 ``/pro-v2``。``STELLAR_MODAL_PRO_V3_ONLY=1`` 时不加载旧 ``/stellar-pro/analyze``。
+ASGI entry: ``main:app``. Pro v3 路由均在 ``/pro-v3`` 下：``POST /pro-v3/analyze``、``GET /pro-v3/media/...``、``POST /pro-v3/keyframes/*``（见 ``routers.prov3_api``）。``STELLAR_MODAL_PRO_V3_ONLY=1`` 时不加载旧 ``/stellar-pro/analyze``。
 """
 from __future__ import annotations
 
@@ -280,7 +280,7 @@ def fastapi_app():
     import sys
 
     os.environ["STELLAR_RUNTIME"] = "modal"
-    # Pro on Modal: slim router set — no legacy /stellar-pro; HTTP Pro is /pro-v3 only (see routers.pro_v2_api).
+    # Pro on Modal: slim router set — no legacy /stellar-pro; HTTP Pro is /pro-v3 only (see routers.prov3_api).
     os.environ["STELLAR_MODAL_PRO_V3_ONLY"] = "1"
     _wire_stellar_model_paths()
     _wire_mmaction2_paths()
@@ -302,7 +302,7 @@ def fastapi_app():
     _line = f"[modal] build_info git_sha={_sha} branch={_branch} build_time={_bt}"
     print(_line, flush=True, file=sys.stderr)
     _pro = (
-        f"[modal] pro_api POST /pro-v3/analyze GET /pro-v3/media/* asgi=main:app "
+        f"[modal] pro_v3_api POST /pro-v3/analyze GET /pro-v3/media/* POST /pro-v3/keyframes/* asgi=main:app "
         f"STELLAR_MODAL_PRO_V3_ONLY=1 actual_sha={_sha}"
     )
     print(_pro, flush=True, file=sys.stderr)

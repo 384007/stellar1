@@ -96,7 +96,7 @@ export interface PlusAnalysisResult {
   keyframe_display_mode?: "product_ready" | "degraded_debug_strip" | string;
   final_keyframe_gate_pass?: boolean;
   _plus_usage?: { used: number; remaining: number; limit: number | null; is_pro: boolean };
-  /** Pro v3 pipeline (`POST /pro-v3/analyze`; Modal exposes /pro-v3 only) */
+  /** Pro v3 product pipeline (`POST /pro-v3/analyze` — `routers.prov3_api`) */
   screen_mode?: boolean;
   screen_fallback_raw?: boolean;
   screen_fallback_hint_zh?: string;
@@ -135,7 +135,7 @@ export interface PlusAnalysisResult {
     summary_en?: string;
   };
   /** Backend debug bundle: paths, dense stats, keyframe lineup, visual gate (Screen Mode). */
-  pro_v2_debug?: Record<string, unknown>;
+  prov3_debug?: Record<string, unknown>;
 }
 
 export interface PoseFrame {
@@ -190,7 +190,7 @@ const PHASE_LABELS: Record<string, { en: string; zh: string }> = {
 
 const SWING_PHASES = ["address", "takeaway", "backswing", "top", "downswing", "impact", "follow_through", "finish"];
 
-const PRO_V2_CORE_SCORE_LABELS: Record<string, { en: string; zh: string }> = {
+const PROV3_CORE_SCORE_LABELS: Record<string, { en: string; zh: string }> = {
   takeaway: { en: "Takeaway", zh: "起杆" },
   backswing_mid: { en: "Backswing (mid)", zh: "上杆（中段）" },
   top: { en: "Top", zh: "顶点" },
@@ -200,7 +200,7 @@ const PRO_V2_CORE_SCORE_LABELS: Record<string, { en: string; zh: string }> = {
 };
 
 /** Unify strip labels (8-frame UX) with core review phase IDs — same swing moments, different naming granularity. */
-const PRO_V2_PHASE_NAMING = {
+const PROV3_PHASE_NAMING = {
   stripHint: {
     zh: "上杆 / 下杆 / 送杆 与下方「核心关键帧评分」中的上杆（中段）、下杆（早段）、释放 为同一挥杆阶段，只是命名粗细不同。",
     en: "Backswing / Downswing / Follow-through here are the same moments as mid-backswing, early downswing, and release in core scores — friendlier strip names vs. review IDs.",
@@ -212,7 +212,7 @@ const PRO_V2_PHASE_NAMING = {
 } as const;
 
 /** Hover: tie audit phase keys to 8-frame strip names (tooltip). */
-const PRO_V2_CORE_STRIP_TOOLTIP: Record<
+const PROV3_CORE_STRIP_TOOLTIP: Record<
   "takeaway" | "backswing_mid" | "top" | "early_downswing" | "impact" | "release",
   { en: string; zh: string }
 > = {
@@ -1014,7 +1014,7 @@ function FullSwingView({ result, lang }: Props) {
           </div>
           {result.screen_mode ? (
             <p className="text-[9px] text-white/38 leading-snug px-0.5 mt-1">
-              {lang === "zh" ? PRO_V2_PHASE_NAMING.stripHint.zh : PRO_V2_PHASE_NAMING.stripHint.en}
+              {lang === "zh" ? PROV3_PHASE_NAMING.stripHint.zh : PROV3_PHASE_NAMING.stripHint.en}
             </p>
           ) : null}
         </div>
@@ -1694,8 +1694,8 @@ export default function PlusResultView({ result, lang, externalVideoSrc, backend
                   ["takeaway", "backswing_mid", "top", "early_downswing", "impact", "release"] as const
                 ).map((key) => {
                   const row = result.core_frame_scores?.[key];
-                  const lab = PRO_V2_CORE_SCORE_LABELS[key];
-                  const tip = PRO_V2_CORE_STRIP_TOOLTIP[key];
+                  const lab = PROV3_CORE_SCORE_LABELS[key];
+                  const tip = PROV3_CORE_STRIP_TOOLTIP[key];
                   const sc = typeof row?.score === "number" ? row.score : "—";
                   const ok = row?.pass_90 === true;
                   const cf =
@@ -1731,7 +1731,7 @@ export default function PlusResultView({ result, lang, externalVideoSrc, backend
                   const rs = row?.reason_codes?.slice(0, 3).join(", ");
                   return (
                     <li key={`cmt-${key}`} className="rounded border border-white/10 bg-white/[0.02] px-2 py-1">
-                      <span className="text-white/40">{(lang === "zh" ? PRO_V2_CORE_SCORE_LABELS[key].zh : PRO_V2_CORE_SCORE_LABELS[key].en)}: </span>
+                      <span className="text-white/40">{(lang === "zh" ? PROV3_CORE_SCORE_LABELS[key].zh : PROV3_CORE_SCORE_LABELS[key].en)}: </span>
                       <span>{cmt || "—"}</span>
                       {rs ? <span className="ml-1 font-mono text-amber-200/80">[{rs}]</span> : null}
                     </li>
@@ -1739,7 +1739,7 @@ export default function PlusResultView({ result, lang, externalVideoSrc, backend
                 })}
               </ul>
               <p className="text-[9px] text-white/38 leading-snug pt-1">
-                {lang === "zh" ? PRO_V2_PHASE_NAMING.coreFootnote.zh : PRO_V2_PHASE_NAMING.coreFootnote.en}
+                {lang === "zh" ? PROV3_PHASE_NAMING.coreFootnote.zh : PROV3_PHASE_NAMING.coreFootnote.en}
               </p>
             </div>
           ) : null}

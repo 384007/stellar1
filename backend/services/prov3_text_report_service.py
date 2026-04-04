@@ -1,11 +1,11 @@
-"""Pro v2 — AI writes report with pass-2 retry + deterministic fallback (contract in PRO_V2_REPORT_PROMPT)."""
+"""Pro v3 — Gemini motion-metadata report with pass-2 retry + deterministic fallback."""
 
 from __future__ import annotations
 
 import logging
 from typing import Any
 
-from services.gemini_service import analyze_pro_v2_report_only
+from services.gemini_service import analyze_prov3_motion_report_only
 
 logger = logging.getLogger(__name__)
 
@@ -17,7 +17,7 @@ _MIN_SUMMARY_EN_WORDS = 280
 _MIN_SUMMARY_ZH_CHARS = 360
 _MIN_LIST_ITEMS = 3
 
-_META_KEY = "__pro_v2_report_meta__"
+_META_KEY = "__prov3_report_meta__"
 
 
 def _nonempty_str_list(raw: Any) -> list[str]:
@@ -72,7 +72,7 @@ def _kf_by_phase(motion_context: dict[str, Any]) -> dict[str, dict[str, Any]]:
     return by
 
 
-def build_pro_v2_fallback_report(motion_context: dict[str, Any]) -> dict[str, Any]:
+def build_prov3_fallback_report(motion_context: dict[str, Any]) -> dict[str, Any]:
     """Deterministic coaching-shaped report when AI fails or returns thin output."""
     by = _kf_by_phase(motion_context)
     swing = motion_context.get("swing_window_s") or [0.0, 0.0]
@@ -179,7 +179,7 @@ def build_pro_v2_fallback_report(motion_context: dict[str, Any]) -> dict[str, An
     total_score = int(max(48, min(72, score_base)))
 
     summary_en = (
-        f"Based on the current motion summary (pro_v2 dense scan at approximately {fps:.0f} fps), this report is generated "
+        f"Based on the current motion summary (Pro v3 dense scan at approximately {fps:.0f} fps), this report is generated "
         f"without any image selection or frame picking. The extracted swing window spans about {win_dur:.3f} seconds "
         "between pipeline boundaries, which anchors every phase timestamp you see in the structured context.\n\n"
         "Address: use a stable setup reference — ball position, posture, and grip pressure should stay repeatable "
@@ -202,7 +202,7 @@ def build_pro_v2_fallback_report(motion_context: dict[str, Any]) -> dict[str, An
         "If the swing window was very short, re-record with a wider clip so each phase can breathe on the timeline."
     )
     summary_zh = (
-        f"根据当前 motion summary（pro_v2 密集扫描，约 {fps:.0f} fps），本报告不依赖任何选图或附图，也不进行 AI 选帧。"
+        f"根据当前 motion summary（Pro v3 密集扫描，约 {fps:.0f} fps），本报告不依赖任何选图或附图，也不进行 AI 选帧。"
         f"管道给出的挥杆窗口约 {win_dur:.3f} 秒，这一边界用于对齐八个阶段时间戳。\n\n"
         "站姿：以可重复的站位与握压为基准；屏幕模式主要读的是能量与时间线，而不是画面细节，因此准备姿势的稳定性会直接反映在后续阶段间隔上。\n\n"
         "起杆 / 上杆：早段应追求宽度与顺序，避免“抢”；若窗口偏短，前段阶段可能在时间线上显得拥挤，建议下次录制留足上杆空间。\n\n"
@@ -251,11 +251,11 @@ def build_pro_v2_fallback_report(motion_context: dict[str, Any]) -> dict[str, An
         "summary": summary_en,
         "summary_zh": summary_zh,
         "training_plan": training_plan,
-        "ai_provider": "pro_v2_fallback",
+        "ai_provider": "prov3_fallback",
     }
 
 
-def build_pro_v2_limited_fallback(motion_context: dict[str, Any]) -> dict[str, Any]:
+def build_prov3_limited_fallback(motion_context: dict[str, Any]) -> dict[str, Any]:
     """Deterministic low-trust report when limited-mode Gemini is weak or unavailable."""
     swing = motion_context.get("swing_window_s") or [0.0, 0.0]
     try:
@@ -317,37 +317,29 @@ def build_pro_v2_limited_fallback(motion_context: dict[str, Any]) -> dict[str, A
         "summary": summary_en,
         "summary_zh": summary_zh,
         "training_plan": training_plan,
-        "ai_provider": "pro_v2_limited_fallback",
+        "ai_provider": "prov3_limited_fallback",
     }
 
 
-def _report_chain_labels(chain: str) -> tuple[str, str, str]:
-    c = (chain or "pro_v2").strip().lower()
-    if c == "prov3":
-        return ("prov3_report_limited", "prov3_report", "prov3_report_pass2")
-    return ("pro_v2_report_limited", "pro_v2_report", "pro_v2_report_pass2")
-
-
-def _report_chain_tag(chain: str) -> str:
-    return "PROV3" if (chain or "").strip().lower() == "prov3" else "PRO_V2"
-
-
-async def write_pro_v2_ai_report(
+async def write_prov3_ai_report(
     motion_context: dict[str, Any],
     *,
     region: str = "global",
     report_mode: str = "formal",
-    report_chain: str = "pro_v2",
 ) -> dict[str, Any]:
     """Text-only Gemini report from motion_context JSON; pass-2 + local fallback if weak."""
-    lim_lbl, p1_lbl, p2_lbl = _report_chain_labels(report_chain)
-    ct = _report_chain_tag(report_chain)
+    lim_lbl, p1_lbl, p2_lbl = (
+        "prov3_report_limited",
+        "prov3_report",
+        "prov3_report_pass2",
+    )
+    ct = "PROV3"
     meta: dict[str, Any] = {
         "pass1_weak": False,
         "pass2_used": False,
         "pass2_weak": False,
         "fallback_used": False,
-        "report_chain": (report_chain or "pro_v2").strip().lower(),
+        "report_chain": "prov3",
     }
 
     if (report_mode or "").strip().lower() == "limited":
@@ -356,7 +348,7 @@ async def write_pro_v2_ai_report(
             ct,
             meta["report_chain"],
         )
-        out1 = await analyze_pro_v2_report_only(
+        out1 = await analyze_prov3_motion_report_only(
             motion_context,
             region=region,
             use_strong_prompt=False,
@@ -366,7 +358,7 @@ async def write_pro_v2_ai_report(
         )
         weak1 = _report_is_weak_limited(out1)
         meta["pass1_weak"] = weak1
-        chosen = build_pro_v2_limited_fallback(motion_context) if weak1 else out1
+        chosen = build_prov3_limited_fallback(motion_context) if weak1 else out1
         if weak1:
             meta["fallback_used"] = True
             logger.warning("[%s][REPORT_MODE] limited_fallback_used=true", ct)
@@ -386,7 +378,7 @@ async def write_pro_v2_ai_report(
         return chosen
 
     logger.info("[%s][REPORT] pass1_started report_mode=formal chain=%s", ct, meta["report_chain"])
-    out1 = await analyze_pro_v2_report_only(
+    out1 = await analyze_prov3_motion_report_only(
         motion_context,
         region=region,
         use_strong_prompt=False,
@@ -402,7 +394,7 @@ async def write_pro_v2_ai_report(
     if weak1:
         logger.info("[%s][REPORT] pass2_started", ct)
         meta["pass2_used"] = True
-        out2 = await analyze_pro_v2_report_only(
+        out2 = await analyze_prov3_motion_report_only(
             motion_context,
             region=region,
             use_strong_prompt=True,
@@ -416,7 +408,7 @@ async def write_pro_v2_ai_report(
         chosen = out2
 
     if _report_is_weak(chosen):
-        fb = build_pro_v2_fallback_report(motion_context)
+        fb = build_prov3_fallback_report(motion_context)
         meta["fallback_used"] = True
         logger.warning("[%s][REPORT] fallback_used=true (AI output still weak after pass2)", ct)
         chosen = fb
@@ -438,25 +430,7 @@ async def write_pro_v2_ai_report(
     return chosen
 
 
-async def write_prov3_ai_report(
-    motion_context: dict[str, Any],
-    *,
-    region: str = "global",
-    report_mode: str = "formal",
-) -> dict[str, Any]:
-    """Pro v3 文案报告（与 write_pro_v2_ai_report 同一实现，日志与 Gemini call_label 使用 prov3）。"""
-    return await write_pro_v2_ai_report(
-        motion_context,
-        region=region,
-        report_mode=report_mode,
-        report_chain="prov3",
-    )
-
-
-def pop_pro_v2_report_meta(report: dict[str, Any]) -> dict[str, Any]:
+def pop_prov3_report_meta(report: dict[str, Any]) -> dict[str, Any]:
     """Remove internal meta from report dict; returns meta for logging."""
     raw = report.pop(_META_KEY, None)
     return raw if isinstance(raw, dict) else {}
-
-
-pop_prov3_report_meta = pop_pro_v2_report_meta

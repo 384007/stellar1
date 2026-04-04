@@ -1,4 +1,9 @@
-"""Pro HTTP API — ``/pro-v3/*`` (primary). ``/pro-v2/*`` is registered only when **not** on Modal (``STELLAR_RUNTIME=modal`` skips it)."""
+"""Pro v3 API — single HTTP surface under ``/pro-v3``.
+
+* ``POST /pro-v3/analyze`` — product (keyframes + optional Gemini report + media URLs)
+* ``GET /pro-v3/media/{analysis_id}/{filename}`` — persisted originals / playback / contact sheet
+* ``POST /pro-v3/keyframes/*`` — preprocess / extract / refine / analyze (raw pipeline, no Gemini)
+"""
 
 from __future__ import annotations
 
@@ -13,20 +18,20 @@ from typing import Optional
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse
 
+from lib.prov3.keyframes.types import ExtractRequest, RefineRequest
 from routers.auth import get_current_user
 from services.internal.prov3_ffmpeg import FFmpegNotFoundError
 from services.pro_prov3_analyze_service import run_pro_video_analyze_via_prov3
 from services.pro_prov3_gemini_enrich import enrich_pro_prov3_response
+from services.prov3_keyframe_a_extractor_service import run_a_extract
+from services.prov3_keyframe_b_refiner_service import run_b_refine
+from services.prov3_keyframe_orchestrator_service import run_keyframe_analyze
+from services.prov3_keyframe_preprocess_service import run_preprocess
 
 logger = logging.getLogger(__name__)
 
-_PRO_MEDIA_ROOT = Path(
-    os.getenv("STELLAR_PRO_V3_MEDIA_ROOT")
-    or os.getenv("STELLAR_PRO_V2_MEDIA_ROOT")
-    or "/tmp/stellar_pro_v2_media",
-).resolve()
+_PRO_MEDIA_ROOT = Path(os.getenv("STELLAR_PRO_V3_MEDIA_ROOT") or "/tmp/stellar_prov3_media").resolve()
 
-# Modal GPU workers: only one in-flight Pro video analyze per process (reject overlap with 409).
 _MODAL_PRO_ANALYZE_LOCK = asyncio.Lock()
 
 
@@ -36,22 +41,76 @@ def _modal_pro_single_flight_enabled() -> bool:
     if (os.getenv("MODAL_REGION") or "").strip():
         return True
     v3 = (os.getenv("STELLAR_MODAL_PRO_V3_ONLY") or "").strip().lower()
-    v2 = (os.getenv("STELLAR_MODAL_PRO_V2_ONLY") or "").strip().lower()
-    return v3 in ("1", "true", "yes") or v2 in ("1", "true", "yes")
-
-
-def _expose_pro_v2_http_alias() -> bool:
-    """Modal workers use ``/pro-v3`` only; Render/local may keep ``/pro-v2`` for older clients."""
-    return (os.getenv("STELLAR_RUNTIME") or "").strip().lower() != "modal"
+    return v3 in ("1", "true", "yes")
 
 
 router_pro_v3 = APIRouter(prefix="/pro-v3", tags=["pro-v3"])
-router_pro_v2_legacy = APIRouter(prefix="/pro-v2", tags=["pro-v2-legacy"])
+router_keyframes = APIRouter(prefix="/keyframes", tags=["pro-v3-keyframes"])
 
 router = APIRouter()
-router.include_router(router_pro_v3)
-if _expose_pro_v2_http_alias():
-    router.include_router(router_pro_v2_legacy)
+
+
+@router_keyframes.post("/preprocess")
+async def prov3_keyframes_preprocess(file: UploadFile = File(...), screen_mode: bool = Form(default=False)):
+    suffix = Path(file.filename or "video.mp4").suffix or ".mp4"
+    with tempfile.TemporaryDirectory(prefix="prov3_preprocess_") as tmpdir:
+        input_path = Path(tmpdir) / f"input{suffix}"
+        payload = await file.read()
+        if not payload:
+            raise HTTPException(status_code=400, detail="Empty file")
+        input_path.write_bytes(payload)
+        try:
+            result = run_preprocess(str(input_path), tmpdir, screen_mode=screen_mode)
+        except FFmpegNotFoundError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        except RuntimeError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        return result.model_dump()
+
+
+@router_keyframes.post("/extract")
+async def prov3_keyframes_extract(req: ExtractRequest):
+    result = run_a_extract(
+        analysis_id=req.analysis_id,
+        analysis_video=req.analysis_video,
+        preprocess_meta=req.preprocess_meta,
+        analysis_frames=req.analysis_frames,
+    )
+    return result.model_dump()
+
+
+@router_keyframes.post("/refine")
+async def prov3_keyframes_refine(req: RefineRequest):
+    result = run_b_refine(
+        analysis_id=req.analysis_id,
+        analysis_video=req.analysis_video,
+        preprocess_meta=req.preprocess_meta,
+        analysis_frames=req.analysis_frames,
+        enhanced_local_frames=req.enhanced_local_frames,
+        keyframes=req.keyframes,
+        confidence=req.confidence,
+        fail_reasons=req.fail_reasons,
+    )
+    return result.model_dump()
+
+
+@router_keyframes.post("/analyze")
+async def prov3_keyframes_analyze(file: UploadFile = File(...), screen_mode: bool = Form(default=False)):
+    """预处理 + A/B 关键帧-only JSON（无 Gemini、无媒体落盘）。产品完整分析请用 ``POST /pro-v3/analyze``。"""
+    suffix = Path(file.filename or "video.mp4").suffix or ".mp4"
+    with tempfile.TemporaryDirectory(prefix="prov3_analyze_") as tmpdir:
+        input_path = Path(tmpdir) / f"input{suffix}"
+        payload = await file.read()
+        if not payload:
+            raise HTTPException(status_code=400, detail="Empty file")
+        input_path.write_bytes(payload)
+        try:
+            result = run_keyframe_analyze(str(input_path), tmpdir, screen_mode=screen_mode)
+        except FFmpegNotFoundError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        except RuntimeError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        return result.model_dump(exclude={"analysis_video", "analysis_fps", "source_fps"})
 
 
 def _pro_analyze_ingress_echo(route: str, request: Request) -> None:
@@ -89,11 +148,6 @@ async def _pro_media_file_handler(analysis_id: str, filename: str) -> FileRespon
 
 @router_pro_v3.get("/media/{analysis_id}/{filename}")
 async def pro_v3_media_file(analysis_id: str, filename: str):
-    return await _pro_media_file_handler(analysis_id, filename)
-
-
-@router_pro_v2_legacy.get("/media/{analysis_id}/{filename}")
-async def pro_v2_media_file_legacy(analysis_id: str, filename: str):
     return await _pro_media_file_handler(analysis_id, filename)
 
 
@@ -236,7 +290,7 @@ async def pro_v3_analyze(
     screen_mode: bool = Form(default=False),
     current_user: Optional[dict] = Depends(get_current_user),
 ):
-    """Stellar Pro — Pro v3（主入口 ``/pro-v3/analyze``）。"""
+    """Stellar Pro — ``POST /pro-v3/analyze``."""
     return await _run_pro_analyze(
         request,
         file,
@@ -248,21 +302,6 @@ async def pro_v3_analyze(
     )
 
 
-@router_pro_v2_legacy.post("/analyze")
-async def pro_v2_analyze_legacy(
-    request: Request,
-    file: UploadFile = File(...),
-    rough_impact_time_s: Optional[float] = Form(default=None),
-    screen_mode: bool = Form(default=False),
-    current_user: Optional[dict] = Depends(get_current_user),
-):
-    """Legacy alias ``/pro-v2/analyze`` — same as ``/pro-v3/analyze``; media URLs use ``/pro-v2/media/``."""
-    return await _run_pro_analyze(
-        request,
-        file,
-        rough_impact_time_s,
-        screen_mode,
-        current_user,
-        media_prefix="/pro-v2",
-        ingress_tag="PRO_PROV3_LEGACY_V2_PATH",
-    )
+# Mount after all routes are registered (include_router snapshots routes at call time).
+router_pro_v3.include_router(router_keyframes)
+router.include_router(router_pro_v3)

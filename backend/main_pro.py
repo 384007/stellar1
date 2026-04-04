@@ -1,6 +1,6 @@
 """Same FastAPI app as `main.py`.
 
-- Local/Render: may include `/stellar-pro/analyze`, `POST /pro-v3/analyze`, and optional legacy `POST /pro-v2/analyze`.
+- Local/Render: may include `/stellar-pro/analyze` and `POST /pro-v3/analyze`.
 - Modal: `STELLAR_RUNTIME=modal` + `STELLAR_MODAL_PRO_V3_ONLY=1` — no `/stellar-pro`, Pro HTTP is `/pro-v3` only.
 
 Run locally:

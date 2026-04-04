@@ -1,6 +1,7 @@
 import { makeFormData } from "@/lib/fetch-retry";
+import { buildProV3AnalyzeRequestUrl, normalizeProHttpApiBase } from "@/lib/prov3-endpoints";
 
-export type RunProV2AnalyzeOptions = {
+export type RunProv3AnalyzeOptions = {
   modalUrls: string[];
   backendUrls: string[];
   cnNetworkHint: boolean;
@@ -11,7 +12,7 @@ export type RunProV2AnalyzeOptions = {
   logPrefix: string;
 };
 
-export type ProV2AnalyzeResult = {
+export type Prov3AnalyzeResult = {
   response: Response;
   route: "modal" | "render";
 };
@@ -24,11 +25,20 @@ export function yieldUiBeforeHeavyParse(): Promise<void> {
 }
 
 /** Opt-in only: default is Modal-only so traffic and errors stay on Modal (Render skipped). */
-export function proV2RenderFallbackEnabled(): boolean {
-  return process.env.NEXT_PUBLIC_PRO_V2_RENDER_FALLBACK === "true";
+export function prov3RenderFallbackEnabled(): boolean {
+  return process.env.NEXT_PUBLIC_PROV3_RENDER_FALLBACK === "true";
 }
 
-function makeProV2FormData(blob: Blob, filename: string, screenMode: boolean): FormData {
+/** 将 FastAPI `detail` 与常见 404（错误 Modal 基址、未部署路由）说明合并为一条用户可读文案。 */
+export function formatProAnalyzeHttpError(status: number, detail: string): string {
+  const d = (detail || "").trim() || `HTTP ${status}`;
+  if (status === 404) {
+    return `Pro分析失败 [404]: ${d}。请确认 MODAL_BACKEND_URL 为 Modal 根地址（不要带 /pro-v3），且已部署含 POST /pro-v3/analyze 的镜像。`;
+  }
+  return `Pro分析失败 [${status}]: ${d}`;
+}
+
+function makeProv3FormData(blob: Blob, filename: string, screenMode: boolean): FormData {
   const fd = makeFormData(blob, filename);
   fd.append("screen_mode", screenMode ? "true" : "false");
   return fd;
@@ -40,9 +50,8 @@ function shouldRetryModalHttp(status: number): boolean {
 
 /**
  * Hit Modal only; retry transient HTTP statuses on the same host before trying the next Modal URL.
- * Returns the last Modal response when exhausted so the UI shows Modal's error instead of silently using Render.
  */
-async function tryProV2ModalHosts(
+async function tryProv3ModalHosts(
   blob: Blob,
   filename: string,
   screenMode: boolean,
@@ -50,10 +59,12 @@ async function tryProV2ModalHosts(
   modalUrls: string[],
   modalTimeoutMs: number,
   logPrefix: string,
-): Promise<ProV2AnalyzeResult | null> {
+): Promise<Prov3AnalyzeResult | null> {
   let lastResponse: Response | null = null;
 
-  for (const mUrl of modalUrls) {
+  for (const mUrlRaw of modalUrls) {
+    const mUrl = normalizeProHttpApiBase(mUrlRaw);
+    if (!mUrl) continue;
     hrLoop: for (let hr = 0; hr < 5; hr++) {
       if (hr > 0) {
         await new Promise((r) => setTimeout(r, 5_000));
@@ -67,11 +78,12 @@ async function tryProV2ModalHosts(
         try {
           const ctrl = new AbortController();
           const t = setTimeout(() => ctrl.abort(), modalTimeoutMs);
-          console.log(`${logPrefix} Pro Modal → ${mUrl}/pro-v3/analyze (round ${hr + 1}, conn ${connAttempt + 1})`);
-          const mRes = await fetch(`${mUrl}/pro-v3/analyze`, {
+          const analyzeUrl = buildProV3AnalyzeRequestUrl(mUrl);
+          console.log(`${logPrefix} Pro Modal → ${analyzeUrl} (round ${hr + 1}, conn ${connAttempt + 1})`);
+          const mRes = await fetch(analyzeUrl, {
             method: "POST",
             headers,
-            body: makeProV2FormData(blob, filename, screenMode),
+            body: makeProv3FormData(blob, filename, screenMode),
             signal: ctrl.signal,
           });
           clearTimeout(t);
@@ -93,7 +105,6 @@ async function tryProV2ModalHosts(
           console.warn(
             `${logPrefix} Modal ${isAbort ? "timed out" : "unreachable"} (${mUrl}): ${e instanceof Error ? e.message : e}`,
           );
-          // Abort = wall-clock timeout: server may already be analyzing — do NOT re-POST (was causing duplicate full analyses).
           if (isAbort) {
             throw new Error(
               "分析等待超时：请勿重复提交。可稍后从历史查看是否已完成，或缩短视频后重试。",
@@ -112,7 +123,7 @@ async function tryProV2ModalHosts(
   return lastResponse ? { response: lastResponse, route: "modal" } : null;
 }
 
-async function tryProV2BackendHosts(
+async function tryProv3BackendHosts(
   blob: Blob,
   filename: string,
   screenMode: boolean,
@@ -121,11 +132,13 @@ async function tryProV2BackendHosts(
   renderTimeoutMs: number,
   maxConn: number,
   logPrefix: string,
-): Promise<ProV2AnalyzeResult | null> {
+): Promise<Prov3AnalyzeResult | null> {
   if (backendUrls.length === 0) {
     return null;
   }
-  for (const bUrl of backendUrls) {
+  for (const bUrlRaw of backendUrls) {
+    const bUrl = normalizeProHttpApiBase(bUrlRaw);
+    if (!bUrl) continue;
     console.log(`${logPrefix} Render warm-up → ${bUrl}`);
     for (let w = 0; w < 12; w++) {
       try {
@@ -142,11 +155,12 @@ async function tryProV2BackendHosts(
     let bRes: Response | null = null;
     while (!bRes) {
       try {
-        console.log(`${logPrefix} Pro Render → ${bUrl}/pro-v3/analyze`);
-        bRes = await fetch(`${bUrl}/pro-v3/analyze`, {
+        const analyzeUrl = buildProV3AnalyzeRequestUrl(bUrl);
+        console.log(`${logPrefix} Pro Render → ${analyzeUrl}`);
+        bRes = await fetch(analyzeUrl, {
           method: "POST",
           headers,
-          body: makeProV2FormData(blob, filename, screenMode),
+          body: makeProv3FormData(blob, filename, screenMode),
           signal: controller.signal,
         });
       } catch (e) {
@@ -177,21 +191,17 @@ async function tryProV2BackendHosts(
 }
 
 /**
- * Pro v2 routing (same for CN and non-CN):
- *
- * 1. **Modal first** — every region uses the same host order. `cnNetworkHint` does **not** reorder Modal vs Render.
- * 2. **cnNetworkHint** — only adds `X-Stellar-Network-Hint: cn` and raises Render `maxConn` when Render is used.
- * 3. **Render** — attempted only after Modal returns no usable in-process result **and**
- *    `NEXT_PUBLIC_PRO_V2_RENDER_FALLBACK=true` (default off: Modal-only traffic, Modal retries 422/429/5xx on-host).
- *
- * Default remains Modal-only (no Render) unless that env flag is set.
+ * Pro v3 routing:
+ * 1. **Modal first** — same host order everywhere; `cnNetworkHint` does not reorder Modal vs Render.
+ * 2. **cnNetworkHint** — adds `X-Stellar-Network-Hint: cn` and raises Render `maxConn` when Render is used.
+ * 3. **Render** — only after Modal fails **and** `NEXT_PUBLIC_PROV3_RENDER_FALLBACK=true`.
  */
-export async function runProV2AnalyzeMultipart(
+export async function runProv3AnalyzeMultipart(
   blob: Blob,
   filename: string,
   authHeaders: Record<string, string>,
-  opts: RunProV2AnalyzeOptions,
-): Promise<ProV2AnalyzeResult> {
+  opts: RunProv3AnalyzeOptions,
+): Promise<Prov3AnalyzeResult> {
   const modalUrls = opts.modalUrls.map((u) => u.replace(/\/+$/, "")).filter(Boolean);
   const backendUrls = opts.backendUrls.map((u) => u.replace(/\/+$/, "")).filter(Boolean);
   const maxConn = opts.cnNetworkHint ? 2 : 1;
@@ -200,8 +210,7 @@ export async function runProV2AnalyzeMultipart(
     ...(opts.cnNetworkHint ? { "X-Stellar-Network-Hint": "cn" } : {}),
   };
 
-  // Pass 1 — Modal (GPU); exhaustive retries on same URL before next Modal host.
-  const fromModal = await tryProV2ModalHosts(
+  const fromModal = await tryProv3ModalHosts(
     blob,
     filename,
     opts.screenMode,
@@ -212,10 +221,9 @@ export async function runProV2AnalyzeMultipart(
   );
   if (fromModal) return fromModal;
 
-  // Pass 2 — Render/API only when explicitly enabled (still never CN-first).
-  if (proV2RenderFallbackEnabled() && backendUrls.length > 0) {
+  if (prov3RenderFallbackEnabled() && backendUrls.length > 0) {
     console.log(`${opts.logPrefix} Modal gave no usable response; Render fallback enabled via env`);
-    const fromRender = await tryProV2BackendHosts(
+    const fromRender = await tryProv3BackendHosts(
       blob,
       filename,
       opts.screenMode,
@@ -228,7 +236,7 @@ export async function runProV2AnalyzeMultipart(
     if (fromRender) return fromRender;
   } else if (backendUrls.length > 0) {
     console.log(
-      `${opts.logPrefix} Modal-only mode (set NEXT_PUBLIC_PRO_V2_RENDER_FALLBACK=true to use Render after Modal fails)`,
+      `${opts.logPrefix} Modal-only mode (set NEXT_PUBLIC_PROV3_RENDER_FALLBACK=true to use Render after Modal fails)`,
     );
   }
 
@@ -236,19 +244,6 @@ export async function runProV2AnalyzeMultipart(
     throw new Error("Pro 分析失败：未配置 Modal 地址（检查 precheck / MODAL_BACKEND_URL）");
   }
   throw new Error(
-    "Pro 分析失败：Modal 不可用。请稍后重试；若需临时走 Render，设置 NEXT_PUBLIC_PRO_V2_RENDER_FALLBACK=true 并重新部署。",
+    "Pro 分析失败：Modal 不可用。请稍后重试；若需临时走 Render，设置 NEXT_PUBLIC_PROV3_RENDER_FALLBACK=true 并重新部署。",
   );
-}
-
-/** Pro v3：`POST /pro-v3/analyze`（与 `runProV2AnalyzeMultipart` 同一实现，仅命名区分）。 */
-export type RunProv3AnalyzeOptions = RunProV2AnalyzeOptions;
-export type Prov3AnalyzeResult = ProV2AnalyzeResult;
-
-export async function runProv3AnalyzeMultipart(
-  blob: Blob,
-  filename: string,
-  authHeaders: Record<string, string>,
-  opts: RunProv3AnalyzeOptions,
-): Promise<Prov3AnalyzeResult> {
-  return runProV2AnalyzeMultipart(blob, filename, authHeaders, opts);
 }
