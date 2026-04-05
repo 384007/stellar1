@@ -15,6 +15,7 @@ import {
 import { getAnalysisVideoBlob } from "@/lib/video-store";
 import { isPlusScoreWithheld } from "@/lib/safe-analysis-score";
 import { keyframeImageDataUrl } from "@/lib/image-base64";
+import KeyframeProv3InteractiveViewer from "@/components/KeyframeProv3InteractiveViewer";
 
 /* ═══════════════ Types ═══════════════ */
 
@@ -136,6 +137,8 @@ export interface PlusAnalysisResult {
   };
   /** Backend debug bundle: paths, dense stats, keyframe lineup, visual gate (Screen Mode). */
   prov3_debug?: Record<string, unknown>;
+  /** Pro v3 analyze pipeline — enables interactive keyframe viewer + local annotation sync */
+  pipeline?: string;
 }
 
 export interface PoseFrame {
@@ -858,7 +861,7 @@ function SkeletonToggles({ showSkeleton, showGuideLines, onSkel, onGuide, lang }
   onSkel: () => void; onGuide: () => void; lang: "en" | "zh"
 }) {
   return (
-    <div className="absolute top-3 left-3 flex flex-col gap-1.5" style={{ zIndex: 20 }}>
+    <div className="pointer-events-auto absolute top-3 left-3 flex flex-col gap-1.5" style={{ zIndex: 20 }}>
       <button onClick={onSkel}
         className={`flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-[10px] font-medium backdrop-blur-sm transition ${showSkeleton ? "bg-purple-500/30 text-purple-200 border border-purple-400/40" : "bg-black/40 text-white/50 border border-white/10"}`}>
         <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}><path strokeLinecap="round" strokeLinejoin="round" d="M15.75 6a3.75 3.75 0 1 1-7.5 0 3.75 3.75 0 0 1 7.5 0ZM4.501 20.118a7.5 7.5 0 0 1 14.998 0" /></svg>
@@ -1361,6 +1364,10 @@ function PosturePracticePanel({
 }
 
 /* ═══════════════ Main Component ═══════════════ */
+
+function isProv3KeyframeViewer(result: PlusAnalysisResult): boolean {
+  return result.pipeline === "prov3" || String(result.analysis_id || "").startsWith("prov3_");
+}
 
 export default function PlusResultView({ result, lang, externalVideoSrc, backendUrl, coachingMode, initialActiveTab }: Props) {
   const overlayCoachingMode = coachingMode ?? (result.type === "pro" ? "pro" : "plus");
@@ -1928,29 +1935,95 @@ export default function PlusResultView({ result, lang, externalVideoSrc, backend
                   {lang === "zh" ? "关键帧降级显示" : "Degraded keyframe display"}
                 </div>
               )}
-              <div className="relative bg-black" style={{ minHeight: "70vh" }}>
-                <PlusKeyframePhoto
-                  image_base64={result.keyframes[activeKeyframe]?.image_base64}
-                  alt="Swing frame"
-                  className="w-full h-full object-contain absolute inset-0"
+              {isProv3KeyframeViewer(result) ? (
+                <KeyframeProv3InteractiveViewer
+                  analysisId={result.analysis_id}
+                  keyframes={result.keyframes}
+                  activeIndex={activeKeyframe}
+                  onActiveIndexChange={setActiveKeyframe}
                   lang={lang}
+                  overlay={
+                    <>
+                      <div className="pointer-events-none absolute inset-0">
+                        <SkeletonCanvas
+                          poseFrame={getPoseForKf(activeKeyframe)}
+                          showSkeleton={showSkeleton}
+                          showGuideLines={showGuideLines}
+                        />
+                      </div>
+                      <SkeletonToggles
+                        showSkeleton={showSkeleton}
+                        showGuideLines={showGuideLines}
+                        onSkel={() => setShowSkeleton((s) => !s)}
+                        onGuide={() => setShowGuideLines((g) => !g)}
+                        lang={lang}
+                      />
+                    </>
+                  }
+                  topRightActions={
+                    result.keyframes[activeKeyframe] &&
+                    plusKeyframeB64Usable(result.keyframes[activeKeyframe].image_base64) ? (
+                      <button
+                        type="button"
+                        onClick={() =>
+                          saveHighlight(
+                            result.keyframes[activeKeyframe].image_base64,
+                            result.keyframes[activeKeyframe].label_en,
+                          )
+                        }
+                        className="rounded-lg border border-white/10 bg-black/40 p-2 text-white/50 backdrop-blur-sm transition hover:text-white"
+                      >
+                        <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M3 16.5v2.25A2.25 2.25 0 0 0 5.25 21h13.5A2.25 2.25 0 0 0 21 18.75V16.5M16.5 12 12 16.5m0 0L7.5 12m4.5 4.5V3" />
+                        </svg>
+                      </button>
+                    ) : null
+                  }
                 />
-                <SkeletonCanvas poseFrame={getPoseForKf(activeKeyframe)} showSkeleton={showSkeleton} showGuideLines={showGuideLines} />
-                <SkeletonToggles showSkeleton={showSkeleton} showGuideLines={showGuideLines}
-                  onSkel={() => setShowSkeleton(s => !s)} onGuide={() => setShowGuideLines(g => !g)} lang={lang} />
-                {result.keyframes[activeKeyframe] && plusKeyframeB64Usable(result.keyframes[activeKeyframe].image_base64) && (
-                  <button onClick={() => saveHighlight(result.keyframes[activeKeyframe].image_base64, result.keyframes[activeKeyframe].label_en)}
-                    className="absolute top-3 right-3 rounded-lg bg-black/40 backdrop-blur-sm p-2 text-white/50 hover:text-white border border-white/10 transition"
-                    style={{ zIndex: 20 }}>
-                    <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}><path strokeLinecap="round" strokeLinejoin="round" d="M3 16.5v2.25A2.25 2.25 0 0 0 5.25 21h13.5A2.25 2.25 0 0 0 21 18.75V16.5M16.5 12 12 16.5m0 0L7.5 12m4.5 4.5V3" /></svg>
-                  </button>
-                )}
-                <div className="absolute bottom-3 right-3" style={{ zIndex: 20 }}>
-                  <span className="rounded-full bg-black/60 backdrop-blur-sm px-3 py-1 text-xs text-white/80 font-medium">
-                    {result.keyframes[activeKeyframe] ? (lang === "zh" ? result.keyframes[activeKeyframe].label_zh : result.keyframes[activeKeyframe].label_en) : ""}
-                  </span>
+              ) : (
+                <div className="relative bg-black" style={{ minHeight: "70vh" }}>
+                  <PlusKeyframePhoto
+                    image_base64={result.keyframes[activeKeyframe]?.image_base64}
+                    alt="Swing frame"
+                    className="absolute inset-0 h-full w-full object-contain"
+                    lang={lang}
+                  />
+                  <SkeletonCanvas
+                    poseFrame={getPoseForKf(activeKeyframe)}
+                    showSkeleton={showSkeleton}
+                    showGuideLines={showGuideLines}
+                  />
+                  <SkeletonToggles
+                    showSkeleton={showSkeleton}
+                    showGuideLines={showGuideLines}
+                    onSkel={() => setShowSkeleton((s) => !s)}
+                    onGuide={() => setShowGuideLines((g) => !g)}
+                    lang={lang}
+                  />
+                  {result.keyframes[activeKeyframe] && plusKeyframeB64Usable(result.keyframes[activeKeyframe].image_base64) && (
+                    <button
+                      onClick={() =>
+                        saveHighlight(result.keyframes[activeKeyframe].image_base64, result.keyframes[activeKeyframe].label_en)
+                      }
+                      className="absolute right-3 top-3 rounded-lg border border-white/10 bg-black/40 p-2 text-white/50 backdrop-blur-sm transition hover:text-white"
+                      style={{ zIndex: 20 }}
+                    >
+                      <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M3 16.5v2.25A2.25 2.25 0 0 0 5.25 21h13.5A2.25 2.25 0 0 0 21 18.75V16.5M16.5 12 12 16.5m0 0L7.5 12m4.5 4.5V3" />
+                      </svg>
+                    </button>
+                  )}
+                  <div className="absolute bottom-3 right-3" style={{ zIndex: 20 }}>
+                    <span className="rounded-full bg-black/60 px-3 py-1 text-xs font-medium text-white/80 backdrop-blur-sm">
+                      {result.keyframes[activeKeyframe]
+                        ? lang === "zh"
+                          ? result.keyframes[activeKeyframe].label_zh
+                          : result.keyframes[activeKeyframe].label_en
+                        : ""}
+                    </span>
+                  </div>
                 </div>
-              </div>
+              )}
               <div className="flex gap-1.5 p-3 overflow-x-auto">
                 {result.keyframes.map((kf, i) => (
                   <button key={i} onClick={() => setActiveKeyframe(i)}

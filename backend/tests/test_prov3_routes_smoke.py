@@ -19,6 +19,7 @@ from main import app  # noqa: E402
 EXPECTED_PRO_V3_PATHS = frozenset(
     {
         "/pro-v3/analyze",
+        "/pro-v3/analyze/cancel",
         "/pro-v3/media/{analysis_id}/{filename}",
         "/pro-v3/keyframes/analyze",
         "/pro-v3/keyframes/extract",
@@ -33,7 +34,7 @@ class TestProv3RoutesSmoke(unittest.TestCase):
     def setUpClass(cls) -> None:
         cls.client = TestClient(app)
 
-    def test_openapi_has_exactly_six_pro_v3_paths(self) -> None:
+    def test_openapi_has_exactly_seven_pro_v3_paths(self) -> None:
         schema = app.openapi()
         paths = schema.get("paths") or {}
         prov3 = {p for p in paths if p.startswith("/pro-v3")}
