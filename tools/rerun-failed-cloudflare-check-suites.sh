@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Bulk rerequest failed Cloudflare (Pages) check *runs* on recent commits (not check_suite — suite rerequest often 422 for third-party apps).
+# Bulk rerequest failed Cloudflare check *runs* (prefer GitHub Actions workflow
+# 「Cloudflare 失败：列表与选择性重跑」: list_failures → rerequest_ids / rerequest_all).
 # Requires: `gh auth login` with checks:write / repo scope.
 set -euo pipefail
 
