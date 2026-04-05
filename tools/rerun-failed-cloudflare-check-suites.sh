@@ -5,7 +5,7 @@ set -euo pipefail
 
 OWNER="dytsui"
 REPO="stellar1"
-DEPTH="${DEPTH:-80}"
+DEPTH="${DEPTH:-500}"
 BASE_BRANCH="${BASE_BRANCH:-main}"
 
 if ! command -v gh >/dev/null 2>&1; then

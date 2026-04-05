@@ -1,19 +1,14 @@
-# Rerequest failed Cloudflare (Pages) GitHub Check Runs on recent commits — no local CLI.
-# Uses per-check-run rerequest (check-suites rerequest often fails for third-party apps with GITHUB_TOKEN).
-# GitHub → Actions → "Rerun failed Cloudflare checks" → Run workflow.
-name: Rerun failed Cloudflare checks
+# 一键：对 main 上近期所有「Cloudflare 失败」的 GitHub Check Run 调用 rerequest（无需本机、无需填表）。
+# 使用 check-runs rerequest（suite 级 rerequest 对第三方 App 常 Invalid）。
+# Actions → 选本 workflow → 绿色 Run workflow → 再点一次 Run workflow（共 2 下，无表单项）。
+name: 一键重跑 Cloudflare 失败检查
 
 on:
   workflow_dispatch:
-    inputs:
-      branch:
-        description: "Branch to scan (commit history from tip)"
-        required: true
-        default: "main"
-      depth:
-        description: "How many commits to scan from branch tip"
-        required: true
-        default: "80"
+
+concurrency:
+  group: one-click-cloudflare-rerequest
+  cancel-in-progress: false
 
 permissions:
   checks: write
@@ -23,41 +18,47 @@ jobs:
   rerequest:
     runs-on: ubuntu-latest
     steps:
-      - name: Rerequest failed Cloudflare check runs
+      - name: 扫描 main 并重跑失败的 Cloudflare check runs
         uses: actions/github-script@v8
         with:
           script: |
             const owner = context.repo.owner;
             const repo = context.repo.repo;
-            const branch = "${{ github.event.inputs.branch }}".trim() || "main";
-            const depth = Math.min(500, Math.max(1, parseInt("${{ github.event.inputs.depth }}", 10) || 80));
+            const branch = "main";
+            const depth = 500;
+            const commitPageSize = 100;
 
             const runIds = new Set();
-            let page = 1;
-            const perPage = Math.min(100, depth);
-            let collected = 0;
             const seenShas = [];
+            let page = 1;
+            let collected = 0;
 
             while (collected < depth) {
               const { data: commits } = await github.rest.repos.listCommits({
                 owner,
                 repo,
                 sha: branch,
-                per_page: perPage,
+                per_page: Math.min(commitPageSize, depth - collected),
                 page,
               });
               if (!commits.length) break;
+
               for (const c of commits) {
                 if (collected >= depth) break;
                 seenShas.push(c.sha);
                 collected++;
-                const { data: runsData } = await github.rest.checks.listForRef({
+
+                const runs = [];
+                for await (const res of github.paginate.iterator(github.rest.checks.listForRef, {
                   owner,
                   repo,
                   ref: c.sha,
                   per_page: 100,
-                });
-                for (const run of runsData.check_runs || []) {
+                })) {
+                  runs.push(...(res.data.check_runs || []));
+                }
+
+                for (const run of runs) {
                   if (run.conclusion !== "failure") continue;
                   const appName = (run.app && run.app.name ? String(run.app.name) : "").toLowerCase();
                   if (!appName.includes("cloudflare")) continue;
@@ -65,11 +66,12 @@ jobs:
                   if (rid != null) runIds.add(Number(rid));
                 }
               }
-              if (commits.length < perPage) break;
+
+              if (commits.length < commitPageSize) break;
               page++;
             }
 
-            core.info(`Scanned ${seenShas.length} commit(s) on ${branch}; unique failed Cloudflare check_run id(s): ${runIds.size}`);
+            core.info(`扫描 ${seenShas.length} 个 commit（${branch}）；待重跑的唯一失败 Cloudflare check_run：${runIds.size} 个`);
 
             let ok = 0;
             let bad = 0;
@@ -80,12 +82,15 @@ jobs:
                   repo,
                   check_run_id,
                 });
-                core.info(`rerequest ok: check_run_id=${check_run_id}`);
+                core.info(`ok check_run_id=${check_run_id}`);
                 ok++;
-                await new Promise((r) => setTimeout(r, 400));
+                await new Promise((r) => setTimeout(r, 500));
               } catch (e) {
-                core.warning(`rerequest failed run ${check_run_id}: ${e.message}`);
+                core.warning(`fail check_run_id=${check_run_id}: ${e.message}`);
                 bad++;
               }
             }
-            core.info(`Done. ok=${ok} failed=${bad}`);
+
+            const summary = `完成：成功 rerequest **${ok}** 个，失败 **${bad}** 个（共收集 ${runIds.size} 个唯一失败 Cloudflare check_run）。`;
+            core.info(summary);
+            await core.summary.addRaw(summary);
