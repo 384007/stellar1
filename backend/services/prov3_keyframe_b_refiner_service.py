@@ -18,9 +18,15 @@ def run_b_refine(
     confidence: Dict[str, float],
     fail_reasons: List[str],
 ) -> RefineResult:
-    _ = (analysis_video, preprocess_meta, analysis_frames, confidence)
     refined = refine_with_b_layer(
-        keyframes, enhanced_local_frames, analysis_id=analysis_id
+        keyframes,
+        enhanced_local_frames,
+        analysis_id=analysis_id,
+        analysis_video=analysis_video,
+        preprocess_meta=preprocess_meta,
+        analysis_frames=analysis_frames,
+        confidence=confidence,
+        fail_reasons=fail_reasons,
     )
     b_status, b_fail_reasons = run_b_gate(refined, fail_reasons)
     return RefineResult(

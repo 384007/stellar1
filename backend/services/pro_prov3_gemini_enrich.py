@@ -123,6 +123,11 @@ async def enrich_pro_prov3_response(
         minimal.pop("_prov3_motion", None)
         return minimal
 
+    if str(minimal.get("final_status") or "").strip().lower() != "pass":
+        logger.info("[PRO_PROV3][GEMINI] skip — final_status=%s", minimal.get("final_status"))
+        minimal.pop("_prov3_motion", None)
+        return minimal
+
     block = minimal.pop("_prov3_motion", None) or {}
     av = str(block.get("analysis_video") or "").strip()
     if not av or not Path(av).is_file():
