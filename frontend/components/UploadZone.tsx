@@ -7,9 +7,11 @@ interface UploadZoneProps {
   onUploadComplete: (file: File) => void;
   lang: "en" | "zh";
   isPro?: boolean;
+  /** When true, blocks file pick / drop (e.g. Pro one-shot per page). */
+  disabled?: boolean;
 }
 
-export default function UploadZone({ onUploadComplete, lang, isPro }: UploadZoneProps) {
+export default function UploadZone({ onUploadComplete, lang, isPro, disabled }: UploadZoneProps) {
   const [isDragging, setIsDragging] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
@@ -23,6 +25,7 @@ export default function UploadZone({ onUploadComplete, lang, isPro }: UploadZone
   const handleFile = useCallback(
     async (file: File) => {
       setError("");
+      if (disabled) return;
 
       if (!file.type.includes("video/")) {
         setError(lang === "en" ? "Please upload a video file (MP4/MOV)" : "请上传视频文件（MP4/MOV）");
@@ -67,7 +70,7 @@ export default function UploadZone({ onUploadComplete, lang, isPro }: UploadZone
         }, 300);
       }, 400);
     },
-    [lang, onUploadComplete]
+    [disabled, lang, onUploadComplete]
   );
 
   function handleDragOver(e: React.DragEvent) {
@@ -83,6 +86,7 @@ export default function UploadZone({ onUploadComplete, lang, isPro }: UploadZone
   function handleDrop(e: React.DragEvent) {
     e.preventDefault();
     setIsDragging(false);
+    if (disabled) return;
     const file = e.dataTransfer.files[0];
     if (file) handleFile(file);
   }
@@ -98,16 +102,24 @@ export default function UploadZone({ onUploadComplete, lang, isPro }: UploadZone
   return (
     <div className="mx-auto max-w-xl">
       <div
-        onDragOver={handleDragOver}
-        onDragLeave={handleDragLeave}
-        onDrop={handleDrop}
-        onClick={() => fileInputRef.current?.click()}
-        className={`relative cursor-pointer rounded-2xl border-2 border-dashed p-12 text-center transition-all duration-300 ${
-          isDragging
+        onDragOver={disabled ? undefined : handleDragOver}
+        onDragLeave={disabled ? undefined : handleDragLeave}
+        onDrop={disabled ? undefined : handleDrop}
+        onClick={() => {
+          if (!disabled) fileInputRef.current?.click();
+        }}
+        className={`relative rounded-2xl border-2 border-dashed p-12 text-center transition-all duration-300 ${
+          disabled
+            ? "cursor-not-allowed border-white/10 bg-white/5 opacity-50 pointer-events-none"
+            : "cursor-pointer"
+        } ${
+          !disabled && isDragging
             ? `${borderColor}/60 ${bgColor}`
-            : uploading
+            : !disabled && uploading
             ? "border-white/10 bg-white/5"
-            : `border-white/20 hover:${borderColor}/40 hover:${bgColor}`
+            : !disabled
+            ? `border-white/20 hover:${borderColor}/40 hover:${bgColor}`
+            : ""
         }`}
       >
         <input
@@ -116,6 +128,7 @@ export default function UploadZone({ onUploadComplete, lang, isPro }: UploadZone
           accept="video/mp4,video/quicktime,video/mov"
           onChange={handleChange}
           className="hidden"
+          disabled={disabled}
           data-testid="e2e-upload-video-input"
         />
 
