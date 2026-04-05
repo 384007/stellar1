@@ -18,6 +18,7 @@ from PIL import Image, ImageDraw
 
 from lib.prov3.keyframes.constants import EVENT_SEQUENCE
 from services.prov3_keyframe_orchestrator_service import run_keyframe_analyze
+from services.video_utils import get_video_rotation, read_frame_pose_pipeline
 
 logger = logging.getLogger(__name__)
 
@@ -77,8 +78,14 @@ def _probe_video(path: str) -> tuple[float, int, float]:
 
 
 def _build_ui_keyframes(raw_keyframes: list[dict[str, Any]], video_path: str) -> list[dict[str, Any]]:
+    """Decode JPEG strips from the same timeline as Prov3 (``analysis_video`` recommended).
+
+    OpenCV returns encoded (often landscape) pixel buffers for phone MP4s; we must apply
+    container rotation metadata like the rest of the pose/keyframe pipeline.
+    """
     cap = cv2.VideoCapture(video_path)
     opened = cap.isOpened()
+    rotation = int(get_video_rotation(video_path)) if opened else 0
     if not opened:
         cap.release()
         logger.warning("[PRO_PROV3] cannot open video for thumbnails: %s", video_path)
@@ -101,10 +108,7 @@ def _build_ui_keyframes(raw_keyframes: list[dict[str, Any]], video_path: str) ->
         src_idx = max(0, min(src_idx, nframes - 1))
         frame_bgr = None
         if opened:
-            cap.set(cv2.CAP_PROP_POS_FRAMES, float(src_idx))
-            ok, frame_bgr = cap.read()
-            if not ok:
-                frame_bgr = None
+            frame_bgr = read_frame_pose_pipeline(cap, src_idx, rotation)
         b64 = _jpeg_b64_bgr(frame_bgr) if frame_bgr is not None else ""
         conf = float(k.get("confidence") or 0.0)
         out.append(
@@ -197,7 +201,9 @@ def run_pro_video_analyze_via_prov3(
 
     if cancel_check:
         cancel_check()
-    ui_keyframes = _build_ui_keyframes(raw_kfs, input_video_path)
+    # Same file Prov3 / SwingNet used (240fps timeline, ffmpeg often normalizes orientation).
+    thumb_src = str(prov3.analysis_video or input_video_path).strip() or input_video_path
+    ui_keyframes = _build_ui_keyframes(raw_kfs, thumb_src)
     avg_c = _avg_confidence(ui_keyframes)
     total_score = round(min(100.0, max(0.0, avg_c * 100.0)), 1)
 
