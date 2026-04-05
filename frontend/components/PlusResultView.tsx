@@ -1366,7 +1366,12 @@ function PosturePracticePanel({
 /* ═══════════════ Main Component ═══════════════ */
 
 function isProv3KeyframeViewer(result: PlusAnalysisResult): boolean {
-  return result.pipeline === "prov3" || String(result.analysis_id || "").startsWith("prov3_");
+  if (result.pipeline === "prov3") return true;
+  if (String(result.analysis_id || "").startsWith("prov3_")) return true;
+  if (result.prov3_debug && typeof result.prov3_debug === "object" && !Array.isArray(result.prov3_debug)) {
+    return true;
+  }
+  return false;
 }
 
 export default function PlusResultView({ result, lang, externalVideoSrc, backendUrl, coachingMode, initialActiveTab }: Props) {
@@ -1981,7 +1986,7 @@ export default function PlusResultView({ result, lang, externalVideoSrc, backend
                   }
                 />
               ) : (
-                <div className="relative bg-black" style={{ minHeight: "70vh" }}>
+                <div className="relative isolate h-[70vh] min-h-[280px] w-full max-h-[85vh] bg-black">
                   <PlusKeyframePhoto
                     image_base64={result.keyframes[activeKeyframe]?.image_base64}
                     alt="Swing frame"

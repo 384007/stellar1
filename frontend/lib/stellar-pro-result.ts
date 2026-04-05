@@ -211,6 +211,8 @@ export function proExpandedToPlusViewModel(r: Record<string, any>): PlusAnalysis
       r.prov3_debug && typeof r.prov3_debug === "object" && !Array.isArray(r.prov3_debug)
         ? (r.prov3_debug as PlusAnalysisResult["prov3_debug"])
         : undefined,
+    /** Preserved for history / PlusResultView Prov3 interactive keyframe branch */
+    pipeline: typeof r.pipeline === "string" ? r.pipeline : undefined,
   };
 }
 
