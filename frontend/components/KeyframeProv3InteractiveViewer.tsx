@@ -107,8 +107,10 @@ interface Props {
   activeIndex: number;
   onActiveIndexChange: (i: number) => void;
   lang: "en" | "zh";
-  /** Skeleton / guides — pointer-events none */
+  /** Skeleton / guides canvas — pointer-events none */
   overlay?: React.ReactNode;
+  /** 骨架 + 辅助线竖条（置于左侧，工具栏紧随其后） */
+  skeletonRail?: React.ReactNode;
   /** e.g. download highlight */
   topRightActions?: React.ReactNode;
 }
@@ -120,6 +122,7 @@ export default function KeyframeProv3InteractiveViewer({
   onActiveIndexChange,
   lang,
   overlay,
+  skeletonRail,
   topRightActions,
 }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -144,14 +147,6 @@ export default function KeyframeProv3InteractiveViewer({
   useEffect(() => {
     setImgBroken(false);
   }, [activeIndex, frame?.image_base64]);
-
-  const persist = useCallback(
-    (next: Prov3KfStore) => {
-      setStore(next);
-      saveProv3KfStore(analysisId, next);
-    },
-    [analysisId],
-  );
 
   const frameState: Prov3KfFrameState = useMemo(
     () => getFrameState(store, activeIndex),
@@ -418,6 +413,23 @@ export default function KeyframeProv3InteractiveViewer({
       fs.lines.length === 0 ? {} : { lines: fs.lines.slice(0, -1) },
     );
 
+  const [colorPanelOpen, setColorPanelOpen] = useState(false);
+  const colorWrapRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!colorPanelOpen) return;
+    const close = (e: MouseEvent | TouchEvent) => {
+      const el = colorWrapRef.current;
+      if (el && !el.contains(e.target as Node)) setColorPanelOpen(false);
+    };
+    document.addEventListener("mousedown", close);
+    document.addEventListener("touchstart", close, { passive: true });
+    return () => {
+      document.removeEventListener("mousedown", close);
+      document.removeEventListener("touchstart", close);
+    };
+  }, [colorPanelOpen]);
+
   const t = lang === "zh";
 
   if (!frame) return null;
@@ -427,6 +439,10 @@ export default function KeyframeProv3InteractiveViewer({
       className="relative isolate h-[70vh] min-h-[280px] w-full max-h-[85vh] bg-black select-none"
       style={{ touchAction: "none" }}
     >
+      <p className="pointer-events-none absolute right-3 top-2 z-[20] max-w-[11rem] text-right text-[9px] leading-snug text-white/25">
+        {t ? "标注约保留 30 天" : "Marks kept ~30 days."}
+      </p>
+
       <div
         ref={containerRef}
         className="absolute inset-0 overflow-hidden"
@@ -491,90 +507,284 @@ export default function KeyframeProv3InteractiveViewer({
         <div className="pointer-events-none absolute inset-0 z-[10]">{overlay}</div>
 
         {topRightActions ? (
-          <div className="absolute right-2 top-2 z-[14] flex flex-col gap-1" style={{ pointerEvents: "auto" }}>
+          <div className="pointer-events-auto absolute right-2 top-9 z-[14] flex flex-col gap-1 opacity-55 transition-opacity hover:opacity-95">
             {topRightActions}
           </div>
         ) : null}
 
-        {/* Faded toolbar — bottom, compact */}
-        <div
-          className="absolute bottom-3 left-1/2 z-[15] flex max-w-[98vw] -translate-x-1/2 flex-wrap items-center justify-center gap-1 rounded-full border border-white/10 bg-black/30 px-2 py-1.5 backdrop-blur-md transition-opacity duration-300 hover:bg-black/55"
-          style={{ opacity: 0.38, pointerEvents: "auto" }}
-          onMouseEnter={(e) => {
-            (e.currentTarget as HTMLDivElement).style.opacity = "0.92";
-          }}
-          onMouseLeave={(e) => {
-            (e.currentTarget as HTMLDivElement).style.opacity = "0.38";
-          }}
-          onTouchStart={(e) => {
-            (e.currentTarget as HTMLDivElement).style.opacity = "0.92";
-          }}
-        >
-          <ToolBtn active={tool === "pan"} label={t ? "拖" : "Pan"} onClick={() => setTool("pan")} />
-          <ToolBtn active={tool === "draw"} label={t ? "画" : "Draw"} onClick={() => setTool("draw")} />
-          <ToolBtn active={tool === "ruler"} label={t ? "尺" : "Ruler"} onClick={() => setTool("ruler")} />
-          <span className="mx-0.5 h-4 w-px bg-white/15" />
-          {STROKE_COLORS.map((c) => (
-            <button
-              key={c}
-              type="button"
-              title={c}
-              className={`h-5 w-5 rounded-full border-2 transition ${
-                strokeColor === c ? "border-white scale-110" : "border-transparent opacity-70"
-              }`}
-              style={{ backgroundColor: c }}
-              onClick={() => setStrokeColor(c)}
-            />
-          ))}
-          <span className="mx-0.5 h-4 w-px bg-white/15" />
-          <ToolBtn label="↻90°" title={t ? "顺时针旋转" : "Rotate 90° CW"} onClick={rotateCw} />
-          <ToolBtn
-            label={t ? "复位视" : "View"}
-            title={t ? "重置缩放与平移" : "Reset zoom & pan"}
-            onClick={() => {
-              setTx(0);
-              setTy(0);
-              setScale(1);
-            }}
-          />
-          <ToolBtn label={t ? "撤线" : "Undo"} onClick={undoStroke} />
-          <ToolBtn label={t ? "清标" : "Clear"} onClick={clearMarkup} />
-        </div>
+        {skeletonRail != null ? (
+          <div className="pointer-events-auto absolute left-2 top-11 z-[17] flex flex-col items-center gap-1.5 opacity-[0.38] transition-opacity duration-200 hover:opacity-[0.92] [@media(hover:none)]:opacity-[0.55]">
+            {skeletonRail}
+            <div className="h-px w-7 shrink-0 bg-gradient-to-r from-transparent via-white/12 to-transparent" aria-hidden />
+            <div className="flex flex-col gap-0.5 rounded-[10px] border border-white/[0.07] bg-black/28 p-1 shadow-[0_6px_28px_rgba(0,0,0,0.45)] backdrop-blur-md">
+              <IconTool
+                active={tool === "pan"}
+                label={t ? "移动" : "Move"}
+                onClick={() => setTool("pan")}
+                rail
+              >
+                <IconHand />
+              </IconTool>
+              <IconTool
+                active={tool === "draw"}
+                label={t ? "画笔" : "Brush"}
+                onClick={() => setTool("draw")}
+                rail
+              >
+                <IconBrush />
+              </IconTool>
+              <IconTool
+                active={tool === "ruler"}
+                label={t ? "测量" : "Measure"}
+                onClick={() => setTool("ruler")}
+                rail
+              >
+                <IconRuler />
+              </IconTool>
+              <div className="my-0.5 h-px w-6 shrink-0 self-center bg-white/[0.08]" aria-hidden />
+              <div className="relative shrink-0" ref={colorWrapRef}>
+                <button
+                  type="button"
+                  title={t ? "颜色" : "Color"}
+                  aria-expanded={colorPanelOpen}
+                  aria-haspopup="listbox"
+                  className={`flex h-9 w-9 items-center justify-center rounded-md border transition ${
+                    colorPanelOpen
+                      ? "border-white/22 bg-white/[0.1]"
+                      : "border-white/[0.06] bg-black/22 hover:border-white/12 hover:bg-black/35"
+                  }`}
+                  onClick={() => setColorPanelOpen((o) => !o)}
+                >
+                  <span
+                    className="h-[18px] w-[18px] rounded-full border border-white/15 shadow-inner"
+                    style={{ backgroundColor: strokeColor }}
+                  />
+                </button>
+                {colorPanelOpen ? (
+                  <div
+                    role="listbox"
+                    className="absolute left-full top-1/2 z-50 ml-2 -translate-y-1/2 rounded-[10px] border border-white/[0.1] bg-[#2a2a2a]/96 p-2.5 shadow-[0_12px_40px_rgba(0,0,0,0.65)] backdrop-blur-lg"
+                  >
+                    <p className="mb-2 px-0.5 text-[9px] font-medium uppercase tracking-wider text-white/30">
+                      {t ? "颜色" : "Color"}
+                    </p>
+                    <div className="grid grid-cols-3 gap-1.5">
+                      {STROKE_COLORS.map((c) => (
+                        <button
+                          key={c}
+                          type="button"
+                          role="option"
+                          aria-selected={strokeColor === c}
+                          className={`h-8 w-8 rounded-lg border-2 transition ${
+                            strokeColor === c
+                              ? "border-white/85 ring-2 ring-[#5eb3ff]/45 ring-offset-1 ring-offset-[#2a2a2a]"
+                              : "border-transparent hover:scale-105 hover:border-white/18"
+                          }`}
+                          style={{ backgroundColor: c }}
+                          onClick={() => {
+                            setStrokeColor(c);
+                            setColorPanelOpen(false);
+                          }}
+                        />
+                      ))}
+                    </div>
+                  </div>
+                ) : null}
+              </div>
+              <div className="my-0.5 h-px w-6 shrink-0 self-center bg-white/[0.08]" aria-hidden />
+              <IconTool label={t ? "旋转" : "Rotate"} onClick={rotateCw} rail>
+                <IconRotate />
+              </IconTool>
+              <IconTool
+                label={t ? "适合画面" : "Fit view"}
+                onClick={() => {
+                  setTx(0);
+                  setTy(0);
+                  setScale(1);
+                }}
+                rail
+              >
+                <IconFit />
+              </IconTool>
+              <IconTool label={t ? "撤销笔画" : "Undo stroke"} onClick={undoStroke} rail>
+                <IconUndo />
+              </IconTool>
+              <IconTool label={t ? "清除标注" : "Clear marks"} onClick={clearMarkup} rail>
+                <IconClear />
+              </IconTool>
+            </div>
+          </div>
+        ) : (
+          <div
+            className="pointer-events-auto absolute bottom-4 left-1/2 z-[15] flex max-w-[calc(100%-1.5rem)] -translate-x-1/2 items-center gap-0.5 rounded-[10px] border border-white/[0.09] bg-[#2b2b2b]/90 px-1 py-1 opacity-80 shadow-lg backdrop-blur-xl"
+          >
+            <IconTool active={tool === "pan"} label={t ? "移动" : "Move"} onClick={() => setTool("pan")}>
+              <IconHand />
+            </IconTool>
+            <IconTool active={tool === "draw"} label={t ? "画笔" : "Brush"} onClick={() => setTool("draw")}>
+              <IconBrush />
+            </IconTool>
+            <IconTool active={tool === "ruler"} label={t ? "测量" : "Measure"} onClick={() => setTool("ruler")}>
+              <IconRuler />
+            </IconTool>
+            <div className="mx-0.5 h-7 w-px shrink-0 bg-white/[0.08]" aria-hidden />
+            <div className="relative shrink-0" ref={colorWrapRef}>
+              <button
+                type="button"
+                title={t ? "颜色" : "Color"}
+                aria-expanded={colorPanelOpen}
+                className={`flex h-9 w-9 items-center justify-center rounded-md border transition ${
+                  colorPanelOpen ? "border-white/25 bg-white/[0.12]" : "border-white/[0.06] bg-[#1a1a1a]"
+                }`}
+                onClick={() => setColorPanelOpen((o) => !o)}
+              >
+                <span className="h-5 w-5 rounded-full border border-white/20 shadow-inner" style={{ backgroundColor: strokeColor }} />
+              </button>
+              {colorPanelOpen ? (
+                <div
+                  role="listbox"
+                  className="absolute bottom-full left-1/2 z-50 mb-2 -translate-x-1/2 rounded-[10px] border border-white/[0.1] bg-[#323232] p-2.5 shadow-xl"
+                >
+                  <div className="grid grid-cols-3 gap-2">
+                    {STROKE_COLORS.map((c) => (
+                      <button
+                        key={c}
+                        type="button"
+                        className={`h-9 w-9 rounded-lg border-2 ${strokeColor === c ? "border-white/90" : "border-transparent"}`}
+                        style={{ backgroundColor: c }}
+                        onClick={() => {
+                          setStrokeColor(c);
+                          setColorPanelOpen(false);
+                        }}
+                      />
+                    ))}
+                  </div>
+                </div>
+              ) : null}
+            </div>
+            <div className="mx-0.5 h-7 w-px shrink-0 bg-white/[0.08]" aria-hidden />
+            <IconTool label={t ? "旋转" : "Rotate"} onClick={rotateCw}>
+              <IconRotate />
+            </IconTool>
+            <IconTool
+              label={t ? "适合画面" : "Fit view"}
+              onClick={() => {
+                setTx(0);
+                setTy(0);
+                setScale(1);
+              }}
+            >
+              <IconFit />
+            </IconTool>
+            <IconTool label={t ? "撤销" : "Undo"} onClick={undoStroke}>
+              <IconUndo />
+            </IconTool>
+            <IconTool label={t ? "清除" : "Clear"} onClick={clearMarkup}>
+              <IconClear />
+            </IconTool>
+          </div>
+        )}
 
-        <div className="pointer-events-none absolute bottom-14 left-3 right-3 z-[12] flex flex-col items-center gap-0.5 text-center">
-          <span className="rounded-full bg-black/35 px-2 py-0.5 text-[10px] font-medium text-white/55">
+        <div className="pointer-events-none absolute bottom-3 left-0 right-0 z-[12] flex flex-col items-center gap-0.5 text-center">
+          <span className="rounded-md bg-black/35 px-2.5 py-0.5 text-[10px] font-medium tracking-wide text-white/50 backdrop-blur-sm">
             {lang === "zh" ? frame.label_zh : frame.label_en}
           </span>
-          <span className="text-[9px] text-white/40">
-            {t ? `${activeIndex + 1}/${keyframes.length} · 双指缩放 · 缩小时左右滑换帧` : `${activeIndex + 1} / ${keyframes.length} · Pinch zoom · swipe L/R when zoomed out`}
-          </span>
+          <span className="text-[9px] tabular-nums text-white/25">{activeIndex + 1} / {keyframes.length}</span>
         </div>
       </div>
     </div>
   );
 }
 
-function ToolBtn({
+function IconTool({
   active,
   label,
-  title,
   onClick,
+  children,
+  rail,
 }: {
   active?: boolean;
   label: string;
-  title?: string;
   onClick: () => void;
+  children: React.ReactNode;
+  /** 左侧竖条：更淡，与骨架/辅助线一致 */
+  rail?: boolean;
 }) {
   return (
     <button
       type="button"
-      title={title}
+      title={label}
+      aria-label={label}
       onClick={onClick}
-      className={`rounded-lg px-2 py-0.5 text-[10px] font-semibold transition ${
-        active ? "bg-brand-gold/25 text-brand-gold" : "text-white/55 hover:bg-white/10 hover:text-white/80"
+      className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-md transition ${
+        rail
+          ? active
+            ? "bg-[#5eb3ff]/14 text-[#a8d8ff] shadow-[inset_0_0_0_1px_rgba(94,179,255,0.22)]"
+            : "text-white/30 hover:bg-white/[0.05] hover:text-white/65"
+          : active
+            ? "bg-[#5eb3ff]/20 text-[#7ec8ff] shadow-[inset_0_0_0_1px_rgba(94,179,255,0.35)]"
+            : "text-white/45 hover:bg-white/[0.08] hover:text-white/85"
       }`}
     >
-      {label}
+      {children}
     </button>
+  );
+}
+
+function IconHand() {
+  return (
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden>
+      <path strokeLinecap="round" strokeLinejoin="round" d="M5 9v10M5 9l4-3v10M9 6l4 2v8M13 8l4-1v7M17 7v8a3 3 0 0 1-3 3h-6a3 3 0 0 1-3-3V9" />
+    </svg>
+  );
+}
+
+function IconBrush() {
+  return (
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden>
+      <path strokeLinecap="round" strokeLinejoin="round" d="m16.862 4.487 1.687-1.688a1.875 1.875 0 1 1 2.652 2.652L6.832 19.82a4.5 4.5 0 0 1-1.897 1.13l-2.685.8.8-2.685a4.5 4.5 0 0 1 1.13-1.897L16.863 4.487Zm0 0L19.5 7.125" />
+    </svg>
+  );
+}
+
+function IconRuler() {
+  return (
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden>
+      <path strokeLinecap="round" strokeLinejoin="round" d="m4.5 19.5 15-15" />
+      <path strokeLinecap="round" d="M6 17.5V16M8 15.5V14M10 13.5V12M12 11.5V10M14 9.5V8M16 7.5V6" />
+    </svg>
+  );
+}
+
+function IconRotate() {
+  return (
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden>
+      <path strokeLinecap="round" strokeLinejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0 3.181 3.183a8.25 8.25 0 0 0 11.667 0l1.194-1.194m-4.892-4.892 3.182-3.182a8.25 8.25 0 0 0-11.667 0L2.985 9.348" />
+    </svg>
+  );
+}
+
+function IconFit() {
+  return (
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden>
+      <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 3.75v4.5m0-4.5h4.5m-4.5 0L9 9M3.75 20.25v-4.5m0 4.5h4.5m-4.5 0L9 15M20.25 3.75h-4.5m4.5 0v4.5m0-4.5L15 9m5.25 11.25h-4.5m4.5 0v-4.5m0 4.5L15 15" />
+    </svg>
+  );
+}
+
+function IconUndo() {
+  return (
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden>
+      <path strokeLinecap="round" strokeLinejoin="round" d="M9 15 3 9l6-6" />
+      <path strokeLinecap="round" strokeLinejoin="round" d="M3 9h10.5a5.5 5.5 0 0 1 0 11H12" />
+    </svg>
+  );
+}
+
+function IconClear() {
+  return (
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden>
+      <path strokeLinecap="round" strokeLinejoin="round" d="m19 7-.867 12.142A2 2 0 0 1 16.138 21H7.862a2 2 0 0 1-1.995-1.858L5 7m5 4v6m4-6v6m1-10V5a1 1 0 0 0-1-1h-4a1 1 0 0 0-1 1v2M4 7h16" />
+    </svg>
   );
 }

@@ -856,21 +856,93 @@ function saveHighlight(imgBase64: string, label: string) {
 
 /* ═══════════════ Toggle Buttons ═══════════════ */
 
-function SkeletonToggles({ showSkeleton, showGuideLines, onSkel, onGuide, lang }: {
-  showSkeleton: boolean; showGuideLines: boolean;
-  onSkel: () => void; onGuide: () => void; lang: "en" | "zh"
+function SkeletonToggles({
+  showSkeleton,
+  showGuideLines,
+  onSkel,
+  onGuide,
+  lang,
+  /** Prov3 左侧竖条：与关键帧工具同宽、淡化，仅图标 */
+  rail,
+}: {
+  showSkeleton: boolean;
+  showGuideLines: boolean;
+  onSkel: () => void;
+  onGuide: () => void;
+  lang: "en" | "zh";
+  rail?: boolean;
 }) {
+  const skelLabel = lang === "zh" ? "骨架" : "Skeleton";
+  const guideLabel = lang === "zh" ? "辅助线" : "Guides";
+
+  if (rail) {
+    const railBtn = (active: boolean, tone: "purple" | "amber") =>
+      `flex h-9 w-9 shrink-0 items-center justify-center rounded-md border backdrop-blur-md transition ${
+        active
+          ? tone === "purple"
+            ? "border-purple-400/25 bg-purple-500/12 text-purple-200/90 shadow-[inset_0_0_0_1px_rgba(168,85,247,0.12)]"
+            : "border-amber-400/25 bg-amber-500/12 text-amber-100/90 shadow-[inset_0_0_0_1px_rgba(245,158,11,0.12)]"
+          : "border-white/[0.06] bg-black/25 text-white/38 hover:border-white/12 hover:bg-black/38 hover:text-white/60"
+      }`;
+    return (
+      <div className="flex flex-col items-center gap-1.5">
+        <button
+          type="button"
+          onClick={onSkel}
+          className={railBtn(showSkeleton, "purple")}
+          title={skelLabel}
+          aria-label={skelLabel}
+          aria-pressed={showSkeleton}
+        >
+          <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+            <path strokeLinecap="round" strokeLinejoin="round" d="M15.75 6a3.75 3.75 0 1 1-7.5 0 3.75 3.75 0 0 1 7.5 0ZM4.501 20.118a7.5 7.5 0 0 1 14.998 0" />
+          </svg>
+        </button>
+        <button
+          type="button"
+          onClick={onGuide}
+          className={railBtn(showGuideLines, "amber")}
+          title={guideLabel}
+          aria-label={guideLabel}
+          aria-pressed={showGuideLines}
+        >
+          <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+            <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 6.75h16.5M3.75 12h16.5m-16.5 5.25h16.5" />
+          </svg>
+        </button>
+      </div>
+    );
+  }
+
   return (
-    <div className="pointer-events-auto absolute top-3 left-3 flex flex-col gap-1.5" style={{ zIndex: 20 }}>
-      <button onClick={onSkel}
-        className={`flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-[10px] font-medium backdrop-blur-sm transition ${showSkeleton ? "bg-purple-500/30 text-purple-200 border border-purple-400/40" : "bg-black/40 text-white/50 border border-white/10"}`}>
-        <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}><path strokeLinecap="round" strokeLinejoin="round" d="M15.75 6a3.75 3.75 0 1 1-7.5 0 3.75 3.75 0 0 1 7.5 0ZM4.501 20.118a7.5 7.5 0 0 1 14.998 0" /></svg>
-        {lang === "zh" ? "骨架" : "Skeleton"}
+    <div className="pointer-events-auto absolute left-3 top-3 z-20 flex flex-col gap-1.5">
+      <button
+        type="button"
+        onClick={onSkel}
+        className={`flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-[10px] font-medium backdrop-blur-sm transition ${
+          showSkeleton
+            ? "border-purple-400/35 bg-purple-500/25 text-purple-200"
+            : "border-white/10 bg-black/35 text-white/50 hover:bg-black/45"
+        }`}
+      >
+        <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+          <path strokeLinecap="round" strokeLinejoin="round" d="M15.75 6a3.75 3.75 0 1 1-7.5 0 3.75 3.75 0 0 1 7.5 0ZM4.501 20.118a7.5 7.5 0 0 1 14.998 0" />
+        </svg>
+        {skelLabel}
       </button>
-      <button onClick={onGuide}
-        className={`flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-[10px] font-medium backdrop-blur-sm transition ${showGuideLines ? "bg-amber-500/30 text-amber-200 border border-amber-400/40" : "bg-black/40 text-white/50 border border-white/10"}`}>
-        <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}><path strokeLinecap="round" strokeLinejoin="round" d="M3.75 6.75h16.5M3.75 12h16.5m-16.5 5.25h16.5" /></svg>
-        {lang === "zh" ? "辅助线" : "Guides"}
+      <button
+        type="button"
+        onClick={onGuide}
+        className={`flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-[10px] font-medium backdrop-blur-sm transition ${
+          showGuideLines
+            ? "border-amber-400/35 bg-amber-500/25 text-amber-200"
+            : "border-white/10 bg-black/35 text-white/50 hover:bg-black/45"
+        }`}
+      >
+        <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+          <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 6.75h16.5M3.75 12h16.5m-16.5 5.25h16.5" />
+        </svg>
+        {guideLabel}
       </button>
     </div>
   );
@@ -1948,22 +2020,23 @@ export default function PlusResultView({ result, lang, externalVideoSrc, backend
                   onActiveIndexChange={setActiveKeyframe}
                   lang={lang}
                   overlay={
-                    <>
-                      <div className="pointer-events-none absolute inset-0">
-                        <SkeletonCanvas
-                          poseFrame={getPoseForKf(activeKeyframe)}
-                          showSkeleton={showSkeleton}
-                          showGuideLines={showGuideLines}
-                        />
-                      </div>
-                      <SkeletonToggles
+                    <div className="pointer-events-none absolute inset-0">
+                      <SkeletonCanvas
+                        poseFrame={getPoseForKf(activeKeyframe)}
                         showSkeleton={showSkeleton}
                         showGuideLines={showGuideLines}
-                        onSkel={() => setShowSkeleton((s) => !s)}
-                        onGuide={() => setShowGuideLines((g) => !g)}
-                        lang={lang}
                       />
-                    </>
+                    </div>
+                  }
+                  skeletonRail={
+                    <SkeletonToggles
+                      rail
+                      showSkeleton={showSkeleton}
+                      showGuideLines={showGuideLines}
+                      onSkel={() => setShowSkeleton((s) => !s)}
+                      onGuide={() => setShowGuideLines((g) => !g)}
+                      lang={lang}
+                    />
                   }
                   topRightActions={
                     result.keyframes[activeKeyframe] &&
@@ -1976,7 +2049,7 @@ export default function PlusResultView({ result, lang, externalVideoSrc, backend
                             result.keyframes[activeKeyframe].label_en,
                           )
                         }
-                        className="rounded-lg border border-white/10 bg-black/40 p-2 text-white/50 backdrop-blur-sm transition hover:text-white"
+                        className="rounded-lg border border-white/[0.08] bg-black/30 p-2 text-white/40 opacity-60 backdrop-blur-sm transition hover:border-white/15 hover:bg-black/45 hover:text-white/80 hover:opacity-95"
                       >
                         <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
                           <path strokeLinecap="round" strokeLinejoin="round" d="M3 16.5v2.25A2.25 2.25 0 0 0 5.25 21h13.5A2.25 2.25 0 0 0 21 18.75V16.5M16.5 12 12 16.5m0 0L7.5 12m4.5 4.5V3" />

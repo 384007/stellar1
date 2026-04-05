@@ -1,7 +1,4 @@
-/**
- * Client-side persistence for Pro v3 keyframe markup (per analysis, per frame index).
- * Syncs when reopening the same analysis from /pro or /history (same analysis_id).
- */
+/** Pro v3 keyframe markup persistence (per analysis / frame index). */
 
 export const KF_PROV3_STORAGE_KEY = "stellar-prov3-kf-ui";
 
