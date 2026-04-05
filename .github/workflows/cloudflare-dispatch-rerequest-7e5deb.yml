@@ -80,6 +80,31 @@ jobs:
 
             core.info(`区间: ${sinceFull.slice(0, 7)}…HEAD，共 ${shas.length} 个 commit`);
 
+            const BAD_CONCLUSIONS = new Set([
+              "failure",
+              "timed_out",
+              "cancelled",
+              "action_required",
+              "startup_failure",
+              "stale",
+            ]);
+
+            function isCloudflareRelated(run) {
+              const app = ((run.app && run.app.name) || "").toLowerCase();
+              const slug = ((run.app && run.app.slug) || "").toLowerCase();
+              const nm = (run.name || "").toLowerCase();
+              if (slug.includes("cloudflare")) return true;
+              if (app.includes("cloudflare")) return true;
+              if (nm.includes("cloudflare")) return true;
+              return false;
+            }
+
+            function shouldRerequestRun(run) {
+              if (!run || run.status !== "completed") return false;
+              if (!BAD_CONCLUSIONS.has(run.conclusion || "")) return false;
+              return isCloudflareRelated(run);
+            }
+
             /** @type {Map<number, unknown>} */
             const byId = new Map();
 
@@ -91,9 +116,7 @@ jobs:
                 per_page: 100,
               })) {
                 for (const run of res.data.check_runs || []) {
-                  if (run.conclusion !== "failure") continue;
-                  const appName = (run.app && run.app.name ? String(run.app.name) : "").toLowerCase();
-                  if (!appName.includes("cloudflare")) continue;
+                  if (!shouldRerequestRun(run)) continue;
                   const rid = run.id;
                   if (rid == null) continue;
                   byId.set(Number(rid), true);
@@ -105,8 +128,61 @@ jobs:
             core.info(`待 rerequest: ${ids.length} 个唯一失败 Cloudflare check_run`);
 
             if (!ids.length) {
+              async function diagForSha(sha, label) {
+                let md = `### ${label} \`${sha.slice(0, 7)}\`\n\n`;
+                const lines = [];
+                try {
+                  const { data } = await github.rest.checks.listForRef({
+                    owner,
+                    repo,
+                    ref: sha,
+                    per_page: 100,
+                  });
+                  const runs = data.check_runs || [];
+                  lines.push(`**Checks API**: ${runs.length} 条`);
+                  md += `| conclusion | status | app.slug | app.name | name |\n|:---|:---|:---|:---|:---|\n`;
+                  for (const r of runs.slice(0, 40)) {
+                    const slug = (r.app && r.app.slug) || "";
+                    const an = (r.app && r.app.name) || "";
+                    md += `| ${r.conclusion || "—"} | ${r.status} | ${slug} | ${an} | ${(r.name || "").replace(/\|/g, "/")} |\n`;
+                  }
+                  if (runs.length > 40) md += `\n（仅列前 40 条）\n`;
+                } catch (e) {
+                  md += `Checks 读取失败: ${e.message}\n`;
+                }
+                try {
+                  const { data: st } = await github.rest.repos.listCommitStatusesForRef({
+                    owner,
+                    repo,
+                    ref: sha,
+                    per_page: 100,
+                  });
+                  md += `\n**Commit statuses**（旧式红叉可能只在这里）: ${st.length} 条\n\n`;
+                  md += `| state | context |\n|:---|:---|\n`;
+                  for (const s of st.slice(0, 30)) {
+                    md += `| ${s.state} | ${(s.context || "").replace(/\|/g, "/")} |\n`;
+                  }
+                } catch (e) {
+                  md += `\nStatuses 读取失败: ${e.message}\n`;
+                }
+                return md;
+              }
+
+              const headSha = shas[0];
+              const tailSha = shas[shas.length - 1];
+              const d1 = await diagForSha(headSha, "最新提交 HEAD 侧");
+              const d2 = await diagForSha(tailSha, "区间内最旧提交");
+
               await core.summary
-                .addRaw(`## 无失败项\n\n${shas.length} 个 commit 内未发现 Cloudflare failure check_run。`)
+                .addRaw(
+                  `## 无匹配 check_run（可 rerequest）\n\n` +
+                    `在 **${shas.length}** 个 commit 上，按「Cloudflare 相关 + 失败类 conclusion」未找到条目。\n\n` +
+                    `可能原因：1) 红叉已是 **success**；2) 失败记在 **Commit status** 而非 Check run（下方可查）；3) App 名不含 cloudflare（把日志发给维护者改匹配）。\n\n` +
+                    d1 +
+                    "\n\n" +
+                    d2 +
+                    `\n\n> Check run 才能用 API rerequest；若只有 **status** 失败，请到 **Cloudflare Dashboard → Pages → Deployments** 手动 Retry。`,
+                )
                 .write();
               return;
             }

@@ -73,6 +73,31 @@ jobs:
             /** @type {Map<number, { id: number, sha_short: string, sha_full: string, name: string, app: string, html_url: string }>} */
             const byId = new Map();
 
+            const BAD_CONCLUSIONS = new Set([
+              "failure",
+              "timed_out",
+              "cancelled",
+              "action_required",
+              "startup_failure",
+              "stale",
+            ]);
+
+            function isCloudflareRelated(run) {
+              const app = ((run.app && run.app.name) || "").toLowerCase();
+              const slug = ((run.app && run.app.slug) || "").toLowerCase();
+              const nm = (run.name || "").toLowerCase();
+              if (slug.includes("cloudflare")) return true;
+              if (app.includes("cloudflare")) return true;
+              if (nm.includes("cloudflare")) return true;
+              return false;
+            }
+
+            function shouldRerequestRun(run) {
+              if (!run || run.status !== "completed") return false;
+              if (!BAD_CONCLUSIONS.has(run.conclusion || "")) return false;
+              return isCloudflareRelated(run);
+            }
+
             /**
              * @returns {Promise<{ shas: string[], rangeLabel: string } | null>}
              */
@@ -168,9 +193,7 @@ jobs:
                   per_page: 100,
                 })) {
                   for (const run of res.data.check_runs || []) {
-                    if (run.conclusion !== "failure") continue;
-                    const appName = (run.app && run.app.name ? String(run.app.name) : "").toLowerCase();
-                    if (!appName.includes("cloudflare")) continue;
+                    if (!shouldRerequestRun(run)) continue;
                     const rid = run.id;
                     if (rid == null) continue;
                     const id = Number(rid);
