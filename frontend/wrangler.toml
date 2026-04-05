@@ -1,3 +1,12 @@
+# ---------------------------------------------------------------------------
+# IMPORTANT — Cloudflare build must use branch `main` HEAD (not old SHAs).
+# If build logs show:  HEAD is now at fe27253 …  you are NOT building current code.
+# Commit fe27253 is missing `export const runtime = "edge"` on /pro/[analysisId];
+# @cloudflare/next-on-pages then fails with "routes were not configured for Edge".
+# Fix in dashboard: Settings → Builds → Production branch = main; trigger a NEW
+# deployment from latest main. Do not "Retry" an old failed deployment (same SHA).
+# ---------------------------------------------------------------------------
+#
 # Pages: `name` must match the Cloudflare Pages project name in the dashboard.
 # If deploy says "Project not found", set the correct name or pass --project-name on the CLI.
 #
