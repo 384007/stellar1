@@ -1,4 +1,6 @@
-import ProPage from "../page";
+import ProPageClient from "../ProPageClient";
+
+export const runtime = "edge";
 
 export default async function ProAnalysisByIdPage({
   params,
@@ -7,5 +9,5 @@ export default async function ProAnalysisByIdPage({
 }) {
   const { analysisId } = await params;
   const id = decodeURIComponent(analysisId || "").trim();
-  return <ProPage deepLinkAnalysisId={id} />;
+  return <ProPageClient deepLinkAnalysisId={id} />;
 }
