@@ -1,4 +1,4 @@
-# 零输入：从 7e5debfc…（含）到 HEAD，重跑全部失败的 Cloudflare check_run。
+# 零输入：仅 7e5debfc… **之后** 到 HEAD（不含该提交本体），重跑失败类 Cloudflare check_run。
 # 注意：不能用「派发另一个 workflow」——GITHUB_TOKEN 触发的派发不会真正启动子 workflow。
 # 改起点：编辑下方 SINCE_SHA。
 name: Cloudflare 一键重跑（7e5deb→HEAD）
@@ -58,12 +58,13 @@ jobs:
               if (!commits.length) break;
 
               for (const c of commits) {
-                shas.push(c.sha);
-                walked++;
+                // 仅 7e5deb **之后** 到 HEAD（不含起始 commit 本身）——「之前的」一律不扫
                 if (c.sha === sinceFull) {
                   found = true;
                   break;
                 }
+                shas.push(c.sha);
+                walked++;
               }
 
               if (found) break;
@@ -78,7 +79,9 @@ jobs:
               return;
             }
 
-            core.info(`区间: ${sinceFull.slice(0, 7)}…HEAD，共 ${shas.length} 个 commit`);
+            core.info(
+              `区间: 在 ${sinceFull.slice(0, 7)} **之后** → HEAD，共 ${shas.length} 个 commit（不含 ${sinceFull.slice(0, 7)} 本体）`,
+            );
 
             const BAD_CONCLUSIONS = new Set([
               "failure",

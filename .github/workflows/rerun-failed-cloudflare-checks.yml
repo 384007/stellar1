@@ -35,7 +35,7 @@ on:
         required: true
         default: "500"
       since_commit:
-        description: "留空=只用深度；填完整 SHA=从该 commit（含）到 HEAD 整段（最多往回 5000 条）"
+        description: "留空=只用深度；填 SHA=仅该提交之后→HEAD（不含该提交本体，最多往回走 5000 条找边界）"
         required: false
         default: ""
 
@@ -158,12 +158,12 @@ jobs:
                 if (!commits.length) break;
 
                 for (const c of commits) {
-                  shas.push(c.sha);
-                  walked++;
                   if (c.sha === sinceSha) {
                     found = true;
                     break;
                   }
+                  shas.push(c.sha);
+                  walked++;
                 }
 
                 if (found) break;
@@ -180,7 +180,7 @@ jobs:
 
               return {
                 shas,
-                rangeLabel: `从 \`${sinceSha.slice(0, 7)}\`（含）到 HEAD，**${shas.length}** 个 commit`,
+                rangeLabel: `在 \`${sinceSha.slice(0, 7)}\` **之后** → HEAD，**${shas.length}** 个 commit（不含该提交本体）`,
               };
             }
 
