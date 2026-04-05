@@ -1,5 +1,4 @@
-# Cloudflare（App 名含 cloudflare）失败：只用手点选，无需粘贴 ID。
-# list=看表格；rerequest=按「范围」下拉重跑（最新失败优先 = check_run id 从大到小）。
+# Cloudflare（App 名含 cloudflare）失败：点选 + 可选「从某 commit 到 HEAD」整段扫描。
 # suite 级 rerequest 对第三方 App 常 Invalid，仅用 check-runs/{id}/rerequest。
 name: Cloudflare 失败：列表与选择性重跑
 
@@ -7,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: "list=只看失败列表；rerequest=按下面「范围」重跑（全程点选，不用输入）"
+        description: "list=只看失败列表；rerequest=按「范围」重跑"
         type: choice
         required: true
         default: list_failures
@@ -15,7 +14,7 @@ on:
           - list_failures
           - rerequest
       scope:
-        description: "仅 rerequest 有效：重跑几条（按最新失败优先）"
+        description: "仅 rerequest：重跑几条失败（按 check_run id 从大到小）"
         type: choice
         required: true
         default: "全部"
@@ -27,13 +26,17 @@ on:
           - "前 50 条"
           - "前 100 条"
       branch:
-        description: "扫描分支（list / rerequest 都会扫）"
+        description: "分支"
         required: true
         default: main
       depth:
-        description: "扫描最近多少个 commit"
+        description: "仅当「起始 commit」留空时有效：从 HEAD 往回扫多少个 commit"
         required: true
         default: "500"
+      since_commit:
+        description: "留空=只用深度；填完整 SHA=从该 commit（含）到 HEAD 整段（最多往回 5000 条）"
+        required: false
+        default: ""
 
 concurrency:
   group: cloudflare-check-rerequest-${{ github.event.inputs.mode }}-${{ github.event.inputs.scope }}
@@ -54,6 +57,7 @@ jobs:
           SCOPE: ${{ github.event.inputs.scope }}
           BRANCH: ${{ github.event.inputs.branch }}
           DEPTH: ${{ github.event.inputs.depth }}
+          SINCE_COMMIT: ${{ github.event.inputs.since_commit }}
         with:
           script: |
             const owner = context.repo.owner;
@@ -61,60 +65,125 @@ jobs:
             const mode = process.env.MODE || "list_failures";
             const scope = process.env.SCOPE || "全部";
             const branch = (process.env.BRANCH || "main").trim();
-            const depth = Math.min(500, Math.max(1, parseInt(process.env.DEPTH || "500", 10) || 500));
-
-            const commitPageSize = 100;
-            const seenShas = [];
-            let page = 1;
-            let collected = 0;
+            const depthCap = Math.min(500, Math.max(1, parseInt(process.env.DEPTH || "500", 10) || 500));
+            const sinceRaw = (process.env.SINCE_COMMIT || "").trim();
+            const MAX_WALK = 5000;
 
             /** @type {Map<number, { id: number, sha_short: string, sha_full: string, name: string, app: string, html_url: string }>} */
             const byId = new Map();
 
-            async function scanFailures() {
-              while (collected < depth) {
+            /**
+             * @returns {Promise<{ shas: string[], rangeLabel: string } | null>}
+             */
+            async function resolveCommitShas() {
+              if (!sinceRaw) {
+                const shas = [];
+                let page = 1;
+                let collected = 0;
+                while (collected < depthCap) {
+                  const { data: commits } = await github.rest.repos.listCommits({
+                    owner,
+                    repo,
+                    sha: branch,
+                    per_page: Math.min(100, depthCap - collected),
+                    page,
+                  });
+                  if (!commits.length) break;
+                  for (const c of commits) {
+                    if (collected >= depthCap) break;
+                    shas.push(c.sha);
+                    collected++;
+                  }
+                  if (commits.length < 100) break;
+                  page++;
+                }
+                return {
+                  shas,
+                  rangeLabel: `分支 \`${branch}\` 最近 **${shas.length}** 个 commit（深度上限 ${depthCap}）`,
+                };
+              }
+
+              let sinceSha;
+              try {
+                const { data } = await github.rest.repos.getCommit({
+                  owner,
+                  repo,
+                  ref: sinceRaw,
+                });
+                sinceSha = data.sha;
+              } catch (e) {
+                core.setFailed(`无法解析起始 commit「${sinceRaw}」: ${e.message}`);
+                return null;
+              }
+
+              const shas = [];
+              let walked = 0;
+              let page = 1;
+              let found = false;
+
+              while (!found && walked < MAX_WALK) {
                 const { data: commits } = await github.rest.repos.listCommits({
                   owner,
                   repo,
                   sha: branch,
-                  per_page: Math.min(commitPageSize, depth - collected),
+                  per_page: 100,
                   page,
                 });
                 if (!commits.length) break;
 
                 for (const c of commits) {
-                  if (collected >= depth) break;
-                  seenShas.push(c.sha);
-                  collected++;
-
-                  for await (const res of github.paginate.iterator(github.rest.checks.listForRef, {
-                    owner,
-                    repo,
-                    ref: c.sha,
-                    per_page: 100,
-                  })) {
-                    for (const run of res.data.check_runs || []) {
-                      if (run.conclusion !== "failure") continue;
-                      const appName = (run.app && run.app.name ? String(run.app.name) : "").toLowerCase();
-                      if (!appName.includes("cloudflare")) continue;
-                      const rid = run.id;
-                      if (rid == null) continue;
-                      const id = Number(rid);
-                      const shaFull = String(run.head_sha || c.sha || "").trim();
-                      byId.set(id, {
-                        id,
-                        sha_short: shaFull ? shaFull.slice(0, 7) : "—",
-                        sha_full: shaFull,
-                        name: run.name || "(no name)",
-                        app: (run.app && run.app.name) || "",
-                        html_url: run.html_url || "",
-                      });
-                    }
+                  shas.push(c.sha);
+                  walked++;
+                  if (c.sha === sinceSha) {
+                    found = true;
+                    break;
                   }
                 }
 
-                if (commits.length < commitPageSize) break;
+                if (found) break;
+                if (commits.length < 100) break;
                 page++;
+              }
+
+              if (!found) {
+                core.setFailed(
+                  `从 \`${branch}\` HEAD 往回未找到起始 commit \`${sinceSha.slice(0, 7)}\`（或超过 ${MAX_WALK} 条）。请确认该提交在当前分支历史上。`,
+                );
+                return null;
+              }
+
+              return {
+                shas,
+                rangeLabel: `从 \`${sinceSha.slice(0, 7)}\`（含）到 HEAD，**${shas.length}** 个 commit`,
+              };
+            }
+
+            async function scanFailuresForShas(shas) {
+              for (const sha of shas) {
+                for await (const res of github.paginate.iterator(github.rest.checks.listForRef, {
+                  owner,
+                  repo,
+                  ref: sha,
+                  per_page: 100,
+                })) {
+                  for (const run of res.data.check_runs || []) {
+                    if (run.conclusion !== "failure") continue;
+                    const appName = (run.app && run.app.name ? String(run.app.name) : "").toLowerCase();
+                    if (!appName.includes("cloudflare")) continue;
+                    const rid = run.id;
+                    if (rid == null) continue;
+                    const id = Number(rid);
+                    const shaFull = String(run.head_sha || sha || "").trim();
+                    byId.set(id, {
+                      id,
+                      sha_short: shaFull ? shaFull.slice(0, 7) : "—",
+                      sha_full: shaFull,
+                      name: run.name || "(no name)",
+                      app: (run.app && run.app.name) || "",
+                      html_url: run.html_url || "",
+                    });
+                  }
+                }
               }
             }
 
@@ -165,14 +234,19 @@ jobs:
               return { ok, bad };
             }
 
+            const range = await resolveCommitShas();
+            if (!range) return;
+
+            await scanFailuresForShas(range.shas);
+            const commitCount = range.shas.length;
+
             if (mode === "list_failures") {
-              await scanFailures();
               const rows = [...byId.values()].sort((a, b) => b.id - a.id);
               const repoUrl = `https://github.com/${owner}/${repo}`;
 
               let md = `## Cloudflare 失败检查列表\n\n`;
-              md += `- 分支 **${branch}**，扫描 **${seenShas.length}** 个 commit，深度上限 **${depth}**\n`;
-              md += `- 共 **${rows.length}** 条唯一失败 check_run（**只用手点选**：再 Run workflow → mode 选 **rerequest** → scope 选 **全部** 或 **前 N 条**）\n\n`;
+              md += `- ${range.rangeLabel}\n`;
+              md += `- 共 **${rows.length}** 条唯一失败 check_run\n\n`;
               md += `| check_run_id | commit | 检查名称 | App |\n`;
               md += `|---:|:---|:---|:---|\n`;
               for (const r of rows) {
@@ -187,27 +261,26 @@ jobs:
             }
 
             if (mode === "rerequest") {
-              await scanFailures();
               const max = scopeToMax(scope);
               let ids = [...byId.keys()].sort((a, b) => b - a);
               if (Number.isFinite(max)) ids = ids.slice(0, max);
 
               core.info(
-                `rerequest: scope=${scope} → ${ids.length} check_run(s) (${seenShas.length} commits scanned)`,
+                `rerequest: scope=${scope} → ${ids.length} check_run(s); ${range.rangeLabel}`,
               );
 
               if (!ids.length) {
                 await core.summary
-                  .addRaw(`## rerequest\n未扫描到失败的 Cloudflare check_run（分支 \`${branch}\`）。`)
+                  .addRaw(`## rerequest\n未扫描到失败的 Cloudflare check_run。\n\n${range.rangeLabel}`)
                   .write();
                 return;
               }
 
               const { ok, bad } = await rerequestBatch(ids, { label: "pick" });
-              const line = `完成：范围 **${scope}**，成功 **${ok}**，失败 **${bad}**，本批共 **${ids.length}** 个。`;
+              const line = `完成：范围 **${scope}**，成功 **${ok}**，失败 **${bad}**，本批 **${ids.length}** 个 check_run。`;
               core.info(line);
               await core.summary
-                .addRaw(`## ${line}\n\n分支 \`${branch}\`，commit 数 ${seenShas.length}。`)
+                .addRaw(`## ${line}\n\n${range.rangeLabel}\n\ncommit 数: ${commitCount}`)
                 .write();
               if (bad > 0) core.setFailed(`部分 rerequest 失败：${bad} 个`);
               return;

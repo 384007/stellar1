@@ -1,0 +1,34 @@
+# 零输入：一键触发「从 7e5debfc… 到 HEAD」整段 Cloudflare 失败 rerequest（全部）。
+# 若需改起点：编辑下方 SINCE_SHA 后提交，或直接用主 workflow 填 since_commit。
+name: Cloudflare 一键重跑（7e5deb→HEAD）
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: write
+
+jobs:
+  dispatch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 触发主 workflow（预填区间与 rerequest 全部）
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const SINCE_SHA = "7e5debfcae0763ff75308ad4dd54bce121f757e1";
+            await github.rest.actions.createWorkflowDispatch({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              workflow_id: "rerun-failed-cloudflare-checks.yml",
+              ref: "main",
+              inputs: {
+                mode: "rerequest",
+                scope: "全部",
+                branch: "main",
+                depth: "500",
+                since_commit: SINCE_SHA,
+              },
+            });
+            core.info(`已派发 rerun-failed-cloudflare-checks.yml（since=${SINCE_SHA.slice(0, 7)} → HEAD，scope=全部）`);
