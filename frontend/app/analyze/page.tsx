@@ -119,7 +119,7 @@ export default function AnalyzePage() {
   const [showExtendedHUD, setShowExtendedHUD] = useState(false);
   const [lang, setLang] = useState<"en" | "zh">("zh");
   const [activeTab, setActiveTab] = useState<"analysis" | "3d" | "comparison">("analysis");
-  const [analysisMode, setAnalysisMode] = useState<AnalysisMode>("lite");
+  const [analysisMode, setAnalysisMode] = useState<AnalysisMode>("pro");
   const [username, setUsername] = useState("");
   const [authChecked, setAuthChecked] = useState(false);
   const [screenRecording, setScreenRecording] = useState(false);
