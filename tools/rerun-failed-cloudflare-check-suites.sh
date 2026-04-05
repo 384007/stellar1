@@ -1,13 +1,11 @@
 #!/usr/bin/env bash
-# Bulk rerequest GitHub Check Suites that failed for Cloudflare (Pages) on recent main commits.
-# Requires: `gh auth login` with a token that can rerequest check suites (repo scope).
-# Does not touch GitHub Actions workflows — only Check Suites (e.g. Cloudflare Pages app).
+# Bulk rerequest failed Cloudflare (Pages) check *runs* on recent commits (not check_suite — suite rerequest often 422 for third-party apps).
+# Requires: `gh auth login` with checks:write / repo scope.
 set -euo pipefail
 
 OWNER="dytsui"
 REPO="stellar1"
 DEPTH="${DEPTH:-80}"
-# Scan this branch's history (default: main). Override: BASE_BRANCH=main ./script.sh
 BASE_BRANCH="${BASE_BRANCH:-main}"
 
 if ! command -v gh >/dev/null 2>&1; then
@@ -36,20 +34,19 @@ for r in d.get('check_runs') or []:
     app = (r.get('app') or {}).get('name') or ''
     if 'cloudflare' not in app.lower():
         continue
-    cs = r.get('check_suite') or {}
-    sid = cs.get('id')
-    if sid:
-        print(sid)
+    rid = r.get('id')
+    if rid is not None:
+        print(rid)
 " 2>/dev/null >>"$TMP" || true
 done
 
-sort -u "$TMP" | while read -r sid; do
-  [[ -z "$sid" ]] && continue
-  echo "Rerequest check_suite=$sid"
-  if gh api --silent -X POST "repos/${OWNER}/${REPO}/check-suites/${sid}/rerequest"; then
+sort -u "$TMP" | while read -r rid; do
+  [[ -z "$rid" ]] && continue
+  echo "Rerequest check_run=$rid"
+  if gh api --silent -X POST "repos/${OWNER}/${REPO}/check-runs/${rid}/rerequest"; then
     echo "  ok"
   else
-    echo "  failed (suite may be too old or app may ignore rerequest)"
+    echo "  failed (run may be too old or token cannot rerequest this app)"
   fi
   sleep 0.4
 done

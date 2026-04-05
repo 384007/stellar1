@@ -1,4 +1,5 @@
-# Rerequest failed Cloudflare (Pages) GitHub Check Suites on recent commits — no local CLI.
+# Rerequest failed Cloudflare (Pages) GitHub Check Runs on recent commits — no local CLI.
+# Uses per-check-run rerequest (check-suites rerequest often fails for third-party apps with GITHUB_TOKEN).
 # GitHub → Actions → "Rerun failed Cloudflare checks" → Run workflow.
 name: Rerun failed Cloudflare checks
 
@@ -22,7 +23,7 @@ jobs:
   rerequest:
     runs-on: ubuntu-latest
     steps:
-      - name: Rerequest failed Cloudflare check suites
+      - name: Rerequest failed Cloudflare check runs
         uses: actions/github-script@v8
         with:
           script: |
@@ -31,7 +32,7 @@ jobs:
             const branch = "${{ github.event.inputs.branch }}".trim() || "main";
             const depth = Math.min(500, Math.max(1, parseInt("${{ github.event.inputs.depth }}", 10) || 80));
 
-            const suiteIds = new Set();
+            const runIds = new Set();
             let page = 1;
             const perPage = Math.min(100, depth);
             let collected = 0;
@@ -60,30 +61,30 @@ jobs:
                   if (run.conclusion !== "failure") continue;
                   const appName = (run.app && run.app.name ? String(run.app.name) : "").toLowerCase();
                   if (!appName.includes("cloudflare")) continue;
-                  const sid = run.check_suite && run.check_suite.id;
-                  if (sid) suiteIds.add(sid);
+                  const rid = run.id;
+                  if (rid != null) runIds.add(Number(rid));
                 }
               }
               if (commits.length < perPage) break;
               page++;
             }
 
-            core.info(`Scanned ${seenShas.length} commit(s) on ${branch}; unique failed Cloudflare check_suite id(s): ${suiteIds.size}`);
+            core.info(`Scanned ${seenShas.length} commit(s) on ${branch}; unique failed Cloudflare check_run id(s): ${runIds.size}`);
 
             let ok = 0;
             let bad = 0;
-            for (const check_suite_id of suiteIds) {
+            for (const check_run_id of runIds) {
               try {
-                await github.request("POST /repos/{owner}/{repo}/check-suites/{check_suite_id}/rerequest", {
+                await github.request("POST /repos/{owner}/{repo}/check-runs/{check_run_id}/rerequest", {
                   owner,
                   repo,
-                  check_suite_id,
+                  check_run_id,
                 });
-                core.info(`rerequest ok: check_suite_id=${check_suite_id}`);
+                core.info(`rerequest ok: check_run_id=${check_run_id}`);
                 ok++;
                 await new Promise((r) => setTimeout(r, 400));
               } catch (e) {
-                core.warning(`rerequest failed suite ${check_suite_id}: ${e.message}`);
+                core.warning(`rerequest failed run ${check_run_id}: ${e.message}`);
                 bad++;
               }
             }
