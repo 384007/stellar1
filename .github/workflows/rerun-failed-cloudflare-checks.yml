@@ -1,4 +1,5 @@
-# Cloudflare（App 名含 cloudflare）失败检查：先列清单，再按需勾选 ID 并发 rerequest。
+# Cloudflare（App 名含 cloudflare）失败：只用手点选，无需粘贴 ID。
+# list=看表格；rerequest=按「范围」下拉重跑（最新失败优先 = check_run id 从大到小）。
 # suite 级 rerequest 对第三方 App 常 Invalid，仅用 check-runs/{id}/rerequest。
 name: Cloudflare 失败：列表与选择性重跑
 
@@ -6,29 +7,36 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: "list=只列失败表；rerequest_ids=只重跑下方填的 ID；rerequest_all=重跑本次扫描到的全部"
+        description: "list=只看失败列表；rerequest=按下面「范围」重跑（全程点选，不用输入）"
         type: choice
         required: true
         default: list_failures
         options:
           - list_failures
-          - rerequest_ids
-          - rerequest_all
+          - rerequest
+      scope:
+        description: "仅 rerequest 有效：重跑几条（按最新失败优先）"
+        type: choice
+        required: true
+        default: "全部"
+        options:
+          - "全部"
+          - "前 5 条"
+          - "前 10 条"
+          - "前 20 条"
+          - "前 50 条"
+          - "前 100 条"
       branch:
-        description: "扫描分支（list / rerequest_all）"
+        description: "扫描分支（list / rerequest 都会扫）"
         required: true
         default: main
       depth:
-        description: "扫描最近多少个 commit（list / rerequest_all）"
+        description: "扫描最近多少个 commit"
         required: true
         default: "500"
-      check_run_ids:
-        description: "仅 rerequest_ids：check_run_id，逗号 / 换行 / 空格分隔（从列表表或「可复制」区复制）"
-        required: false
-        default: ""
 
 concurrency:
-  group: cloudflare-check-rerequest-${{ github.event.inputs.mode }}
+  group: cloudflare-check-rerequest-${{ github.event.inputs.mode }}-${{ github.event.inputs.scope }}
   cancel-in-progress: false
 
 permissions:
@@ -43,17 +51,17 @@ jobs:
         uses: actions/github-script@v8
         env:
           MODE: ${{ github.event.inputs.mode }}
+          SCOPE: ${{ github.event.inputs.scope }}
           BRANCH: ${{ github.event.inputs.branch }}
           DEPTH: ${{ github.event.inputs.depth }}
-          CHECK_RUN_IDS: ${{ github.event.inputs.check_run_ids }}
         with:
           script: |
             const owner = context.repo.owner;
             const repo = context.repo.repo;
             const mode = process.env.MODE || "list_failures";
+            const scope = process.env.SCOPE || "全部";
             const branch = (process.env.BRANCH || "main").trim();
             const depth = Math.min(500, Math.max(1, parseInt(process.env.DEPTH || "500", 10) || 500));
-            const rawIds = process.env.CHECK_RUN_IDS || "";
 
             const commitPageSize = 100;
             const seenShas = [];
@@ -110,17 +118,17 @@ jobs:
               }
             }
 
-            function parseIdList(text) {
-              return [
-                ...new Set(
-                  text
-                    .split(/[\s,]+/)
-                    .map((s) => s.trim())
-                    .filter(Boolean)
-                    .map((s) => parseInt(s, 10))
-                    .filter((n) => !Number.isNaN(n)),
-                ),
-              ];
+            function scopeToMax(scopeStr) {
+              const m = {
+                全部: Infinity,
+                "前 5 条": 5,
+                "前 10 条": 10,
+                "前 20 条": 20,
+                "前 50 条": 50,
+                "前 100 条": 100,
+              };
+              const n = m[scopeStr];
+              return n === undefined ? Infinity : n;
             }
 
             async function rerequestBatch(ids, { label }) {
@@ -164,7 +172,7 @@ jobs:
 
               let md = `## Cloudflare 失败检查列表\n\n`;
               md += `- 分支 **${branch}**，扫描 **${seenShas.length}** 个 commit，深度上限 **${depth}**\n`;
-              md += `- 共 **${rows.length}** 条唯一失败 check_run（可复制下方 ID 到 **rerequest_ids**）\n\n`;
+              md += `- 共 **${rows.length}** 条唯一失败 check_run（**只用手点选**：再 Run workflow → mode 选 **rerequest** → scope 选 **全部** 或 **前 N 条**）\n\n`;
               md += `| check_run_id | commit | 检查名称 | App |\n`;
               md += `|---:|:---|:---|:---|\n`;
               for (const r of rows) {
@@ -172,41 +180,35 @@ jobs:
                   r.sha_full ? `[${r.sha_short}](${repoUrl}/commit/${r.sha_full})` : "—";
                 md += `| \`${r.id}\` | ${link} | ${String(r.name).replace(/\|/g, "\\|")} | ${String(r.app).replace(/\|/g, "\\|")} |\n`;
               }
-              md += `\n### 可复制到「rerequest_ids」\n\n`;
-              md += "```text\n" + rows.map((r) => String(r.id)).join(",") + "\n```\n";
 
               core.info(`list: ${rows.length} failed Cloudflare check_run(s)`);
               await core.summary.addRaw(md).write();
               return;
             }
 
-            if (mode === "rerequest_ids") {
-              const ids = parseIdList(rawIds);
-              if (!ids.length) {
-                core.setFailed("rerequest_ids 模式请在 check_run_ids 中填写至少一个数字 ID（可从列表工作流复制）。");
-                return;
-              }
-              core.info(`rerequest_ids: ${ids.length} id(s), concurrent batches of 15`);
-              const { ok, bad } = await rerequestBatch(ids, { label: "pick" });
-              const line = `完成（选择性）：成功 **${ok}**，失败 **${bad}**，共 **${ids.length}** 个 ID。`;
-              core.info(line);
-              await core.summary.addRaw(`## ${line}`).write();
-              if (bad > 0) core.setFailed(`部分 rerequest 失败：${bad} 个`);
-              return;
-            }
-
-            if (mode === "rerequest_all") {
+            if (mode === "rerequest") {
               await scanFailures();
-              const ids = [...byId.keys()];
-              core.info(`rerequest_all: scanned ${seenShas.length} commit(s), ${ids.length} failed Cloudflare check_run(s)`);
+              const max = scopeToMax(scope);
+              let ids = [...byId.keys()].sort((a, b) => b - a);
+              if (Number.isFinite(max)) ids = ids.slice(0, max);
+
+              core.info(
+                `rerequest: scope=${scope} → ${ids.length} check_run(s) (${seenShas.length} commits scanned)`,
+              );
+
               if (!ids.length) {
-                await core.summary.addRaw("## rerequest_all\n未扫描到失败的 Cloudflare check_run。").write();
+                await core.summary
+                  .addRaw(`## rerequest\n未扫描到失败的 Cloudflare check_run（分支 \`${branch}\`）。`)
+                  .write();
                 return;
               }
-              const { ok, bad } = await rerequestBatch(ids, { label: "all" });
-              const line = `完成（全部）：成功 **${ok}**，失败 **${bad}**，共 **${ids.length}** 个。`;
+
+              const { ok, bad } = await rerequestBatch(ids, { label: "pick" });
+              const line = `完成：范围 **${scope}**，成功 **${ok}**，失败 **${bad}**，本批共 **${ids.length}** 个。`;
               core.info(line);
-              await core.summary.addRaw(`## ${line}\n\n分支 \`${branch}\`，commit 数 ${seenShas.length}。`).write();
+              await core.summary
+                .addRaw(`## ${line}\n\n分支 \`${branch}\`，commit 数 ${seenShas.length}。`)
+                .write();
               if (bad > 0) core.setFailed(`部分 rerequest 失败：${bad} 个`);
               return;
             }

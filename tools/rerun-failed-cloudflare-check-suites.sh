@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Bulk rerequest failed Cloudflare check *runs* (prefer GitHub Actions workflow
-# 「Cloudflare 失败：列表与选择性重跑」: list_failures → rerequest_ids / rerequest_all).
+# 「Cloudflare 失败：列表与选择性重跑」: 线上用 workflow 点选；本脚本为 CLI 备用).
 # Requires: `gh auth login` with checks:write / repo scope.
 set -euo pipefail
 
