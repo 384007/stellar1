@@ -251,6 +251,8 @@ def run_pro_video_analyze_via_prov3(
     minimal: dict[str, Any] = {
         "analysis_id": str(dumped.get("analysis_id") or ""),
         "status": "completed",
+        "final_status": status,
+        "trust_level": analysis_trust,
         "pipeline": "prov3",
         "summary": summary,
         "summary_zh": summary_zh,
