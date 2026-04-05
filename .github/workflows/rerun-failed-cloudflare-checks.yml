@@ -1,4 +1,5 @@
 # Cloudflare（App 名含 cloudflare）失败：点选 + 可选「从某 commit 到 HEAD」整段扫描。
+# 勿用 GITHUB_TOKEN 再 createWorkflowDispatch 调本 workflow——子 run 不会被创建。
 # suite 级 rerequest 对第三方 App 常 Invalid，仅用 check-runs/{id}/rerequest。
 name: Cloudflare 失败：列表与选择性重跑
 

@@ -1,34 +1,148 @@
-# 零输入：一键触发「从 7e5debfc… 到 HEAD」整段 Cloudflare 失败 rerequest（全部）。
-# 若需改起点：编辑下方 SINCE_SHA 后提交，或直接用主 workflow 填 since_commit。
+# 零输入：从 7e5debfc…（含）到 HEAD，重跑全部失败的 Cloudflare check_run。
+# 注意：不能用「派发另一个 workflow」——GITHUB_TOKEN 触发的派发不会真正启动子 workflow。
+# 改起点：编辑下方 SINCE_SHA。
 name: Cloudflare 一键重跑（7e5deb→HEAD）
 
 on:
   workflow_dispatch:
 
+concurrency:
+  group: cloudflare-oneclick-7e5deb
+  cancel-in-progress: false
+
 permissions:
+  checks: write
   contents: read
-  actions: write
 
 jobs:
-  dispatch:
+  rerequest:
     runs-on: ubuntu-latest
     steps:
-      - name: 触发主 workflow（预填区间与 rerequest 全部）
+      - name: 从起始 commit 扫到 HEAD 并 rerequest（同一次 run 内完成）
         uses: actions/github-script@v8
         with:
           script: |
             const SINCE_SHA = "7e5debfcae0763ff75308ad4dd54bce121f757e1";
-            await github.rest.actions.createWorkflowDispatch({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              workflow_id: "rerun-failed-cloudflare-checks.yml",
-              ref: "main",
-              inputs: {
-                mode: "rerequest",
-                scope: "全部",
-                branch: "main",
-                depth: "500",
-                since_commit: SINCE_SHA,
-              },
-            });
-            core.info(`已派发 rerun-failed-cloudflare-checks.yml（since=${SINCE_SHA.slice(0, 7)} → HEAD，scope=全部）`);
+            const branch = "main";
+            const MAX_WALK = 5000;
+
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+
+            let sinceFull;
+            try {
+              const { data } = await github.rest.repos.getCommit({
+                owner,
+                repo,
+                ref: SINCE_SHA,
+              });
+              sinceFull = data.sha;
+            } catch (e) {
+              core.setFailed(`无法解析起始 commit: ${e.message}`);
+              return;
+            }
+
+            const shas = [];
+            let walked = 0;
+            let page = 1;
+            let found = false;
+
+            while (!found && walked < MAX_WALK) {
+              const { data: commits } = await github.rest.repos.listCommits({
+                owner,
+                repo,
+                sha: branch,
+                per_page: 100,
+                page,
+              });
+              if (!commits.length) break;
+
+              for (const c of commits) {
+                shas.push(c.sha);
+                walked++;
+                if (c.sha === sinceFull) {
+                  found = true;
+                  break;
+                }
+              }
+
+              if (found) break;
+              if (commits.length < 100) break;
+              page++;
+            }
+
+            if (!found) {
+              core.setFailed(
+                `从 main HEAD 往回未找到 ${sinceFull.slice(0, 7)}（或超过 ${MAX_WALK} 条）。`,
+              );
+              return;
+            }
+
+            core.info(`区间: ${sinceFull.slice(0, 7)}…HEAD，共 ${shas.length} 个 commit`);
+
+            /** @type {Map<number, unknown>} */
+            const byId = new Map();
+
+            for (const sha of shas) {
+              for await (const res of github.paginate.iterator(github.rest.checks.listForRef, {
+                owner,
+                repo,
+                ref: sha,
+                per_page: 100,
+              })) {
+                for (const run of res.data.check_runs || []) {
+                  if (run.conclusion !== "failure") continue;
+                  const appName = (run.app && run.app.name ? String(run.app.name) : "").toLowerCase();
+                  if (!appName.includes("cloudflare")) continue;
+                  const rid = run.id;
+                  if (rid == null) continue;
+                  byId.set(Number(rid), true);
+                }
+              }
+            }
+
+            let ids = [...byId.keys()].sort((a, b) => b - a);
+            core.info(`待 rerequest: ${ids.length} 个唯一失败 Cloudflare check_run`);
+
+            if (!ids.length) {
+              await core.summary
+                .addRaw(`## 无失败项\n\n${shas.length} 个 commit 内未发现 Cloudflare failure check_run。`)
+                .write();
+              return;
+            }
+
+            const batchSize = 15;
+            let ok = 0;
+            let bad = 0;
+            for (let i = 0; i < ids.length; i += batchSize) {
+              const batch = ids.slice(i, i + batchSize);
+              const results = await Promise.all(
+                batch.map(async (check_run_id) => {
+                  try {
+                    await github.request("POST /repos/{owner}/{repo}/check-runs/{check_run_id}/rerequest", {
+                      owner,
+                      repo,
+                      check_run_id,
+                    });
+                    return { check_run_id, ok: true, err: null };
+                  } catch (e) {
+                    return { check_run_id, ok: false, err: e.message };
+                  }
+                }),
+              );
+              for (const r of results) {
+                if (r.ok) {
+                  ok++;
+                  core.info(`ok check_run_id=${r.check_run_id}`);
+                } else {
+                  bad++;
+                  core.warning(`fail check_run_id=${r.check_run_id}: ${r.err}`);
+                }
+              }
+              if (i + batchSize < ids.length) await new Promise((t) => setTimeout(t, 400));
+            }
+
+            const line = `完成：成功 **${ok}**，失败 **${bad}**，共 **${ids.length}** 个 check_run；commit 数 **${shas.length}**。`;
+            await core.summary.addRaw(`## ${line}`).write();
+            core.info(line);
+            if (bad > 0) core.setFailed(`部分 rerequest 失败：${bad} 个`);
