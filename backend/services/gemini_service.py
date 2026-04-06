@@ -33,8 +33,11 @@ PLUS_OBSERVATION_TIMEOUT_S = float(os.getenv("STELLAR_PLUS_OBSERVE_TIMEOUT_S", "
 #
 # Reverse-proxy hosts (same env names as ``frontend/lib/gemini-proxy.ts``):
 #   GEMINI_PROXY_ALI, GEMINI_PROXY_JD — mirror ``generativelanguage.googleapis.com`` REST paths.
-# Modal default: **Google direct** first with a short deadline; if no response in time, try ALI → JD.
-#   STELLAR_GEMINI_DIRECT_FIRST_TIMEOUT_S — default 10 (seconds wall-clock per direct attempt).
+# Modal, no local GEMINI_PROXY_*: **CF Pages forward** (``/api/modal-gemini-forward``) uses the same
+# multi-host list as Lite (Pages Secrets) — no ``X-Stellar-Network-Hint`` / enrich CN context required.
+# Defaults: STELLAR_CF_GEMINI_FORWARD=1, STELLAR_CF_PAGES_ORIGIN or FRONTEND_URL, else https://stellar-ai.pages.dev
+# Otherwise on Modal: **Google direct** first (``STELLAR_GEMINI_DIRECT_FIRST_TIMEOUT_S``, default 10s),
+# then local GEMINI_PROXY_* when set.
 #   STELLAR_GEMINI_PROXY_PHASE_TIMEOUT_S — defaults to PRO_AI_TIMEOUT_S for reverse-proxy attempts.
 
 GEMINI_DEVELOPER_API_ORIGIN = "https://generativelanguage.googleapis.com"
@@ -192,6 +195,87 @@ def _is_gemini_quota_error(exc: BaseException) -> bool:
         return False
 
 
+def _cf_gemini_forward_enabled() -> bool:
+    v = (os.getenv("STELLAR_CF_GEMINI_FORWARD") or "1").strip().lower()
+    return v not in ("0", "false", "no", "off")
+
+
+def _cf_pages_origin_for_gemini_forward() -> str:
+    """Pages origin for ``/api/modal-gemini-forward`` (wrangler project name default)."""
+    for k in ("STELLAR_CF_PAGES_ORIGIN", "FRONTEND_URL"):
+        v = (os.getenv(k) or "").strip().rstrip("/")
+        if v.startswith("http://") or v.startswith("https://"):
+            return v
+    return "https://stellar-ai.pages.dev"
+
+
+def _gemini_via_cf_pages_generate_sync(
+    prompt: str,
+    images: list[str],
+    max_tokens: int,
+    temperature: float,
+    keys: list[str],
+    model_name: str,
+) -> tuple[str, int]:
+    """Call Gemini through Cloudflare Pages Edge (same ``getGeminiHosts`` as Lite — zero GEMINI_PROXY_* on Modal)."""
+    import json
+    import urllib.error
+    import urllib.request
+
+    base = _cf_pages_origin_for_gemini_forward()
+    url = f"{base}/api/modal-gemini-forward"
+    parts: list[dict] = [{"text": prompt}]
+    for img_b64 in images:
+        parts.append({"inlineData": {"mimeType": "image/jpeg", "data": img_b64}})
+    body_obj = {
+        "model": model_name,
+        "contents": [{"parts": parts}],
+        "generationConfig": {
+            "temperature": temperature,
+            "maxOutputTokens": max_tokens,
+            "responseMimeType": "application/json",
+        },
+        "cn_network_hint": True,
+    }
+    payload = json.dumps(body_obj).encode("utf-8")
+    auth_key = keys[0]
+    timeout_s = max(30, int(float(os.getenv("STELLAR_CF_GEMINI_FORWARD_TIMEOUT_S", str(int(PRO_AI_TIMEOUT_S))))))
+    req = urllib.request.Request(
+        url,
+        data=payload,
+        method="POST",
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {auth_key}",
+            "X-Stellar-Modal-Gemini-Forward": "1",
+        },
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout_s) as resp:
+            raw = resp.read().decode("utf-8")
+    except urllib.error.HTTPError as e:
+        detail = e.read().decode("utf-8", errors="replace")[:2000]
+        raise RuntimeError(f"CF Gemini forward HTTP {e.code}: {detail}") from e
+
+    data = json.loads(raw)
+    if isinstance(data, dict) and "detail" in data and "candidates" not in data:
+        raise RuntimeError(str(data.get("detail", data)))
+    cands = data.get("candidates") if isinstance(data, dict) else None
+    if not cands:
+        raise RuntimeError("CF forward: empty candidates")
+    parts_out = (cands[0].get("content") or {}).get("parts") or []
+    if not parts_out:
+        raise RuntimeError("CF forward: empty parts")
+    text = (parts_out[0].get("text") or "").strip()
+    if not text:
+        raise RuntimeError("CF forward: empty text")
+    slot = int(data.get("_stellar_key_slot") or 1) if isinstance(data, dict) else 1
+    ak = developer_key_label(slot)
+    logger.info("[gemini] developer_api via_cf_pages ok ai_key=%s", ak)
+    print(f"[stellar-ai] ai_key={ak} gemini_via=cf_pages base={base}", flush=True)
+    return text, slot
+
+
 def _call_gemini_developer_sync(
     prompt: str,
     images: list[str],
@@ -202,21 +286,40 @@ def _call_gemini_developer_sync(
     if not keys:
         raise RuntimeError("GEMINI_API_KEY not configured on server")
 
+    model_name = os.getenv("GEMINI_MODEL", "gemini-2.5-flash-lite")
+
+    proxies = _reverse_proxy_origins_from_env()
+    cn_modal_route = bool(_gemini_modal_cn_proxy_first.get())
+    cf_forward = (
+        not _use_vertex()
+        and not proxies
+        and _stellar_modal_runtime()
+        and _cf_gemini_forward_enabled()
+    )
+    if cf_forward:
+        logger.info(
+            "[gemini] Modal: no local GEMINI_PROXY_* — CF Pages Gemini forward (%s)",
+            _cf_pages_origin_for_gemini_forward(),
+        )
+        try:
+            return _gemini_via_cf_pages_generate_sync(
+                prompt, images, max_tokens, temperature, keys, model_name,
+            )
+        except Exception as e:
+            logger.warning("[gemini] CF Pages Gemini forward failed: %s — in-Modal Google/proxy path", e)
+
     import google.generativeai as genai
 
-    model_name = os.getenv("GEMINI_MODEL", "gemini-2.5-flash-lite")
     content_parts: list = [prompt]
     for img_b64 in images:
         content_parts.append({"mime_type": "image/jpeg", "data": img_b64})
 
     direct = GEMINI_DEVELOPER_API_ORIGIN.rstrip("/")
-    proxies = _reverse_proxy_origins_from_env()
-    cn_modal_route = bool(_gemini_modal_cn_proxy_first.get())
     proxy_first = cn_modal_route and bool(proxies)
-    if cn_modal_route and not proxies:
+    if _stellar_modal_runtime() and not proxies and not cf_forward:
         logger.warning(
-            "[gemini] Modal+China route hint active but GEMINI_PROXY_ALI / GEMINI_PROXY_JD unset — "
-            "using direct Google (configure proxies for CN egress)",
+            "[gemini] Modal: no GEMINI_PROXY_* and CF forward off/failed — "
+            "set Pages proxies + FRONTEND_URL, or STELLAR_CF_GEMINI_FORWARD=1",
         )
     direct_timeout = max(1.0, float(os.getenv("STELLAR_GEMINI_DIRECT_FIRST_TIMEOUT_S", "10")))
     proxy_timeout = max(direct_timeout, float(os.getenv("STELLAR_GEMINI_PROXY_PHASE_TIMEOUT_S", str(PRO_AI_TIMEOUT_S))))

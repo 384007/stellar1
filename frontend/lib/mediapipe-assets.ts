@@ -8,9 +8,8 @@
  *
  * Loading order:
  *   1. /mp/…            (same-origin static, CF Pages CDN — primary)
- *   2. R2 direct        (pub-xxx.r2.dev — fast for non-CN users)
- *   3. jsdelivr         (global CDN with some China coverage)
- *   4. npmmirror        (Alibaba China mirror)
+ *   2. R2 direct        (optional NEXT_PUBLIC_MEDIAPIPE_CDN_BASE)
+ *   3. jsdelivr / npmmirror — on by default (no env); set NEXT_PUBLIC_MEDIAPIPE_ALLOW_FOREIGN_FALLBACK=0 to disable
  */
 
 export const MEDIAPIPE_TASKS_VISION_VERSION = "0.10.33";
@@ -47,10 +46,12 @@ function effectiveSelfBase(override?: string | null): string | null {
   return override !== undefined ? override : getMediaPipeSelfHostBase();
 }
 
+/** Default true: npmmirror/jsdelivr race works in CN without setting env (same as “骨架零配置”). */
 export function getMediaPipeAllowForeignFallback(): boolean {
   if (typeof process === "undefined") return true;
   const v = (process.env.NEXT_PUBLIC_MEDIAPIPE_ALLOW_FOREIGN_FALLBACK || "").toLowerCase();
-  return v === "1" || v === "true" || v === "yes";
+  if (v === "0" || v === "false" || v === "no" || v === "off") return false;
+  return true;
 }
 
 const v = MEDIAPIPE_TASKS_VISION_VERSION;

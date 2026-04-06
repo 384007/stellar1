@@ -29,6 +29,8 @@ GEMINI_MODEL = "gemini-2.5-flash-lite"
 # Pages Secrets (same values as Modal ``custom-secret``). Example:
 #   npx wrangler pages secret put GEMINI_PROXY_ALI --project-name stellar-ai
 #   npx wrangler pages secret put GEMINI_PROXY_JD --project-name stellar-ai
+# Modal Pro calls ``POST /api/modal-gemini-forward`` — same GEMINI_PROXY_* / keys as Lite (optional):
+#   STELLAR_CF_GEMINI_FORWARD_TIMEOUT_MS (default 240000) for Edge→Google subrequest
 # Optional fallback when no Gemini keys: QWEN_API_KEY.
 
 [[d1_databases]]

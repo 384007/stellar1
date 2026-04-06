@@ -14,7 +14,8 @@
  *   GEMINI_PROXY_JD       — JD Cloud reverse proxy host
  *   QWEN_API_KEY          — Qwen fallback key (dashscope.aliyuncs.com)
  *
- * Modal (Python `services/gemini_service.py`): set the same GEMINI_PROXY_ALI / GEMINI_PROXY_JD on the worker.
+ * Modal (Python `services/gemini_service.py`): set the same GEMINI_PROXY_ALI / GEMINI_PROXY_JD on the worker,
+ * or rely on `POST /api/modal-gemini-forward` (China + no local proxies) so Edge uses this module's host list.
  * Pro v3 on Modal: with that header (CF forwards it on `/pro-v3/analyze/start` when precheck marks CN),
  * Gemini **skips** the short direct-Google phase and uses proxies first; without the hint, direct first then
  * proxy after `STELLAR_GEMINI_DIRECT_FIRST_TIMEOUT_S` (default 10s).
