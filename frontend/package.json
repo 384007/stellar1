@@ -7,7 +7,7 @@
   },
   "scripts": {
     "dev": "next dev",
-    "build": "node scripts/fetch-mediapipe-models.mjs && next build",
+    "build": "node scripts/fetch-mediapipe-models.mjs && NODE_OPTIONS='--require ./scripts/next-edge-build-polyfill.cjs' next build",
     "start": "next start",
     "lint": "next lint",
     "test:e2e": "playwright test",
@@ -15,7 +15,7 @@
     "test:plus-gemini-visibility": "node components/__tests__/plus-gemini-visibility.mjs",
     "test:smoke": "node ../tools/analysis-smoke.mjs",
     "test:history-sync": "node ../tools/verify-history-sync.mjs",
-    "pages:build": "node scripts/fetch-mediapipe-models.mjs && npx @cloudflare/next-on-pages && rm -f .vercel/output/static/_worker.js/nop-build-log.json",
+    "pages:build": "node scripts/fetch-mediapipe-models.mjs && NODE_OPTIONS='--require ./scripts/next-edge-build-polyfill.cjs' npx @cloudflare/next-on-pages && rm -f .vercel/output/static/_worker.js/nop-build-log.json",
     "pages:deploy": "wrangler pages deploy .vercel/output/static --commit-dirty=true",
     "pages:deploy:debug": "WRANGLER_LOG=debug wrangler pages deploy .vercel/output/static --commit-dirty=true"
   },

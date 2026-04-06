@@ -54,3 +54,6 @@ htmlcov/
 
 # Browser HAR exports (large, accidental check-ins)
 *.har
+
+# TypeScript incremental build cache
+*.tsbuildinfo
