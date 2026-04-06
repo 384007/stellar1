@@ -33,10 +33,11 @@ PLUS_OBSERVATION_TIMEOUT_S = float(os.getenv("STELLAR_PLUS_OBSERVE_TIMEOUT_S", "
 #
 # Reverse-proxy hosts (same env names as ``frontend/lib/gemini-proxy.ts``):
 #   GEMINI_PROXY_ALI, GEMINI_PROXY_JD — mirror ``generativelanguage.googleapis.com`` REST paths.
-# Modal, no local GEMINI_PROXY_*: **CF Pages forward** (``/api/modal-gemini-forward``) uses the same
-# multi-host list as Lite (Pages Secrets) — no ``X-Stellar-Network-Hint`` / enrich CN context required.
-# Defaults: STELLAR_CF_GEMINI_FORWARD=1, STELLAR_CF_PAGES_ORIGIN or FRONTEND_URL, else https://stellar-ai.pages.dev
-# Otherwise on Modal: **Google direct** first (``STELLAR_GEMINI_DIRECT_FIRST_TIMEOUT_S``, default 10s),
+# Modal + **CN network hint** (``gemini_modal_cn_proxy_first_context``) and no ``GEMINI_PROXY_*``:
+# optional **CF Pages forward** (``/api/modal-gemini-forward``) — same host list as Lite on Pages.
+# **Non-CN Modal** skips CF forward and uses **Google direct** (avoids CF 403/1010 on server-to-server).
+# Defaults: STELLAR_CF_GEMINI_FORWARD=1 (only applies when CN hint is active on Modal), STELLAR_CF_PAGES_ORIGIN …
+# Otherwise: **Google direct** first (``STELLAR_GEMINI_DIRECT_FIRST_TIMEOUT_S``, default 10s),
 # then local GEMINI_PROXY_* when set.
 #   STELLAR_GEMINI_PROXY_PHASE_TIMEOUT_S — defaults to PRO_AI_TIMEOUT_S for reverse-proxy attempts.
 
@@ -290,15 +291,17 @@ def _call_gemini_developer_sync(
 
     proxies = _reverse_proxy_origins_from_env()
     cn_modal_route = bool(_gemini_modal_cn_proxy_first.get())
+    # CF Pages forward: **CN-hint Modal only**. Non-CN Modal → direct Google (no CF edge / bot 1010 on Modal egress).
     cf_forward = (
         not _use_vertex()
         and not proxies
         and _stellar_modal_runtime()
         and _cf_gemini_forward_enabled()
+        and cn_modal_route
     )
     if cf_forward:
         logger.info(
-            "[gemini] Modal: no local GEMINI_PROXY_* — CF Pages Gemini forward (%s)",
+            "[gemini] Modal+CN hint: no GEMINI_PROXY_* — trying CF Pages Gemini forward (%s)",
             _cf_pages_origin_for_gemini_forward(),
         )
         try:
@@ -316,10 +319,9 @@ def _call_gemini_developer_sync(
 
     direct = GEMINI_DEVELOPER_API_ORIGIN.rstrip("/")
     proxy_first = cn_modal_route and bool(proxies)
-    if _stellar_modal_runtime() and not proxies and not cf_forward:
+    if _stellar_modal_runtime() and not proxies and cn_modal_route and not _cf_gemini_forward_enabled():
         logger.warning(
-            "[gemini] Modal: no GEMINI_PROXY_* and CF forward off/failed — "
-            "set Pages proxies + FRONTEND_URL, or STELLAR_CF_GEMINI_FORWARD=1",
+            "[gemini] Modal+CN hint: STELLAR_CF_GEMINI_FORWARD off and no GEMINI_PROXY_* — using direct Google only",
         )
     direct_timeout = max(1.0, float(os.getenv("STELLAR_GEMINI_DIRECT_FIRST_TIMEOUT_S", "10")))
     proxy_timeout = max(direct_timeout, float(os.getenv("STELLAR_GEMINI_PROXY_PHASE_TIMEOUT_S", str(PRO_AI_TIMEOUT_S))))
