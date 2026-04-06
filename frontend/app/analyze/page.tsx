@@ -190,7 +190,11 @@ export default function AnalyzePage() {
     const p = consumeReanalyzeFromHistoryPayload();
     if (!p || p.page !== "analyze") return;
     void (async () => {
-      const blob = await fetchVideoBlobForHistoryReanalyze(p.analysisId, p.videoUrl);
+      const blob = await fetchVideoBlobForHistoryReanalyze(
+        p.analysisId,
+        p.videoUrl,
+        p.analysisVideoUrl,
+      );
       if (!blob || blob.size === 0) {
         setError(
           lang === "zh"

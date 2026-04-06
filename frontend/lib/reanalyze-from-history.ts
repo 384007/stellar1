@@ -86,8 +86,8 @@ function abortSignalForMs(ms: number): AbortSignal | undefined {
 }
 
 /**
- * Avoid a full GET to Modal /pro-v3/media when the file was never persisted (e.g. prior 422).
- * HEAD is cheap; if unsupported or CORS blocks it, we still try GET below.
+ * Pro v3 persisted media: cheap HEAD before GET so missing timeline files skip full download.
+ * If HEAD is blocked (CORS) or errors, returns false and caller may still GET.
  */
 async function prov3MediaUrlCertainlyMissing(u: string): Promise<boolean> {
   if (!u.includes("/pro-v3/media/")) return false;
@@ -106,16 +106,21 @@ async function prov3MediaUrlCertainlyMissing(u: string): Promise<boolean> {
 }
 
 /**
- * 按顺序：analysisVideoUrl → videoUrl → IndexedDB → /api/history/video（与产品约定一致）。
- * 对可能未落盘的 Pro v3 media URL 先 HEAD，404 则跳过，避免与 POST /pro-v3/analyze 同时打满一条无意义 GET。
+ * History「重新分析」取视频，顺序固定为：
+ * 1) `analysisVideoUrl`（Pro v3 时间线等，远程）
+ * 2) `videoUrl`（记录里的原片 URL，远程）
+ * 3) IndexedDB 缓存
+ * 4) `GET /api/history/video/{analysisId}`（同源）
+ *
+ * 参数名与历史页 `queueReanalyzeFromHistory` 字段一致：`videoUrl` / `analysisVideoUrl`。
  */
 export async function fetchVideoBlobForHistoryReanalyze(
   analysisId: string,
   videoUrl?: string,
   analysisVideoUrl?: string,
 ): Promise<Blob | null> {
-  const candidates = [(analysisVideoUrl || "").trim(), (videoUrl || "").trim()].filter(Boolean);
-  for (const u of candidates) {
+  const remoteCandidates = [(analysisVideoUrl || "").trim(), (videoUrl || "").trim()].filter(Boolean);
+  for (const u of remoteCandidates) {
     if (/^https?:\/\//i.test(u) || u.startsWith("/")) {
       try {
         if (await prov3MediaUrlCertainlyMissing(u)) continue;
@@ -157,5 +162,6 @@ export async function fetchVideoBlobForHistoryReanalyze(
       /* ignore */
     }
   }
+
   return null;
 }

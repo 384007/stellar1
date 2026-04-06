@@ -730,12 +730,14 @@ export default function HistoryPage() {
     const vu = (rec.video_url || "").trim();
     const parsed = parseResult(rec.result_json);
     const analysisVu = String(parsed.analysis_video_url || "").trim();
+    const remoteOrPath = (s: string) =>
+      s && (/^https?:\/\//i.test(s) || s.startsWith("/"));
     queueReanalyzeFromHistory({
       analysisId: rec.id,
       page,
       analysisMode,
-      videoUrl: vu && /^https?:\/\//i.test(vu) ? vu : undefined,
-      analysisVideoUrl: analysisVu && /^https?:\/\//i.test(analysisVu) ? analysisVu : undefined,
+      videoUrl: remoteOrPath(vu) ? vu : undefined,
+      analysisVideoUrl: remoteOrPath(analysisVu) ? analysisVu : undefined,
       prov3ScreenMode: prov3ScreenModeFromHistoryRecord(rec),
     });
     router.push(page === "plus" ? "/plus" : page === "pro" ? "/pro" : "/analyze");

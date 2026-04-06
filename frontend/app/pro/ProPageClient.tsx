@@ -264,7 +264,12 @@ export default function ProPageClient({ deepLinkAnalysisId }: { deepLinkAnalysis
     const p = consumeReanalyzeFromHistoryPayload();
     if (!p || p.page !== "pro") return;
     void (async () => {
-      const blob = await fetchVideoBlobForHistoryReanalyze(p.analysisId, p.videoUrl);
+      // History queues both URLs; timeline first is implemented inside fetchVideoBlobForHistoryReanalyze.
+      const blob = await fetchVideoBlobForHistoryReanalyze(
+        p.analysisId,
+        p.videoUrl,
+        p.analysisVideoUrl,
+      );
       if (!blob || blob.size === 0) {
         setError(
           lang === "zh"

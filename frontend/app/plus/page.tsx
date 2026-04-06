@@ -109,7 +109,11 @@ export default function PlusPage() {
     const p = consumeReanalyzeFromHistoryPayload();
     if (!p || p.page !== "plus") return;
     void (async () => {
-      const blob = await fetchVideoBlobForHistoryReanalyze(p.analysisId, p.videoUrl);
+      const blob = await fetchVideoBlobForHistoryReanalyze(
+        p.analysisId,
+        p.videoUrl,
+        p.analysisVideoUrl,
+      );
       if (!blob || blob.size === 0) {
         setError(
           lang === "zh"
