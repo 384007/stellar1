@@ -29,7 +29,6 @@ import torch
 import torch.nn.functional as F
 
 from lib.prov3.keyframes.constants import EVENT_SEQUENCE, TOP_K
-from lib.prov3.keyframes.decode_spacing import spread_keyframes_min_decode_gap
 from lib.golfdb_swingnet.event_detector import EventDetector
 from services.golfdb_swingnet_paths import resolve_swingnet_checkpoint_path
 
@@ -37,6 +36,17 @@ logger = logging.getLogger(__name__)
 
 # Pro v3 A engine identifier (logs / debugging).
 PROV3_A_ENGINE_ID = "wmcnally/golfdb:SwingNet"
+
+# Viterbi: max distinct time rows considered per event (wider than TOP_K for joint search).
+_VITERBI_ROWS_PER_EVENT = 14
+
+# Minimum decode-frame gaps between consecutive events (Address→…→Finish).
+_PAIR_DECODE_GAPS = (1, 1, 2, 4, 4, 2, 2)
+# Global: Top→Impact >= 9, Impact→Finish >= 6 (decode indices).
+_TOP_TO_IMPACT_MIN = 9
+_IMPACT_TO_FINISH_MIN = 6
+
+_NEG_INF = -1.0e18
 
 # Populated by A-path for B-path local peak refinement (per analysis_id).
 _REFINE_CTX: dict[str, dict[str, Any]] = {}
@@ -272,22 +282,154 @@ def _run_forward(model: EventDetector, batch: torch.Tensor, device: torch.device
         return F.softmax(full, dim=1).numpy()
 
 
-def _decode_frame_index_to_row(
-    frame_index: int,
-    sample_indices: np.ndarray,
-    total_frames: int,
-) -> int:
-    """Map a **decode frame index** in the analysis MP4 to the nearest SwingNet sample row."""
-    hi = max(0, int(total_frames) - 1)
-    di = max(0, min(int(frame_index), hi))
-    return int(np.argmin(np.abs(sample_indices.astype(np.float64) - float(di))))
+def _log_prob(p: float) -> float:
+    x = float(p)
+    if x <= 0.0:
+        return _NEG_INF
+    return float(np.log(max(x, 1e-12)))
 
 
-def _keyframes_from_probs(
+def _local_peak_bonus(probs: np.ndarray, row: int, cls: int, radius: int = 4) -> float:
+    """Small bonus when this row is a local maximum for class cls (reduces bogus Impact peaks)."""
+    t = int(probs.shape[0])
+    r = int(row)
+    lo = max(0, r - radius)
+    hi = min(t - 1, r + radius)
+    sub = probs[lo : hi + 1, cls]
+    if sub.size == 0:
+        return 0.0
+    if float(probs[r, cls]) >= float(np.max(sub)) - 1e-9:
+        return 0.04
+    return 0.0
+
+
+def _candidate_rows_for_class(probs: np.ndarray, cls: int, max_rows: int) -> list[int]:
+    col = probs[:, cls]
+    order = np.argsort(-col)
+    seen: set[int] = set()
+    out: list[int] = []
+    for j in order.flat:
+        r = int(j)
+        if r in seen:
+            continue
+        seen.add(r)
+        out.append(r)
+        if len(out) >= max_rows:
+            break
+    return out
+
+
+def _keyframes_from_probs_viterbi(
     probs: np.ndarray,
     sample_indices: np.ndarray,
 ) -> list[dict[str, Any]]:
-    """Eight events: per-class argmax over time, enforce non-decreasing timeline rows."""
+    """Joint path over eight events with pairwise + global decode gaps (Viterbi on candidate rows)."""
+    n_rows = int(probs.shape[0])
+    if n_rows < 8:
+        return _keyframes_from_probs_argmax_fallback(probs, sample_indices)
+
+    max_c = min(n_rows, _VITERBI_ROWS_PER_EVENT)
+    cand_rows: list[list[int]] = [_candidate_rows_for_class(probs, k, max_c) for k in range(8)]
+    if any(len(x) == 0 for x in cand_rows):
+        return _keyframes_from_probs_argmax_fallback(probs, sample_indices)
+
+    cand_dec = [[int(sample_indices[r]) for r in rows] for rows in cand_rows]
+    n_c = [len(x) for x in cand_rows]
+
+    best: list[list[float]] = [[_NEG_INF] * n_c[k] for k in range(8)]
+    back: list[list[int]] = [[-1] * n_c[k] for k in range(8)]
+    top_dec: list[list[int]] = [[0] * n_c[k] for k in range(8)]
+    imp_dec: list[list[int]] = [[0] * n_c[k] for k in range(8)]
+
+    for j in range(n_c[0]):
+        r0 = cand_rows[0][j]
+        lp = _log_prob(float(probs[r0, 0]))
+        best[0][j] = lp
+
+    for k in range(1, 8):
+        gap_need = int(_PAIR_DECODE_GAPS[k - 1])
+        for j in range(n_c[k]):
+            r_k = cand_rows[k][j]
+            d_k = cand_dec[k][j]
+            lp_k = _log_prob(float(probs[r_k, k]))
+            if k in (3, 4, 5):
+                lp_k += _local_peak_bonus(probs, r_k, k)
+            for i in range(n_c[k - 1]):
+                d_prev = cand_dec[k - 1][i]
+                if d_k < d_prev + gap_need:
+                    continue
+                if k == 5:
+                    t_top = top_dec[4][i]
+                    if d_k < t_top + _TOP_TO_IMPACT_MIN:
+                        continue
+                if k == 7:
+                    i_imp = imp_dec[6][i]
+                    if d_k < i_imp + _IMPACT_TO_FINISH_MIN:
+                        continue
+                cand_score = best[k - 1][i] + lp_k
+                slack = (d_k - d_prev) - gap_need
+                if slack > 0:
+                    cand_score += min(0.03, float(slack) * 1.2e-4)
+                if cand_score > best[k][j]:
+                    best[k][j] = cand_score
+                    back[k][j] = i
+                    if k < 3:
+                        top_dec[k][j] = 0
+                    elif k == 3:
+                        top_dec[k][j] = d_k
+                    else:
+                        top_dec[k][j] = top_dec[k - 1][i]
+                    if k < 5:
+                        imp_dec[k][j] = 0
+                    elif k == 5:
+                        imp_dec[k][j] = d_k
+                    else:
+                        imp_dec[k][j] = imp_dec[k - 1][i]
+
+    last = 7
+    best_j = int(np.argmax(best[last]))
+    if best[last][best_j] <= _NEG_INF / 2:
+        logger.warning("[SwingNet] Viterbi found no feasible path — argmax fallback")
+        return _keyframes_from_probs_argmax_fallback(probs, sample_indices)
+
+    pick: list[int] = [0] * 8
+    pick[last] = best_j
+    for k in range(7, 0, -1):
+        pick[k - 1] = back[k][pick[k]]
+
+    keyframes: list[dict[str, Any]] = []
+    for k in range(8):
+        event_name = EVENT_SEQUENCE[k]
+        row = cand_rows[k][pick[k]]
+        conf = round(float(probs[row, k]), 4)
+        sf_main = int(sample_indices[row])
+        top_k: list[dict[str, Any]] = []
+        order = np.argsort(probs[:, k])[-TOP_K:][::-1]
+        for j in order:
+            sf = int(sample_indices[int(j)])
+            top_k.append(
+                {
+                    "event_name": event_name,
+                    "frame_index": int(sf),
+                    "confidence": round(float(probs[int(j), k]), 4),
+                }
+            )
+        keyframes.append(
+            {
+                "event_name": event_name,
+                "frame_index": int(sf_main),
+                "confidence": conf,
+                "top_k_candidates": top_k,
+            }
+        )
+    return keyframes
+
+
+def _keyframes_from_probs_argmax_fallback(
+    probs: np.ndarray,
+    sample_indices: np.ndarray,
+) -> list[dict[str, Any]]:
+    """Legacy: per-class argmax with row monotonicity (used only if Viterbi infeasible)."""
     n_rows = int(probs.shape[0])
     rows = [int(np.argmax(probs[:, k])) for k in range(8)]
     for i in range(1, 8):
@@ -321,6 +463,17 @@ def _keyframes_from_probs(
     return keyframes
 
 
+def _decode_frame_index_to_row(
+    frame_index: int,
+    sample_indices: np.ndarray,
+    total_frames: int,
+) -> int:
+    """Map a **decode frame index** in the analysis MP4 to the nearest SwingNet sample row."""
+    hi = max(0, int(total_frames) - 1)
+    di = max(0, min(int(frame_index), hi))
+    return int(np.argmin(np.abs(sample_indices.astype(np.float64) - float(di))))
+
+
 def run_swingnet_extract(
     video_path: str,
     *,
@@ -348,19 +501,12 @@ def run_swingnet_extract(
             m = min(probs.shape[0], len(sample_indices))
             probs = probs[:m]
             sample_indices = sample_indices[:m]
-        kfs = _keyframes_from_probs(probs, sample_indices)
+        kfs = _keyframes_from_probs_viterbi(probs, sample_indices)
         for row in kfs:
             fi = int(row.get("frame_index", 0))
             if fi < 0 or fi >= int(total):
                 raise RuntimeError(f"analysis_timeline_index_out_of_range:{fi}/{total}")
-        span = max(int(total), int(np.max(sample_indices)) + 1) if len(sample_indices) else int(total)
-        span = max(span, 1)
-        kfs, _spread = spread_keyframes_min_decode_gap(kfs, span)
-        if _spread:
-            logger.info(
-                "[SwingNet] decode-index spread applied span_frames=%s (avoid clustered keyframe thumbs)",
-                span,
-            )
+        logger.info("[SwingNet] A-path joint Viterbi decode (official indices — no preview spread)")
         with _CTX_LOCK:
             _REFINE_CTX[analysis_id] = {
                 "probs": probs,
@@ -388,9 +534,13 @@ def swingnet_b_refine(
     *,
     window: int = 8,
 ) -> list[dict[str, Any]]:
-    """B-path: local per-class peak on SwingNet probs (same wmcnally/golfdb run as A)."""
+    """B-path: local per-class peak on SwingNet probs (same wmcnally/golfdb run as A).
+
+    Reads refine context with **peek** (no pop) so recovery passes can reuse the same prob tensor.
+    Caller must ``clear_swingnet_ctx(analysis_id)`` when the analysis session ends.
+    """
     with _CTX_LOCK:
-        ctx = _REFINE_CTX.pop(analysis_id, None)
+        ctx = _REFINE_CTX.get(analysis_id)
     if not ctx:
         return keyframes
     probs = ctx["probs"]
@@ -398,6 +548,7 @@ def swingnet_b_refine(
     _fps = float(ctx["source_fps"])
     total = int(ctx["total_frames"])
     t = probs.shape[0]
+    _core = {"Top", "Mid-downswing", "Impact", "Finish"}
     out: list[dict[str, Any]] = []
     for item in keyframes:
         try:
@@ -405,10 +556,14 @@ def swingnet_b_refine(
         except ValueError:
             out.append(dict(item))
             continue
+        evn = str(item.get("event_name"))
+        w = int(window)
+        if evn in _core:
+            w = max(w, 20)
         v = int(item.get("frame_index", 0))
         row = _decode_frame_index_to_row(v, sample_indices, total)
-        lo = max(0, row - window)
-        hi = min(t - 1, row + window)
+        lo = max(0, row - w)
+        hi = min(t - 1, row + w)
         sub = probs[lo : hi + 1, k]
         best_off = int(np.argmax(sub))
         row_new = lo + best_off

@@ -13,7 +13,8 @@ EVENT_SEQUENCE = [
     "Finish",
 ]
 
-TOP_K = 3
+# Top-k candidates per event (B-path recovery); keep >= 8 for core-event rerank headroom.
+TOP_K = 10
 
 A_PASS_MIN_AVG_CONFIDENCE = 0.62
 A_MIN_CORE_FRAME_CONFIDENCE = 0.55

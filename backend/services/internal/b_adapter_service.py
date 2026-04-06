@@ -188,7 +188,46 @@ def _event_item(rows: List[Dict[str, object]], event_name: str) -> Dict[str, obj
     return None
 
 
-def _refine_core_triplet(rows: List[Dict[str, object]], available_frames: set[int]) -> List[Dict[str, object]]:
+def _refine_finish_after_impact(rows: List[Dict[str, object]], available_frames: set[int]) -> List[Dict[str, object]]:
+    """Rerank Finish vs Impact using top-k + dense window (semantic lateness, not just snap)."""
+    out = [dict(x) for x in rows]
+    fin = _event_item(out, "Finish")
+    impact = _event_item(out, "Impact")
+    if not fin or not impact:
+        return out
+    imp_i = int(impact.get("frame_index", 0))
+    min_fin = imp_i + 6
+    fin_c = sorted(_dense_focus_window(fin, available_frames, width=72, candidate_width=88))
+    fin_c = [f for f in fin_c if f >= min_fin]
+    if not fin_c:
+        return out
+
+    best_f: int | None = None
+    best_score = float("-inf")
+    for f in fin_c:
+        s = _item_score(fin, f, available_frames)
+        lateness = f - imp_i
+        s += min(0.07, lateness * 0.0016)
+        s += max(0.0, 0.03 - abs(f - (imp_i + 72)) * 0.00045)
+        if s > best_score:
+            best_score = s
+            best_f = f
+    if best_f is None:
+        return out
+    fin["frame_index"] = int(best_f)
+    fin["confidence"] = max(
+        float(fin.get("confidence", 0.0)),
+        round(_confidence_shape_score(fin, best_f), 4),
+    )
+    return out
+
+
+def _refine_core_triplet(
+    rows: List[Dict[str, object]],
+    available_frames: set[int],
+    *,
+    wide: bool = False,
+) -> List[Dict[str, object]]:
     out = [dict(x) for x in rows]
     top = _event_item(out, "Top")
     mid = _event_item(out, "Mid-downswing")
@@ -196,9 +235,12 @@ def _refine_core_triplet(rows: List[Dict[str, object]], available_frames: set[in
     if not top or not mid or not impact:
         return out
 
-    top_c = sorted(_dense_focus_window(top, available_frames, width=60, candidate_width=72))
-    mid_c = sorted(_dense_focus_window(mid, available_frames, width=56, candidate_width=68))
-    imp_c = sorted(_dense_focus_window(impact, available_frames, width=60, candidate_width=72))
+    tw, tcw = (72, 88) if wide else (60, 72)
+    mw, mcw = (68, 84) if wide else (56, 68)
+    iw, icw = (72, 88) if wide else (60, 72)
+    top_c = sorted(_dense_focus_window(top, available_frames, width=tw, candidate_width=tcw))
+    mid_c = sorted(_dense_focus_window(mid, available_frames, width=mw, candidate_width=mcw))
+    imp_c = sorted(_dense_focus_window(impact, available_frames, width=iw, candidate_width=icw))
     if not top_c or not mid_c or not imp_c:
         return out
 
@@ -224,13 +266,20 @@ def _refine_core_triplet(rows: List[Dict[str, object]], available_frames: set[in
         for m in mid_c:
             if m - t < 4:
                 continue
-            s_m = _item_score(mid, m, available_frames)
+            s_m_base = _item_score(mid, m, available_frames)
             for i in imp_c:
                 if i - m < 4:
                     continue
                 if i - t < 9:
                     continue
+                ideal_mid = t + max(4, int(round((i - t) * 0.42)))
+                s_m = s_m_base + max(0.0, 0.035 - abs(m - ideal_mid) * 0.0018)
                 s_i = _item_score(impact, i, available_frames)
+                top_impact_cands = _topk_rows(impact)
+                if top_impact_cands:
+                    best_fi, best_cf = max(top_impact_cands, key=lambda x: x[1])
+                    if abs(i - int(best_fi)) <= 10:
+                        s_i += min(0.04, float(best_cf) * 0.05)
                 gap_bonus = min(0.06, (i - t) * 0.0018)
                 score = s_t + s_m + s_i + gap_bonus + _semantic_bonus(t, m, i)
                 if score > best_score:
@@ -259,6 +308,7 @@ def refine_with_b_layer(
     analysis_frames: Optional[List[dict]] = None,
     confidence: Optional[Dict[str, float]] = None,
     fail_reasons: Optional[List[str]] = None,
+    recovery_pass: bool = False,
 ) -> List[Dict[str, object]]:
     """B-path refinement with event-focused local re-targeting.
 
@@ -266,8 +316,9 @@ def refine_with_b_layer(
     with top-k candidates + local windows aligned to available analysis/enhanced frames.
     """
     _ = (analysis_video, preprocess_meta)
+    sw_w = 40 if recovery_pass else 12
     refined_in = (
-        swingnet_b_refine(analysis_id or "", list(keyframes))
+        swingnet_b_refine(analysis_id or "", list(keyframes), window=sw_w)
         if analysis_id
         else list(keyframes)
     )
@@ -277,6 +328,8 @@ def refine_with_b_layer(
         available_frames |= _frame_index_set(analysis_frames)
 
     focus_events = _event_focus_set(fail_reasons or [], confidence or {})
+    if recovery_pass:
+        focus_events |= FOCUS_EVENTS_DEFAULT | {"Mid-backswing", "Mid-follow-through"}
     out: List[Dict[str, object]] = []
 
     for item in refined_in:
@@ -298,5 +351,6 @@ def refine_with_b_layer(
 
         out.append(cloned)
 
-    out = _refine_core_triplet(out, available_frames)
+    out = _refine_core_triplet(out, available_frames, wide=recovery_pass)
+    out = _refine_finish_after_impact(out, available_frames)
     return _enforce_event_spacing(out)

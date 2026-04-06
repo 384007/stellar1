@@ -34,6 +34,10 @@ def _core_semantic_ok(refined_keyframes: List[dict]) -> bool:
         return False
     if not (top_i < mid_i < imp_i):
         return False
+    if (mid_i - top_i) < 4:
+        return False
+    if (imp_i - mid_i) < 4:
+        return False
     if (imp_i - top_i) < 9:
         return False
     if top_c < (B_MIN_CORE_FRAME_CONFIDENCE - 0.03):

@@ -20,6 +20,7 @@ import cv2
 from PIL import Image, ImageDraw
 
 from lib.prov3.keyframes.constants import EVENT_SEQUENCE
+from lib.prov3.keyframes.decode_spacing import spread_keyframes_for_preview_strip
 from services.internal.prov3_ffmpeg import ffmpeg_extract_frames_bgr_by_decode_index, ffprobe_video_meta
 from services.internal.frame_enhance_service import persist_final_keyframe_images
 from services.prov3_keyframe_orchestrator_service import run_keyframe_analyze
@@ -417,7 +418,7 @@ def run_pro_video_analyze_via_prov3(
     if not thumb_ok:
         raise RuntimeError("analysis_video_missing: true240 analysis video is required")
 
-    # Debug / strict contract: do not call ``spread_keyframes_min_decode_gap`` — A/B indices flow unchanged.
+    # Official strip uses true A/B ``frame_index``; preview/contact sheet may use ``spread_keyframes_for_preview_strip`` only.
 
     persisted_kfs = persist_final_keyframe_images(av_path, raw_kfs, str(work / "keyframe_images"))
     event_to_phase = {v: k for k, v in EVENT_NAME_TO_PHASE.items()}
@@ -427,15 +428,30 @@ def run_pro_video_analyze_via_prov3(
         if event_to_phase.get(str(x["event_name"]), "").strip()
     }
 
-    ui_keyframes = _build_ui_keyframes(raw_kfs, av_path, float(prov3.analysis_fps or ANALYSIS_FPS))
-    for row in ui_keyframes:
+    fi_max = max((int(k.get("frame_index") or 0) for k in raw_kfs), default=0)
+    try:
+        _m = ffprobe_video_meta(av_path)
+        nb_pf = int(_m.get("nb_frames") or 0)
+        dur_pf = float(_m.get("duration_s") or 0.0)
+        fps_pf = float(_m.get("fps") or 240.0)
+        if nb_pf <= 0 and dur_pf > 0 and fps_pf > 1e-6:
+            nb_pf = max(1, int(round(dur_pf * fps_pf)))
+        span_timeline = max(nb_pf, fi_max + 1, 1)
+    except Exception:
+        span_timeline = max(fi_max + 1, 1)
+
+    ui_official = _build_ui_keyframes(raw_kfs, av_path, float(prov3.analysis_fps or ANALYSIS_FPS))
+    preview_raw = spread_keyframes_for_preview_strip(raw_kfs, span_timeline)
+    ui_preview = _build_ui_keyframes(preview_raw, av_path, float(prov3.analysis_fps or ANALYSIS_FPS))
+
+    for row in ui_official:
         phase = str(row.get("phase") or "")
         saved = persisted_by_phase.get(phase)
         if saved:
             row["keyframe_image_path"] = str(saved["file_path"])
             row["keyframe_image_file"] = str(saved["file_name"])
             row["keyframe_image_source"] = "analysis_video"
-    avg_c = _avg_confidence(ui_keyframes)
+    avg_c = _avg_confidence(ui_official)
     total_score = round(min(100.0, max(0.0, avg_c * 100.0)), 1)
 
     trust = str(dumped.get("trust_level") or "low")
@@ -443,7 +459,7 @@ def run_pro_video_analyze_via_prov3(
     fail_reasons = list(dumped.get("fail_reasons") or [])
 
     # Semantic gate: validation only — never reorder or rewrite keyframe rows or indices.
-    semantic_ok, semantic_fails = _semantic_acceptance_gate(ui_keyframes)
+    semantic_ok, semantic_fails = _semantic_acceptance_gate(ui_official)
     logger.info(
         "[PRO_PROV3][semantic_gate] ok=%s fails=%s",
         int(semantic_ok),
@@ -483,15 +499,15 @@ def run_pro_video_analyze_via_prov3(
     sheet_path: str | None = None
     try:
         p = work / "prov3_contact_sheet.jpg"
-        sheet_path = _build_contact_sheet(ui_keyframes, p)
+        sheet_path = _build_contact_sheet(ui_preview, p)
     except Exception as exc:
         logger.warning("[PRO_PROV3] contact_sheet skipped: %s", exc)
 
     low_trust_preview_only = status != "pass" or analysis_trust == "low_trust"
     if low_trust_preview_only and "low_trust_preview_only" not in fail_reasons:
         fail_reasons = [*fail_reasons, "low_trust_preview_only"]
-    preview_keyframes = list(ui_keyframes)
-    official_phase_keyframes = [] if low_trust_preview_only else list(ui_keyframes)
+    preview_keyframes = list(ui_preview)
+    official_phase_keyframes = [] if low_trust_preview_only else list(ui_official)
     # Top-level ``keyframes`` = official strip only (never alias preview when low trust).
     product_keyframes = list(official_phase_keyframes)
     issues = fail_reasons[:3] if fail_reasons else []
@@ -583,7 +599,7 @@ def run_pro_video_analyze_via_prov3(
     logger.info(
         "[PRO_PROV3] done analysis_id=%s kfs=%s trust=%s",
         minimal["analysis_id"],
-        len(ui_keyframes),
+        len(ui_official),
         analysis_trust,
     )
     return minimal

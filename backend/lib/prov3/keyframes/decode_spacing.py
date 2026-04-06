@@ -7,6 +7,7 @@ code only enforces **row** monotonicity (+1), which can map to **~10 consecutive
 
 from __future__ import annotations
 
+import copy
 from typing import Any
 
 from lib.prov3.keyframes.constants import EVENT_SEQUENCE
@@ -76,3 +77,22 @@ def spread_keyframes_min_decode_gap(
         k["frame_index"] = int(fi)
 
     return keyframes, changed
+
+
+def clone_keyframes_shallow(keyframes: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Copy row dicts so preview-only transforms never mutate official SwingNet outputs."""
+    return [copy.copy(x) for x in keyframes]
+
+
+def spread_keyframes_for_preview_strip(
+    keyframes: list[dict[str, Any]],
+    total_frames: int,
+) -> list[dict[str, Any]]:
+    """Return a **new** keyframe list with decode-gap spread for UI strip / thumbnails only.
+
+    Official ``frame_index`` values from A/B must never be overwritten for product accuracy;
+    call this only when building ``preview_keyframes`` / contact-sheet visuals.
+    """
+    rows = clone_keyframes_shallow(keyframes)
+    spread_keyframes_min_decode_gap(rows, int(total_frames))
+    return rows
