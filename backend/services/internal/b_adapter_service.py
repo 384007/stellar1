@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import logging
 from typing import Dict, List, Optional, Sequence
 
 from lib.prov3.keyframes.constants import EVENT_SEQUENCE
 from services.golfdb_swingnet_service import swingnet_b_refine
+
+logger = logging.getLogger(__name__)
 
 FOCUS_EVENTS_DEFAULT = {"Top", "Impact", "Finish", "Mid-downswing"}
 
@@ -244,6 +247,16 @@ def _refine_core_triplet(
     if not top_c or not mid_c or not imp_c:
         return out
 
+    _triplet_product = len(top_c) * len(mid_c) * len(imp_c)
+    logger.info(
+        "[prov3][B] core_triplet brute-force sizes top=%d mid=%d imp=%d product=%d wide=%s",
+        len(top_c),
+        len(mid_c),
+        len(imp_c),
+        _triplet_product,
+        wide,
+    )
+
     def _semantic_bonus(t: int, m: int, i: int) -> float:
         # Encourage a real core-event structure instead of uniform spreading.
         top_peak = max((fi for fi, _ in _topk_rows(top)), default=t)
@@ -330,6 +343,16 @@ def refine_with_b_layer(
     focus_events = _event_focus_set(fail_reasons or [], confidence or {})
     if recovery_pass:
         focus_events |= FOCUS_EVENTS_DEFAULT | {"Mid-backswing", "Mid-follow-through"}
+
+    logger.info(
+        "[prov3][B] refine pass start recovery=%s swingnet_window=%d rows=%d avail_frame_idxs=%d focus_events=%d",
+        recovery_pass,
+        sw_w,
+        len(refined_in),
+        len(available_frames),
+        len(focus_events),
+    )
+
     out: List[Dict[str, object]] = []
 
     for item in refined_in:
@@ -353,4 +376,6 @@ def refine_with_b_layer(
 
     out = _refine_core_triplet(out, available_frames, wide=recovery_pass)
     out = _refine_finish_after_impact(out, available_frames)
-    return _enforce_event_spacing(out)
+    out = _enforce_event_spacing(out)
+    logger.info("[prov3][B] refine pass done recovery=%s", recovery_pass)
+    return out

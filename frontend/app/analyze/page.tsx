@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useCallback, useEffect, useRef } from "react";
+import { useState, useCallback, useEffect, useRef, useMemo } from "react";
 import { useRouter } from "next/navigation";
 import UploadZone from "@/components/UploadZone";
 import HUDOverlay from "@/components/HUDOverlay";
@@ -18,6 +18,7 @@ import { stripResultForStorage } from "@/lib/strip-result";
 import { normalizedTotalScoreForStorage } from "@/lib/safe-analysis-score";
 import { patchLocalHistoryVideoR2Key } from "@/lib/history-sync-record";
 import { expandStellarProForUi } from "@/lib/stellar-pro-result";
+import { resolveProv3ProductMediaUrl } from "@/lib/prov3-media-url";
 import { pruneLocalStellarHistoryRecords } from "@/lib/pro-history-retention";
 import {
   DEFAULT_PROV3_MODAL_URL,
@@ -58,8 +59,17 @@ interface AnalysisResult {
     label_en: string;
     label_zh: string;
     timestamp: number;
-    image_base64: string;
+    image_base64?: string;
+    keyframe_image_url?: string;
   }>;
+  /** Pro v3 低信任：条图在 ``preview_keyframes``，顶层 ``keyframes`` 可能被清空 */
+  preview_keyframes?: AnalysisResult["keyframes"];
+  official_phase_keyframes?: AnalysisResult["keyframes"];
+  pipeline?: string;
+  analysis_video_url?: string;
+  playback_video_url?: string;
+  video_url?: string;
+  original_video_url?: string;
   skeleton_data: {
     frames: Array<Record<string, unknown>>;
     total_frames: number;
@@ -107,6 +117,23 @@ interface AnalysisResult {
   };
 }
 
+function keyframesForAnalyzeStrip(r: AnalysisResult): AnalysisResult["keyframes"] {
+  if (Array.isArray(r.keyframes) && r.keyframes.length > 0) return r.keyframes;
+  if (Array.isArray(r.preview_keyframes) && r.preview_keyframes.length > 0) return r.preview_keyframes;
+  if (Array.isArray(r.official_phase_keyframes) && r.official_phase_keyframes.length > 0) {
+    return r.official_phase_keyframes;
+  }
+  return [];
+}
+
+function proTimelineVideoUrlForAnalyze(r: AnalysisResult): string | null {
+  const raw = String(
+    r.analysis_video_url || r.playback_video_url || r.video_url || r.original_video_url || "",
+  ).trim();
+  const u = resolveProv3ProductMediaUrl(raw);
+  return /^https?:\/\//i.test(u) ? u : null;
+}
+
 interface ClubDetection { club_type: string; club_group: string; confidence: number; hand?: "R" | "L" }
 type Stage = "upload" | "processing" | "results";
 type InputMode = "upload" | "capture" | "screen";
@@ -133,6 +160,14 @@ export default function AnalyzePage() {
   const [screenRecTime, setScreenRecTime] = useState(0);
   const screenTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const [showClubPicker, setShowClubPicker] = useState(false);
+  const stripKeyframesForResult = useMemo(
+    () => (result ? keyframesForAnalyzeStrip(result) : []),
+    [result],
+  );
+  const proVideoTimelineUrl = useMemo(
+    () => (result ? proTimelineVideoUrlForAnalyze(result) : null),
+    [result],
+  );
   const backendBaseRef = useRef<string>(process.env.NEXT_PUBLIC_BACKEND_URL || "https://stellar1-backend.onrender.com");
   const lastBlobRef = useRef<{ blob: Blob; filename: string } | null>(null);
   /** Pro v3 对屏路径：在打开实拍前标记来源为拍屏 tab。 */
@@ -1588,6 +1623,28 @@ export default function AnalyzePage() {
               </p>
             </div>
 
+            {analysisMode === "pro" && proVideoTimelineUrl ? (
+              <div className="glass-card overflow-hidden p-0">
+                <div className="border-b border-white/10 px-4 py-2.5">
+                  <h3 className="text-xs font-semibold uppercase tracking-wider text-white/45">
+                    {lang === "zh" ? "时间线视频" : "Timeline video"}
+                  </h3>
+                  <p className="mt-0.5 text-[10px] leading-snug text-white/35">
+                    {lang === "zh"
+                      ? "真 240 分析用 H.264；若原片 .mov 在浏览器中无法播放，请优先看此处。"
+                      : "True-240 H.264 timeline. If the original .mov will not play in-browser, use this."}
+                  </p>
+                </div>
+                <video
+                  className="w-full max-h-[min(56vh,520px)] bg-black"
+                  controls
+                  playsInline
+                  preload="metadata"
+                  src={proVideoTimelineUrl}
+                />
+              </div>
+            ) : null}
+
             {/* Tabs */}
             <div className="flex gap-1 rounded-xl bg-white/5 p-1 overflow-hidden">
               {(["analysis", "3d", "comparison"] as const).map((tab) => (
@@ -1613,9 +1670,14 @@ export default function AnalyzePage() {
 
             {activeTab === "analysis" && (
               <>
-                {result.keyframes && result.keyframes.length > 0 && (
-                  <KeyframeStrip keyframes={result.keyframes} lang={lang} />
-                )}
+                {stripKeyframesForResult.length > 0 ? (
+                  <KeyframeStrip
+                    keyframes={stripKeyframesForResult}
+                    lang={lang}
+                    mode={analysisMode === "pro" ? "pro" : "default"}
+                    urlOnlyTimeline={analysisMode === "pro" || result.pipeline === "prov3"}
+                  />
+                ) : null}
 
                 {result.skeleton_data && result.skeleton_data.frames.length > 0 && (
                   <div className="glass-card p-5">

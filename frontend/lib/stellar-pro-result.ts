@@ -218,8 +218,11 @@ export function proExpandedToPlusViewModel(r: Record<string, any>): PlusAnalysis
   const normalizedOfficial = normalizeKeyframes(officialForModel as Array<Record<string, unknown>>) as NormalizedKf[];
   const normalizedPreview = normalizeKeyframes(preview as Array<Record<string, unknown>>) as NormalizedKf[];
   const normalizedDisplay = normalizeKeyframes(displayKeyframesRaw as Array<Record<string, unknown>>) as NormalizedKf[];
+  /** 低信任 Pro v3：Plus 部分逻辑仍读 ``keyframes``；与条图一致用 ``preview`` */
+  const keyframesForPlusModel =
+    isLowTrust && normalizedPreview.length > 0 ? normalizedPreview : normalizedDisplay;
   const phasesWithKf = new Set(
-    normalizedDisplay.map((k) => String(k.phase ?? "").toLowerCase().replace(/[\s-]+/g, "_")),
+    keyframesForPlusModel.map((k) => String(k.phase ?? "").toLowerCase().replace(/[\s-]+/g, "_")),
   );
   const swing_phase_evaluations = SWING_PHASE_IDS.map((phase) => ({
     phase,
@@ -269,7 +272,7 @@ export function proExpandedToPlusViewModel(r: Record<string, any>): PlusAnalysis
     suggestions_zh,
     summary,
     summary_zh,
-    keyframes: normalizedDisplay as PlusAnalysisResult["keyframes"],
+    keyframes: keyframesForPlusModel as PlusAnalysisResult["keyframes"],
     official_phase_keyframes: normalizedOfficial as PlusAnalysisResult["keyframes"],
     preview_keyframes: normalizedPreview as PlusAnalysisResult["keyframes"],
     skeleton_data:
