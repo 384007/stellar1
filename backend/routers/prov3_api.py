@@ -498,6 +498,7 @@ def _log_prov3_frontend_media_playbook(result: dict, *, analysis_id: str, contex
         f"  analysis_video[{_url_kind(av)} len={len(av)}]",
         "  排查: STELLAR_PROV3_R2_PUBLIC_BASE / R2 上传、Edge 回写、前端 NEXT_PUBLIC_MODAL_BACKEND_URL；"
         "若 kind=path_only/non_http 则前端无法直接播放。",
+        "  提示: original/playback 常为 iPhone .mov，Chrome 等可能无法解码；前端应优先用 analysis_video_url(时间线 .mp4) 作页内播放。",
     ]
     logger.info("\n".join(lines))
 

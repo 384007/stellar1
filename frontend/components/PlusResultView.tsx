@@ -1661,6 +1661,7 @@ export default function PlusResultView({ result, lang, externalVideoSrc, backend
   const safeActiveKeyframe =
     displayKeyframes.length > 0 ? Math.min(activeKeyframe, displayKeyframes.length - 1) : 0;
 
+  /** 下载：优先用户上传原片；再退 playback / 时间线。 */
   const originalVideoDownloadUrl = useMemo(() => {
     const raw = String(
       result.original_video_url ||
@@ -1676,6 +1677,26 @@ export default function PlusResultView({ result, lang, externalVideoSrc, backend
     result.video_url,
     result.playback_video_url,
     result.analysis_video_url,
+  ]);
+
+  /**
+   * 页内 <video>：优先真 240 时间线 MP4（H.264）；避免先用 original/playback 的 .mov（多数浏览器解码差 → 黑屏）。
+   */
+  const browserPlaybackVideoUrl = useMemo(() => {
+    const raw = String(
+      result.analysis_video_url ||
+        result.playback_video_url ||
+        result.video_url ||
+        result.original_video_url ||
+        "",
+    ).trim();
+    const u = resolveProv3ProductMediaUrl(raw);
+    return u || null;
+  }, [
+    result.analysis_video_url,
+    result.playback_video_url,
+    result.video_url,
+    result.original_video_url,
   ]);
 
   const onDownloadOriginalVideo = useCallback(async () => {
@@ -1726,7 +1747,7 @@ export default function PlusResultView({ result, lang, externalVideoSrc, backend
     if (activeTab !== "video") return;
 
     const id = String(result.analysis_id ?? "").trim();
-    const urlFallback = originalVideoDownloadUrl;
+    const urlFallback = browserPlaybackVideoUrl;
 
     const tryUpgradeParentUrlToIdbBlob = () => {
       if (!id) return () => {};
@@ -1834,7 +1855,7 @@ export default function PlusResultView({ result, lang, externalVideoSrc, backend
     return () => {
       cancelled = true;
     };
-  }, [activeTab, result.analysis_id, externalVideoSrc, originalVideoDownloadUrl]);
+  }, [activeTab, result.analysis_id, externalVideoSrc, browserPlaybackVideoUrl]);
 
   useEffect(() => {
     return () => {

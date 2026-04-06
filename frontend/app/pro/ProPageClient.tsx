@@ -280,7 +280,11 @@ export default function ProPageClient({ deepLinkAnalysisId }: { deepLinkAnalysis
               const d = data as unknown as Record<string, unknown>;
               const vu = resolveProv3ProductMediaUrl(
                 String(
-                  d.playback_video_url || d.video_url || d.original_video_url || "",
+                  d.analysis_video_url ||
+                    d.playback_video_url ||
+                    d.video_url ||
+                    d.original_video_url ||
+                    "",
                 ).trim(),
               );
               if (vu.startsWith("http")) {
@@ -323,7 +327,11 @@ export default function ProPageClient({ deepLinkAnalysisId }: { deepLinkAnalysis
         } else {
           const vu = resolveProv3ProductMediaUrl(
             String(
-              loaded.raw.playback_video_url || loaded.raw.video_url || loaded.raw.original_video_url || "",
+              loaded.raw.analysis_video_url ||
+                loaded.raw.playback_video_url ||
+                loaded.raw.video_url ||
+                loaded.raw.original_video_url ||
+                "",
             ).trim(),
           );
           if (vu.startsWith("http")) setProVideoSrc(vu);
