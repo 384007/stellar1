@@ -1,4 +1,6 @@
 /** Same-origin Pro v3 orchestration (upload → one Modal ``/analyze/start`` → R2 job poll). */
+/* CN: try presigned PUT to R2 first (``/api/history/upload-video/presign``) to avoid Pages ~100s wall
+ * clock on slow uploads. Non-CN uses same-origin proxy only. Modal runs after ``analyze/start``. */
 const PRO_V3_EDGE_ANALYZE_START = "/api/prov3/analyze/start";
 const PRO_V3_EDGE_ANALYZE_CANCEL = "/api/prov3/analyze/cancel";
 
@@ -32,7 +34,7 @@ export type RunProv3AnalyzeOptions = {
   backendUrls: string[];
   cnNetworkHint: boolean;
   screenMode: boolean;
-  /** Wall-clock budget for the whole job (upload + start + polling until result). */
+  /** Wall-clock budget for **polling** only, starting after ``job_id`` is returned (upload + analyze/start do not consume this). */
   modalTimeoutMs: number;
   renderTimeoutMs: number;
   logPrefix: string;
@@ -134,7 +136,6 @@ export async function runProv3AnalyzeMultipart(
   try {
     const abortSignal = opts.abortSignal;
     const userCancelledMessage = opts.userCancelledMessage;
-    const deadline = Date.now() + opts.modalTimeoutMs;
     const pollIntervalMs = 2500;
 
     const bumpAbort = () => {
@@ -146,33 +147,88 @@ export async function runProv3AnalyzeMultipart(
     opts.onJobPhase?.("uploading");
     bumpAbort();
     const uploadId = crypto.randomUUID();
-    const upForm = new FormData();
-    upForm.append("analysis_id", uploadId);
-    upForm.append("file", blob, filename);
-    const upRes = await fetch("/api/history/upload-video", {
-      method: "POST",
-      headers: { ...authHeaders },
-      body: upForm,
-      signal: abortSignal,
-    });
-    if (!upRes.ok) {
-      let detail = `HTTP ${upRes.status}`;
+    const mime = blob.type?.trim() || "video/mp4";
+
+    let videoR2Key = "";
+
+    if (opts.cnNetworkHint) {
       try {
-        const j = (await upRes.json()) as { detail?: string };
-        if (typeof j.detail === "string") detail = j.detail;
-      } catch {
-        /* ignore */
+        const pr = await fetch("/api/history/upload-video/presign", {
+          method: "POST",
+          headers: {
+            ...authHeaders,
+            "Content-Type": "application/json",
+            "X-Stellar-Network-Hint": "cn",
+          },
+          body: JSON.stringify({
+            analysis_id: uploadId,
+            filename,
+            content_type: mime,
+            byte_length: blob.size,
+          }),
+          signal: abortSignal,
+        });
+        if (pr.ok) {
+          const pj = (await pr.json()) as {
+            mode?: string;
+            upload_url?: string;
+            video_r2_key?: string;
+            content_type?: string;
+          };
+          if (pj.mode === "direct" && pj.upload_url && pj.video_r2_key) {
+            const putMime = (pj.content_type || mime).trim() || mime;
+            const putRes = await fetch(pj.upload_url, {
+              method: "PUT",
+              headers: { "Content-Type": putMime },
+              body: blob,
+              signal: abortSignal,
+            });
+            if (putRes.ok) {
+              videoR2Key = String(pj.video_r2_key).trim();
+            } else {
+              console.warn(
+                `${opts.logPrefix} [PROV3_EDGE_JOB] R2 presigned PUT failed HTTP ${putRes.status} — falling back to Pages proxy upload`,
+              );
+            }
+          }
+        }
+      } catch (e) {
+        console.warn(`${opts.logPrefix} [PROV3_EDGE_JOB] presign/direct upload error, using proxy:`, e);
       }
-      throw new Error(
-        upRes.status === 401 || upRes.status === 403
-          ? detail
-          : `视频上传失败：${detail}`,
-      );
     }
-    const upJson = (await upRes.json()) as { video_r2_key?: string };
-    const videoR2Key = String(upJson.video_r2_key || "").trim();
+
     if (!videoR2Key) {
-      throw new Error("视频上传成功但未返回存储键，请重试。");
+      const upRes = await fetch("/api/history/upload-video", {
+        method: "POST",
+        headers: {
+          ...authHeaders,
+          "Content-Type": mime,
+          "X-Stellar-Upload-Analysis-Id": uploadId,
+          "X-Stellar-Upload-Filename": filename,
+          "X-Stellar-Upload-Byte-Length": String(blob.size),
+        },
+        body: blob,
+        signal: abortSignal,
+      });
+      if (!upRes.ok) {
+        let detail = `HTTP ${upRes.status}`;
+        try {
+          const j = (await upRes.json()) as { detail?: string };
+          if (typeof j.detail === "string") detail = j.detail;
+        } catch {
+          /* ignore */
+        }
+        throw new Error(
+          upRes.status === 401 || upRes.status === 403
+            ? detail
+            : `视频上传失败：${detail}`,
+        );
+      }
+      const upJson = (await upRes.json()) as { video_r2_key?: string };
+      videoR2Key = String(upJson.video_r2_key || "").trim();
+      if (!videoR2Key) {
+        throw new Error("视频上传成功但未返回存储键，请重试。");
+      }
     }
 
     opts.onJobPhase?.("starting");
@@ -213,7 +269,10 @@ export async function runProv3AnalyzeMultipart(
       throw new Error("分析任务未返回 job_id，请重试或联系支持。");
     }
 
-    while (Date.now() < deadline) {
+    // Upload can take many minutes on slow networks; polling budget applies only after the job is queued.
+    const pollDeadline = Date.now() + opts.modalTimeoutMs;
+
+    while (Date.now() < pollDeadline) {
       bumpAbort();
       opts.onJobPhase?.("polling");
       let pollRes: Response;

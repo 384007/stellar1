@@ -23,6 +23,7 @@
     "@ffmpeg/ffmpeg": "^0.12.10",
     "@ffmpeg/util": "^0.12.1",
     "@mediapipe/tasks-vision": "^0.10.33",
+    "aws4fetch": "^1.0.20",
     "jose": "^5.9.6",
     "jsonwebtoken": "^9.0.2",
     "next": "^15.1.0",

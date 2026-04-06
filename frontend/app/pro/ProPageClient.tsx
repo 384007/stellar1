@@ -602,8 +602,9 @@ export default function ProPageClient({ deepLinkAnalysisId }: { deepLinkAnalysis
           backendUrls: backendUrlsRef.current,
           cnNetworkHint: cn,
           screenMode: effectiveScreenMode,
-          modalTimeoutMs: cn ? 90_000 : 360_000,
-          renderTimeoutMs: 360_000,
+          // Polling-only budget (after job_id). Long Modal runs + margin; upload no longer consumes this window.
+          modalTimeoutMs: 600_000,
+          renderTimeoutMs: 600_000,
           logPrefix: "[pro]",
           abortSignal: proAbort.signal,
           userCancelledMessage: lang === "zh" ? "分析已停止" : "Analysis stopped",
