@@ -98,6 +98,7 @@ function rulerLengthPx(a: [number, number], b: [number, number], nw: number, nh:
 export interface KeyframeLike {
   label_en: string;
   label_zh: string;
+  keyframe_image_url?: string;
   image_base64?: string;
 }
 
@@ -145,7 +146,7 @@ export default function KeyframeProv3InteractiveViewer({
   const [imgBroken, setImgBroken] = useState(false);
 
   const frame = keyframes[activeIndex];
-  const dataUrl = frame ? keyframeImageDataUrl(frame.image_base64) : null;
+  const dataUrl = frame ? String(frame.keyframe_image_url || "").trim() || keyframeImageDataUrl(frame.image_base64) : null;
 
   useEffect(() => {
     setStore(loadProv3KfStore(analysisId));
@@ -153,7 +154,7 @@ export default function KeyframeProv3InteractiveViewer({
 
   useEffect(() => {
     setImgBroken(false);
-  }, [activeIndex, frame?.image_base64]);
+  }, [activeIndex, frame?.image_base64, frame?.keyframe_image_url]);
 
   const frameState: Prov3KfFrameState = useMemo(
     () => getFrameState(store, activeIndex),
@@ -439,7 +440,15 @@ export default function KeyframeProv3InteractiveViewer({
 
   const t = lang === "zh";
 
-  if (!frame) return null;
+  if (!frame) {
+    return (
+      <div className="relative isolate h-[70vh] min-h-[280px] w-full max-h-[85vh] bg-black">
+        <div className="absolute inset-0 flex items-center justify-center text-xs text-amber-200">
+          {t ? "本次分析低信任，暂无可用关键帧。" : "Low-trust analysis: no usable keyframes."}
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div

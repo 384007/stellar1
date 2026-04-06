@@ -25,6 +25,8 @@ def run_keyframe_analyze(
     if cancel_check:
         cancel_check()
     pre = run_preprocess(input_video, work_dir, screen_mode=screen_mode, cancel_check=cancel_check)
+    if int(pre.preprocess_meta.analysis_fps) != 240:
+        raise RuntimeError(f"true240_required: analysis_fps={pre.preprocess_meta.analysis_fps}")
 
     logger.info("[prov3][A] start analysis_id=%s", pre.analysis_id)
     if cancel_check:
@@ -43,6 +45,10 @@ def run_keyframe_analyze(
 
     if a_result.a_status == "pass":
         clear_swingnet_ctx(pre.analysis_id)
+        for row in a_result.keyframes:
+            fi = int(row.frame_index)
+            if fi < 0:
+                raise RuntimeError(f"analysis_timeline_index_invalid:{fi}")
         return AnalyzeResponse(
             analysis_id=pre.analysis_id,
             status="pass",
@@ -79,6 +85,10 @@ def run_keyframe_analyze(
 
     if b_result.b_status == "pass":
         clear_swingnet_ctx(pre.analysis_id)
+        for row in b_result.refined_keyframes:
+            fi = int(row.frame_index)
+            if fi < 0:
+                raise RuntimeError(f"analysis_timeline_index_invalid:{fi}")
         return AnalyzeResponse(
             analysis_id=pre.analysis_id,
             status="pass",
@@ -95,6 +105,10 @@ def run_keyframe_analyze(
         keyframes=[item.model_dump() for item in b_result.refined_keyframes],
         fail_reasons=b_result.fail_reasons,
     )
+    for row in b_result.refined_keyframes:
+        fi = int(row.frame_index)
+        if fi < 0:
+            raise RuntimeError(f"analysis_timeline_index_invalid:{fi}")
     clear_swingnet_ctx(pre.analysis_id)
     return AnalyzeResponse(
         **low_trust,

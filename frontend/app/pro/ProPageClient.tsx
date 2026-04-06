@@ -108,7 +108,7 @@ interface ProAnalysisResult {
   }>;
 }
 
-type Stage = "upload" | "processing" | "results";
+type Stage = "upload" | "processing" | "rendering" | "results";
 type InputMode = "upload" | "capture" | "screen";
 
 /** Client implementation; mounted from ``app/pro/page.tsx`` (no id) or ``app/pro/[analysisId]/page.tsx``. */
@@ -117,6 +117,7 @@ export default function ProPageClient({ deepLinkAnalysisId }: { deepLinkAnalysis
   const deepId = (deepLinkAnalysisId || "").trim();
   const [stage, setStage] = useState<Stage>(deepId ? "processing" : "upload");
   const [result, setResult] = useState<ProAnalysisResult | null>(null);
+  const [resultRenderError, setResultRenderError] = useState<string | null>(null);
   const [error, setError] = useState("");
   const [progress, setProgress] = useState(deepId ? 15 : 0);
   const [liveCapture, setLiveCapture] = useState(false);
@@ -423,6 +424,7 @@ export default function ProPageClient({ deepLinkAnalysisId }: { deepLinkAnalysis
     prov3ScreenOpenDiagnosisTabRef.current = resolveProv3ScreenMode(filename, prov3ScreenMode);
     setProcessingProScreenMode(resolveProv3ScreenMode(filename, prov3ScreenMode));
     setStage("processing");
+    setResultRenderError(null);
     setError("");
     setProgress(0);
     setProVideoSrc((prev) => {
@@ -500,9 +502,12 @@ export default function ProPageClient({ deepLinkAnalysisId }: { deepLinkAnalysis
         throw new Error(formatProAnalyzeHttpError(res.status, detail));
       }
 
+      console.info("[pro] received 200 from /pro-v3/analyze");
       setProgress(96);
+      setStage("rendering");
       await yieldUiBeforeHeavyParse();
       const rawText = await res.text();
+      console.info("[pro] rawText length:", rawText.length);
       let raw: Record<string, unknown>;
       try {
         raw = JSON.parse(rawText) as Record<string, unknown>;
@@ -517,16 +522,53 @@ export default function ProPageClient({ deepLinkAnalysisId }: { deepLinkAnalysis
       let data: ProAnalysisResult;
       try {
         data = expandStellarProForUi(raw) as ProAnalysisResult;
+        const finalStatus = String((raw as { final_status?: unknown }).final_status ?? "");
+        const trustLevel = String(
+          (raw as { analysis_trust?: unknown; trust_level?: unknown }).analysis_trust ??
+            (raw as { trust_level?: unknown }).trust_level ??
+            "",
+        );
+        const displayCount = Array.isArray((data as { keyframes?: unknown[] }).keyframes)
+          ? (data as { keyframes?: unknown[] }).keyframes?.length ?? 0
+          : 0;
+        const officialCount = Array.isArray((raw as { official_phase_keyframes?: unknown[] }).official_phase_keyframes)
+          ? (raw as { official_phase_keyframes?: unknown[] }).official_phase_keyframes?.length ?? 0
+          : 0;
+        const previewCount = Array.isArray((raw as { preview_keyframes?: unknown[] }).preview_keyframes)
+          ? (raw as { preview_keyframes?: unknown[] }).preview_keyframes?.length ?? 0
+          : 0;
+        console.info("[pro] parsed final_status/trust:", { finalStatus, trustLevel });
+        console.info("[pro] display/official/preview keyframes:", {
+          displayCount,
+          officialCount,
+          previewCount,
+        });
       } catch (parseErr) {
-        console.error("[pro] expand result failed:", parseErr);
-        throw new Error(
+        console.error("[pro] expand result failed:", parseErr, {
+          analysis_id: String((raw as { analysis_id?: unknown }).analysis_id ?? ""),
+          final_status: String((raw as { final_status?: unknown }).final_status ?? ""),
+          trust_level: String(
+            (raw as { analysis_trust?: unknown; trust_level?: unknown }).analysis_trust ??
+              (raw as { trust_level?: unknown }).trust_level ??
+              "",
+          ),
+          keyframes_len: Array.isArray((raw as { keyframes?: unknown[] }).keyframes)
+            ? (raw as { keyframes?: unknown[] }).keyframes?.length ?? 0
+            : 0,
+        });
+        setResult(null);
+        setResultRenderError(
           lang === "zh"
             ? "分析结果解析失败，请重试或缩短视频"
             : "Could not parse analysis result. Try again or use a shorter clip.",
         );
+        setProgress(100);
+        setStage("results");
+        return;
       }
       setProgress(100);
       setResult(data);
+      setResultRenderError(null);
       setStage("results");
       setProAnalyzeLocked(true);
       if (typeof window !== "undefined" && data.analysis_id) {
@@ -565,8 +607,8 @@ export default function ProPageClient({ deepLinkAnalysisId }: { deepLinkAnalysis
         setProAnalyzeLocked(true);
         setError(err instanceof Error ? err.message : "Analysis failed");
       }
-      setStage("upload");
-    }
+        setStage("upload");
+      }
     } finally {
       analysisInFlightRef.current = false;
       proAnalyzeAbortRef.current = null;
@@ -887,23 +929,40 @@ export default function ProPageClient({ deepLinkAnalysisId }: { deepLinkAnalysis
             onCancel={stopProAnalysis}
           />
         )}
+        {stage === "rendering" && (
+          <div className="mx-auto max-w-xl rounded-xl border border-brand-gold/20 bg-white/[0.03] p-6 text-center">
+            <div className="mx-auto h-8 w-8 animate-spin rounded-full border-2 border-white/15 border-t-brand-gold/70" />
+            <p className="mt-4 text-sm text-white/70">
+              {lang === "zh" ? "后端已返回，正在渲染结果…" : "Backend finished. Rendering results…"}
+            </p>
+          </div>
+        )}
 
-        {stage === "results" && result && (
+        {stage === "results" && (
           <>
             <div className="mb-4 flex justify-center">
               <span className="rounded-full border border-brand-gold/40 bg-brand-gold/10 px-3 py-1 text-[11px] font-bold tracking-wider text-brand-gold">
                 STELLAR PRO
               </span>
             </div>
-            <PlusResultView
-              key={result.analysis_id}
-              result={proExpandedToPlusViewModel(result as unknown as Record<string, unknown>)}
-              lang={lang}
-              backendUrl={backendUrlsRef.current[0] || "https://stellar1-backend.onrender.com"}
-              externalVideoSrc={proVideoSrc}
-              coachingMode="pro"
-              initialActiveTab={prov3ScreenOpenDiagnosisTabRef.current ? "diagnosis" : "video"}
-            />
+            {result ? (
+              <PlusResultView
+                key={result.analysis_id}
+                result={proExpandedToPlusViewModel(result as unknown as Record<string, unknown>)}
+                lang={lang}
+                backendUrl={backendUrlsRef.current[0] || "https://stellar1-backend.onrender.com"}
+                externalVideoSrc={proVideoSrc}
+                coachingMode="pro"
+                initialActiveTab={prov3ScreenOpenDiagnosisTabRef.current ? "diagnosis" : "video"}
+              />
+            ) : (
+              <div className="mx-auto mb-6 max-w-xl rounded-xl border border-amber-400/30 bg-amber-500/10 p-4 text-sm text-amber-200">
+                {resultRenderError ||
+                  (lang === "zh"
+                    ? "本次分析低信任，暂无可用正式关键帧。"
+                    : "Low-trust analysis: no usable official keyframes.")}
+              </div>
+            )}
             <div className="text-center py-6 space-y-2">
               <p className="text-xs text-white/40">
                 {lang === "zh"

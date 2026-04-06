@@ -17,7 +17,7 @@ const SWING_PHASE_IDS = [
 ] as const;
 
 function derivePhaseKeyframesFromStrip(
-  keyframes: Array<{ phase?: string; source_pose_idx?: unknown; source_frame_index?: unknown }>,
+  keyframes: Array<{ phase?: string; frame_index?: unknown; source_pose_idx?: unknown; source_frame_index?: unknown }>,
 ): Record<string, number> | undefined {
   const out: Record<string, number> = {};
   for (const kf of keyframes) {
@@ -26,12 +26,15 @@ function derivePhaseKeyframesFromStrip(
       .replace(/[\s-]+/g, "_");
     const spi = kf.source_pose_idx;
     const sfi = kf.source_frame_index;
+    const fi = kf.frame_index;
     const idx =
-      typeof spi === "number" && Number.isFinite(spi)
-        ? spi
-        : typeof sfi === "number" && Number.isFinite(sfi)
-          ? sfi
-          : undefined;
+      typeof fi === "number" && Number.isFinite(fi)
+        ? fi
+        : typeof spi === "number" && Number.isFinite(spi)
+          ? spi
+          : typeof sfi === "number" && Number.isFinite(sfi)
+            ? sfi
+            : undefined;
     if (ph && idx !== undefined) {
       out[ph] = idx;
     }
@@ -52,7 +55,7 @@ function ensureAnalysisIdOnRaw(raw: Record<string, any>): void {
 
 function mergePhaseKeyframeMaps(
   rawPk: unknown,
-  keyframes: Array<{ phase?: string; source_pose_idx?: unknown; source_frame_index?: unknown }>,
+  keyframes: Array<{ phase?: string; frame_index?: unknown; source_pose_idx?: unknown; source_frame_index?: unknown }>,
 ): Record<string, number> | undefined {
   const fromStrip = derivePhaseKeyframesFromStrip(keyframes) ?? {};
   const fromRaw =
@@ -110,8 +113,66 @@ export function proExpandedToPlusViewModel(r: Record<string, any>): PlusAnalysis
   const keyframes = Array.isArray(r.keyframes)
     ? r.keyframes.filter((k: unknown) => k != null && typeof k === "object" && !Array.isArray(k))
     : [];
+  const official = Array.isArray(r.official_phase_keyframes)
+    ? r.official_phase_keyframes.filter((k: unknown) => k != null && typeof k === "object" && !Array.isArray(k))
+    : [];
+  const preview = Array.isArray(r.preview_keyframes)
+    ? r.preview_keyframes.filter((k: unknown) => k != null && typeof k === "object" && !Array.isArray(k))
+    : [];
+  const isLowTrust =
+    String(r.final_status ?? "") !== "pass" || String(r.analysis_trust ?? r.trust_level ?? "") === "low_trust";
+  const displayKeyframesRaw = isLowTrust
+    ? (preview.length ? preview : keyframes)
+    : (official.length ? official : keyframes);
+  type NormalizedKf = {
+    phase: string;
+    label_en: string;
+    label_zh: string;
+    frame_index: number;
+    timestamp: number;
+    image_base64: string;
+    keyframe_image_url?: string;
+    keyframe_image_source?: string;
+  } & Record<string, unknown>;
+  const normalizeKeyframes = (arr: Array<Record<string, unknown>>) =>
+    arr.map((kf) => {
+      const phaseRaw = String((kf as { phase?: unknown }).phase ?? "").trim().toLowerCase().replace(/[\s-]+/g, "_");
+      const fallbackLabel = phaseRaw || "frame";
+      const frameIndexRaw = Number((kf as { frame_index?: unknown }).frame_index ?? 0);
+      const timestampRaw = Number((kf as { timestamp?: unknown }).timestamp ?? 0);
+      return {
+        ...(kf as Record<string, unknown>),
+        phase: phaseRaw || fallbackLabel,
+        label_en:
+          typeof (kf as { label_en?: unknown }).label_en === "string"
+            ? String((kf as { label_en?: string }).label_en)
+            : fallbackLabel,
+        label_zh:
+          typeof (kf as { label_zh?: unknown }).label_zh === "string"
+            ? String((kf as { label_zh?: string }).label_zh)
+            : fallbackLabel,
+        frame_index: Number.isFinite(frameIndexRaw) ? frameIndexRaw : 0,
+        timestamp: Number.isFinite(timestampRaw) ? timestampRaw : 0,
+        image_base64:
+          typeof (kf as { image_base64?: unknown }).image_base64 === "string"
+            ? String((kf as { image_base64?: string }).image_base64)
+            : "",
+        keyframe_image_url:
+          typeof (kf as { keyframe_image_url?: unknown }).keyframe_image_url === "string"
+            ? String((kf as { keyframe_image_url?: string }).keyframe_image_url)
+            : undefined,
+        keyframe_image_source:
+          typeof (kf as { keyframe_image_source?: unknown }).keyframe_image_source === "string"
+            ? String((kf as { keyframe_image_source?: string }).keyframe_image_source)
+            : undefined,
+      };
+    });
+  const normalizedKeyframes = normalizeKeyframes(keyframes as Array<Record<string, unknown>>) as NormalizedKf[];
+  const normalizedOfficial = normalizeKeyframes(official as Array<Record<string, unknown>>) as NormalizedKf[];
+  const normalizedPreview = normalizeKeyframes(preview as Array<Record<string, unknown>>) as NormalizedKf[];
+  const normalizedDisplay = normalizeKeyframes(displayKeyframesRaw as Array<Record<string, unknown>>) as NormalizedKf[];
   const phasesWithKf = new Set(
-    keyframes.map((k: { phase?: string }) =>
+    normalizedDisplay.map((k) =>
       String(k.phase ?? "")
         .toLowerCase()
         .replace(/[\s-]+/g, "_"),
@@ -142,7 +203,7 @@ export function proExpandedToPlusViewModel(r: Record<string, any>): PlusAnalysis
   };
 
   const scoresRaw = r.scores && typeof r.scores === "object" ? (r.scores as Record<string, number>) : null;
-  const pk = mergePhaseKeyframeMaps(r.phase_keyframes, keyframes);
+  const pk = isLowTrust ? undefined : mergePhaseKeyframeMaps(r.phase_keyframes, normalizedDisplay);
 
   return {
     analysis_id: String(r.analysis_id ?? ""),
@@ -165,7 +226,9 @@ export function proExpandedToPlusViewModel(r: Record<string, any>): PlusAnalysis
     suggestions_zh,
     summary,
     summary_zh,
-    keyframes: keyframes as PlusAnalysisResult["keyframes"],
+    keyframes: normalizedDisplay as PlusAnalysisResult["keyframes"],
+    official_phase_keyframes: normalizedOfficial as PlusAnalysisResult["keyframes"],
+    preview_keyframes: normalizedPreview as PlusAnalysisResult["keyframes"],
     skeleton_data:
       r.skeleton_data && typeof r.skeleton_data === "object"
         ? (r.skeleton_data as PlusAnalysisResult["skeleton_data"])
@@ -194,6 +257,8 @@ export function proExpandedToPlusViewModel(r: Record<string, any>): PlusAnalysis
         : undefined,
     keyframe_mismatch_notice: Boolean(r.keyframe_mismatch_notice),
     warning: typeof r.warning === "string" ? r.warning : undefined,
+    final_status: typeof r.final_status === "string" ? r.final_status : undefined,
+    low_trust_preview_only: Boolean(r.low_trust_preview_only),
     screen_cropped_video_url:
       typeof r.screen_cropped_video_url === "string" ? r.screen_cropped_video_url : undefined,
     screen_clean_video_url:
@@ -226,6 +291,8 @@ export function expandStellarProForUi(raw: Record<string, any>): Record<string, 
   const summary = String(raw.summary ?? "").trim();
   const summary_zh = String(raw.summary_zh ?? raw.summary ?? "").trim();
   const keyframes = Array.isArray(raw.keyframes) ? raw.keyframes : [];
+  const official_phase_keyframes = Array.isArray(raw.official_phase_keyframes) ? raw.official_phase_keyframes : [];
+  const preview_keyframes = Array.isArray(raw.preview_keyframes) ? raw.preview_keyframes : [];
   const emptyPrediction = {
     predicted_distance: 0,
     lateral_offset: 0,
@@ -263,10 +330,17 @@ export function expandStellarProForUi(raw: Record<string, any>): Record<string, 
           phase,
           label_en: String(kf.label_en ?? phase),
           label_zh: String(kf.label_zh ?? phase),
+          frame_index: Number(kf.frame_index ?? 0),
           timestamp: Number(kf.timestamp ?? 0),
           image_base64: String(kf.image_base64 ?? ""),
+          keyframe_image_url:
+            typeof kf.keyframe_image_url === "string" ? kf.keyframe_image_url : undefined,
+          keyframe_image_source:
+            typeof kf.keyframe_image_source === "string" ? kf.keyframe_image_source : "analysis_video",
         };
       }),
+    official_phase_keyframes,
+    preview_keyframes,
     skeleton_data: raw.skeleton_data ?? { frames: [], total_frames: 0 },
     prediction: raw.prediction ?? emptyPrediction,
     trajectory: raw.trajectory ?? [],
@@ -289,6 +363,8 @@ export function expandStellarProForUi(raw: Record<string, any>): Record<string, 
     retry_reasons: raw.retry_reasons,
     keyframe_mismatch_notice: raw.keyframe_mismatch_notice,
     warning: raw.warning,
+    final_status: raw.final_status,
+    low_trust_preview_only: raw.low_trust_preview_only,
     screen_clean_video_url: raw.screen_clean_video_url,
     screen_keyframe_review_applied: raw.screen_keyframe_review_applied,
     routing_strategy: raw.routing_strategy,

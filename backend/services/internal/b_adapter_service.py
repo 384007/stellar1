@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Dict, List, Optional, Sequence
 
+from lib.prov3.keyframes.constants import EVENT_SEQUENCE
 from services.golfdb_swingnet_service import swingnet_b_refine
 
 FOCUS_EVENTS_DEFAULT = {"Top", "Impact", "Finish", "Mid-downswing"}
@@ -66,25 +67,70 @@ def _build_focus_candidates(item: Dict[str, object], frame_idx: int) -> set[int]
     return {x for x in candidates if x >= 0}
 
 
+def _topk_rows(item: Dict[str, object]) -> list[tuple[int, float]]:
+    out: list[tuple[int, float]] = []
+    for c in list(item.get("top_k_candidates") or []):
+        try:
+            out.append((int(c.get("frame_index", -1)), float(c.get("confidence", 0.0))))
+        except (TypeError, ValueError):
+            continue
+    return [(fi, conf) for fi, conf in out if fi >= 0]
+
+
+def _dense_focus_window(
+    item: Dict[str, object],
+    available_frames: set[int],
+    *,
+    width: int = 48,
+    candidate_width: int = 64,
+) -> set[int]:
+    cur = int(item.get("frame_index", 0))
+    points = {cur}
+    for fi, _ in _topk_rows(item):
+        points.add(fi)
+    dense: set[int] = set()
+    for p in points:
+        for x in range(max(0, p - candidate_width), p + candidate_width + 1):
+            dense.add(x)
+    if available_frames:
+        for af in available_frames:
+            if abs(af - cur) <= width:
+                dense.add(af)
+            for fi, _ in _topk_rows(item):
+                if abs(af - fi) <= width:
+                    dense.add(af)
+    return {x for x in dense if x >= 0}
+
+
+def _confidence_shape_score(item: Dict[str, object], cand: int) -> float:
+    base = float(item.get("confidence", 0.0))
+    topk = _topk_rows(item)
+    if not topk:
+        return base
+    best = base
+    for fi, conf in topk:
+        dist = abs(cand - fi)
+        decay = max(0.0, 1.0 - (dist / 80.0))
+        best = max(best, conf * decay)
+    return best
+
+
 def _pick_best_focus_frame(item: Dict[str, object], available_frames: set[int]) -> tuple[int, float]:
     current_idx = int(item.get("frame_index", 0))
-    candidates = _build_focus_candidates(item, current_idx)
+    candidates = _build_focus_candidates(item, current_idx) | _dense_focus_window(item, available_frames)
     best_idx = current_idx
     best_score = float("-inf")
     best_conf = float(item.get("confidence", 0.0))
 
-    nearest_cache: dict[int, int | None] = {}
     for cand in candidates:
-        cand_conf = _candidate_confidence(item, cand)
-        nearest_cache[cand] = _nearest_frame(cand, available_frames, max_dist=10)
-
-        align_bonus = 0.06 if cand in available_frames else 0.0
-        if nearest_cache[cand] is None:
-            align_penalty = 0.06
+        cand_conf = max(_candidate_confidence(item, cand), _confidence_shape_score(item, cand))
+        nearest = _nearest_frame(cand, available_frames, max_dist=18)
+        align_bonus = 0.08 if cand in available_frames else 0.0
+        if nearest is None:
+            align_penalty = 0.03
         else:
-            align_penalty = min(0.05, abs(nearest_cache[cand] - cand) * 0.007)
-
-        move_penalty = min(0.03, abs(cand - current_idx) * 0.002)
+            align_penalty = min(0.025, abs(nearest - cand) * 0.0016)
+        move_penalty = min(0.02, abs(cand - current_idx) * 0.0008)
         score = cand_conf + align_bonus - align_penalty - move_penalty
 
         if score > best_score:
@@ -92,14 +138,115 @@ def _pick_best_focus_frame(item: Dict[str, object], available_frames: set[int]) 
             best_idx = cand
             best_conf = cand_conf
 
-    snapped = _nearest_frame(best_idx, available_frames, max_dist=6)
-    if snapped is not None:
-        best_idx = snapped
-        best_conf = max(best_conf, _candidate_confidence(item, best_idx))
+    if best_idx not in available_frames:
+        snapped = _nearest_frame(best_idx, available_frames, max_dist=12)
+        if snapped is not None:
+            best_idx = snapped
+            best_conf = max(best_conf, _candidate_confidence(item, best_idx))
 
-    # Confidence tracks actual relocation quality; no blanket boost.
     adjusted_conf = round(max(0.0, min(0.99, best_conf)), 4)
     return best_idx, adjusted_conf
+
+
+def _enforce_event_spacing(rows: List[Dict[str, object]]) -> List[Dict[str, object]]:
+    out = [dict(x) for x in rows]
+    by_name = {str(x.get("event_name") or ""): x for x in out}
+    min_gap = {
+        ("Top", "Mid-downswing"): 4,
+        ("Mid-downswing", "Impact"): 4,
+        ("Impact", "Mid-follow-through"): 4,
+        ("Mid-follow-through", "Finish"): 5,
+    }
+    for i in range(1, len(EVENT_SEQUENCE)):
+        left_name = EVENT_SEQUENCE[i - 1]
+        right_name = EVENT_SEQUENCE[i]
+        l = by_name.get(left_name)
+        r = by_name.get(right_name)
+        if not l or not r:
+            continue
+        li = int(l.get("frame_index", 0))
+        ri = int(r.get("frame_index", 0))
+        gap = int(min_gap.get((left_name, right_name), 1))
+        if ri <= li:
+            ri = li + gap
+        elif ri - li < gap:
+            ri = li + gap
+        r["frame_index"] = ri
+    return out
+
+
+def _item_score(item: Dict[str, object], cand: int, available_frames: set[int]) -> float:
+    conf = max(_candidate_confidence(item, cand), _confidence_shape_score(item, cand))
+    align = 0.08 if cand in available_frames else 0.0
+    return float(conf) + align
+
+
+def _event_item(rows: List[Dict[str, object]], event_name: str) -> Dict[str, object] | None:
+    for r in rows:
+        if str(r.get("event_name") or "") == event_name:
+            return r
+    return None
+
+
+def _refine_core_triplet(rows: List[Dict[str, object]], available_frames: set[int]) -> List[Dict[str, object]]:
+    out = [dict(x) for x in rows]
+    top = _event_item(out, "Top")
+    mid = _event_item(out, "Mid-downswing")
+    impact = _event_item(out, "Impact")
+    if not top or not mid or not impact:
+        return out
+
+    top_c = sorted(_dense_focus_window(top, available_frames, width=60, candidate_width=72))
+    mid_c = sorted(_dense_focus_window(mid, available_frames, width=56, candidate_width=68))
+    imp_c = sorted(_dense_focus_window(impact, available_frames, width=60, candidate_width=72))
+    if not top_c or not mid_c or not imp_c:
+        return out
+
+    def _semantic_bonus(t: int, m: int, i: int) -> float:
+        # Encourage a real core-event structure instead of uniform spreading.
+        top_peak = max((fi for fi, _ in _topk_rows(top)), default=t)
+        impact_peak = max((fi for fi, _ in _topk_rows(impact)), default=i)
+        b = 0.0
+        b += max(0.0, 0.06 - abs(t - top_peak) * 0.0012)
+        b += max(0.0, 0.06 - abs(i - impact_peak) * 0.0012)
+        # Mid-downswing must sit between Top and Impact, biased toward the first half of downswing.
+        ideal_mid = t + max(3, int(round((i - t) * 0.45)))
+        b += max(0.0, 0.05 - abs(m - ideal_mid) * 0.0015)
+        # Impact should be later enough than Top to avoid pseudo-impact frames.
+        if i - t >= 10:
+            b += 0.025
+        return b
+
+    best = None
+    best_score = float("-inf")
+    for t in top_c:
+        s_t = _item_score(top, t, available_frames)
+        for m in mid_c:
+            if m - t < 4:
+                continue
+            s_m = _item_score(mid, m, available_frames)
+            for i in imp_c:
+                if i - m < 4:
+                    continue
+                if i - t < 9:
+                    continue
+                s_i = _item_score(impact, i, available_frames)
+                gap_bonus = min(0.06, (i - t) * 0.0018)
+                score = s_t + s_m + s_i + gap_bonus + _semantic_bonus(t, m, i)
+                if score > best_score:
+                    best_score = score
+                    best = (t, m, i)
+    if best is None:
+        return out
+
+    top["frame_index"], mid["frame_index"], impact["frame_index"] = best
+    top["confidence"] = max(float(top.get("confidence", 0.0)), round(_confidence_shape_score(top, best[0]), 4))
+    mid["confidence"] = max(float(mid.get("confidence", 0.0)), round(_confidence_shape_score(mid, best[1]), 4))
+    impact["confidence"] = max(
+        float(impact.get("confidence", 0.0)),
+        round(_confidence_shape_score(impact, best[2]), 4),
+    )
+    return out
 
 
 def refine_with_b_layer(
@@ -151,4 +298,5 @@ def refine_with_b_layer(
 
         out.append(cloned)
 
-    return out
+    out = _refine_core_triplet(out, available_frames)
+    return _enforce_event_spacing(out)
