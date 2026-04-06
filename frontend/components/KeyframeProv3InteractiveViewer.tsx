@@ -11,10 +11,55 @@ import {
   type Prov3KfFrameState,
   type Prov3KfStore,
 } from "@/lib/keyframe-prov3-storage";
+import { keyframeImageDataUrl } from "@/lib/image-base64";
 
 type Tool = "pan" | "draw" | "ruler";
 
-const STROKE_COLORS = ["#ffffff", "#f5c518", "#ef4444", "#22d3ee", "#4ade80", "#a855f7"];
+/** iOS 标记风格画笔色条（横向滚动） */
+const STROKE_COLORS = [
+  "#ffffff",
+  "#000000",
+  "#8e8e93",
+  "#ff3b30",
+  "#ff9500",
+  "#ffcc00",
+  "#34c759",
+  "#5ac8fa",
+  "#007aff",
+  "#5856d6",
+  "#af52de",
+  "#ff2d55",
+  "#a2845e",
+] as const;
+
+function triggerBlobDownload(blob: Blob, filename: string) {
+  const href = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = href;
+  a.download = filename;
+  a.rel = "noopener";
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(href);
+}
+
+async function downloadHrefAsFile(href: string, filename: string, fallbackOpen: boolean) {
+  try {
+    if (href.startsWith("data:")) {
+      const res = await fetch(href);
+      const blob = await res.blob();
+      triggerBlobDownload(blob, filename);
+      return;
+    }
+    const r = await fetch(href, { mode: "cors" });
+    if (!r.ok) throw new Error(String(r.status));
+    const blob = await r.blob();
+    triggerBlobDownload(blob, filename);
+  } catch {
+    if (fallbackOpen && href.startsWith("http")) window.open(href, "_blank", "noopener,noreferrer");
+  }
+}
 
 function imageContainRect(cw: number, ch: number, nw: number, nh: number) {
   if (!nw || !nh) return { x: 0, y: 0, w: cw, h: ch };
@@ -106,7 +151,7 @@ export interface KeyframeLike {
 interface Props {
   analysisId: string;
   keyframes: KeyframeLike[];
-  /** 与历史 / API 同步：条图是否来自 analysis_240 文件 */
+  /** 与历史 / API 同步的条带元数据（父组件传入；不在此组件内展示文案） */
   stripMeta?: {
     timeline?: string;
     analysis_fps?: number;
@@ -121,18 +166,24 @@ interface Props {
   skeletonRail?: React.ReactNode;
   /** e.g. download highlight */
   topRightActions?: React.ReactNode;
+  /** 可下载的分析视频（R2 / Modal 绝对 URL） */
+  downloadVideoUrl?: string | null;
+  /** 与 Pro v3 一致：仅允许 URL 关键帧，禁止用内嵌 base64 下载 */
+  keyframeDownloadUrlOnly?: boolean;
 }
 
 export default function KeyframeProv3InteractiveViewer({
   analysisId,
   keyframes,
-  stripMeta,
+  stripMeta: _stripMeta,
   activeIndex,
   onActiveIndexChange,
   lang,
   overlay,
   skeletonRail,
   topRightActions,
+  downloadVideoUrl,
+  keyframeDownloadUrlOnly = false,
 }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const imgRef = useRef<HTMLImageElement>(null);
@@ -140,7 +191,7 @@ export default function KeyframeProv3InteractiveViewer({
 
   const [store, setStore] = useState<Prov3KfStore>(() => loadProv3KfStore(analysisId));
   const [tool, setTool] = useState<Tool>("pan");
-  const [strokeColor, setStrokeColor] = useState(STROKE_COLORS[0]);
+  const [strokeColor, setStrokeColor] = useState<string>(STROKE_COLORS[0]);
   const [tx, setTx] = useState(0);
   const [ty, setTy] = useState(0);
   const [scale, setScale] = useState(1);
@@ -424,22 +475,38 @@ export default function KeyframeProv3InteractiveViewer({
       fs.lines.length === 0 ? {} : { lines: fs.lines.slice(0, -1) },
     );
 
-  const [colorPanelOpen, setColorPanelOpen] = useState(false);
-  const colorWrapRef = useRef<HTMLDivElement>(null);
+  const [downloadBusy, setDownloadBusy] = useState<"video" | "kf" | null>(null);
 
-  useEffect(() => {
-    if (!colorPanelOpen) return;
-    const close = (e: MouseEvent | TouchEvent) => {
-      const el = colorWrapRef.current;
-      if (el && !el.contains(e.target as Node)) setColorPanelOpen(false);
-    };
-    document.addEventListener("mousedown", close);
-    document.addEventListener("touchstart", close, { passive: true });
-    return () => {
-      document.removeEventListener("mousedown", close);
-      document.removeEventListener("touchstart", close);
-    };
-  }, [colorPanelOpen]);
+  const resolvedVideoDownload = resolveProv3ProductMediaUrl(String(downloadVideoUrl ?? "").trim());
+  const keyframeDownloadHref = frame
+    ? resolveProv3ProductMediaUrl(String(frame.keyframe_image_url || "").trim()) ||
+      (!keyframeDownloadUrlOnly ? keyframeImageDataUrl(frame.image_base64) : null)
+    : null;
+
+  const onDownloadVideo = useCallback(async () => {
+    if (!resolvedVideoDownload || downloadBusy) return;
+    setDownloadBusy("video");
+    try {
+      await downloadHrefAsFile(resolvedVideoDownload, `stellar_${analysisId}_video.mp4`, true);
+    } finally {
+      setDownloadBusy(null);
+    }
+  }, [analysisId, downloadBusy, resolvedVideoDownload]);
+
+  const onDownloadKeyframe = useCallback(async () => {
+    if (!keyframeDownloadHref || downloadBusy) return;
+    setDownloadBusy("kf");
+    try {
+      const ext = keyframeDownloadHref.startsWith("data:image/png") ? "png" : "jpg";
+      await downloadHrefAsFile(
+        keyframeDownloadHref,
+        `stellar_${analysisId}_kf${activeIndex + 1}.${ext}`,
+        true,
+      );
+    } finally {
+      setDownloadBusy(null);
+    }
+  }, [activeIndex, analysisId, downloadBusy, keyframeDownloadHref]);
 
   const t = lang === "zh";
 
@@ -458,10 +525,6 @@ export default function KeyframeProv3InteractiveViewer({
       className="relative isolate h-[70vh] min-h-[280px] w-full max-h-[85vh] bg-black select-none"
       style={{ touchAction: "none" }}
     >
-      <p className="pointer-events-none absolute right-3 top-2 z-[20] max-w-[11rem] text-right text-[9px] leading-snug text-white/25">
-        {t ? "标注约保留 30 天" : "Marks kept ~30 days."}
-      </p>
-
       <div
         ref={containerRef}
         className="absolute inset-0 overflow-hidden"
@@ -526,93 +589,122 @@ export default function KeyframeProv3InteractiveViewer({
 
         <div className="pointer-events-none absolute inset-0 z-[10]">{overlay}</div>
 
-        {topRightActions ? (
-          <div className="pointer-events-auto absolute right-2 top-9 z-[14] flex flex-col gap-1 opacity-55 transition-opacity hover:opacity-95">
-            {topRightActions}
+        {resolvedVideoDownload || keyframeDownloadHref || topRightActions ? (
+          <div className="pointer-events-auto absolute right-2 top-2 z-[16] flex flex-col items-end gap-2">
+            {resolvedVideoDownload || keyframeDownloadHref ? (
+              <div className="flex flex-row flex-wrap justify-end gap-2">
+                {resolvedVideoDownload ? (
+                  <button
+                    type="button"
+                    title={t ? "下载分析视频" : "Download analysis video"}
+                    onClick={() => void onDownloadVideo()}
+                    disabled={downloadBusy !== null}
+                    className="min-h-[36px] min-w-[44px] rounded-full border border-white/[0.14] bg-white/[0.16] px-3.5 text-[13px] font-semibold text-white shadow-[0_2px_12px_rgba(0,0,0,0.35)] backdrop-blur-md active:scale-[0.97] disabled:opacity-40"
+                  >
+                    {downloadBusy === "video" ? (t ? "下载中" : "…") : t ? "视频" : "Video"}
+                  </button>
+                ) : null}
+                {keyframeDownloadHref ? (
+                  <button
+                    type="button"
+                    title={t ? "下载当前关键帧图" : "Download current keyframe image"}
+                    onClick={() => void onDownloadKeyframe()}
+                    disabled={downloadBusy !== null}
+                    className="min-h-[36px] min-w-[44px] rounded-full border border-white/[0.14] bg-white/[0.16] px-3.5 text-[13px] font-semibold text-white shadow-[0_2px_12px_rgba(0,0,0,0.35)] backdrop-blur-md active:scale-[0.97] disabled:opacity-40"
+                  >
+                    {downloadBusy === "kf" ? (t ? "下载中" : "…") : t ? "关键帧" : "Keyframe"}
+                  </button>
+                ) : null}
+              </div>
+            ) : null}
+            {topRightActions ? (
+              <div className="flex flex-col gap-1 opacity-55 transition-opacity hover:opacity-95">{topRightActions}</div>
+            ) : null}
           </div>
         ) : null}
 
         {skeletonRail != null ? (
-          <div className="pointer-events-auto absolute left-2 top-11 z-[17] flex flex-col items-center gap-1.5 opacity-[0.38] transition-opacity duration-200 hover:opacity-[0.92] [@media(hover:none)]:opacity-[0.55]">
-            {skeletonRail}
-            <div className="h-px w-7 shrink-0 bg-gradient-to-r from-transparent via-white/12 to-transparent" aria-hidden />
-            <div className="flex flex-col gap-0.5 rounded-[10px] border border-white/[0.07] bg-black/28 p-1 shadow-[0_6px_28px_rgba(0,0,0,0.45)] backdrop-blur-md">
-              <IconTool
-                active={tool === "pan"}
-                label={t ? "移动" : "Move"}
-                onClick={() => setTool("pan")}
-                rail
-              >
+          <>
+            <div className="pointer-events-auto absolute left-2 top-11 z-[17] flex flex-col items-center gap-1.5 opacity-[0.38] transition-opacity duration-200 hover:opacity-[0.92] [@media(hover:none)]:opacity-[0.55]">
+              {skeletonRail}
+              <div className="h-px w-7 shrink-0 bg-gradient-to-r from-transparent via-white/12 to-transparent" aria-hidden />
+              <div className="flex flex-col gap-0.5 rounded-[10px] border border-white/[0.07] bg-black/28 p-1 shadow-[0_6px_28px_rgba(0,0,0,0.45)] backdrop-blur-md">
+                <IconTool
+                  active={tool === "pan"}
+                  label={t ? "移动" : "Move"}
+                  onClick={() => setTool("pan")}
+                  rail
+                >
+                  <IconHand />
+                </IconTool>
+                <IconTool
+                  active={tool === "draw"}
+                  label={t ? "画笔" : "Brush"}
+                  onClick={() => setTool("draw")}
+                  rail
+                >
+                  <IconBrush />
+                </IconTool>
+                <IconTool
+                  active={tool === "ruler"}
+                  label={t ? "测量" : "Measure"}
+                  onClick={() => setTool("ruler")}
+                  rail
+                >
+                  <IconRuler />
+                </IconTool>
+                <div className="my-0.5 h-px w-6 shrink-0 self-center bg-white/[0.08]" aria-hidden />
+                <IconTool label={t ? "旋转" : "Rotate"} onClick={rotateCw} rail>
+                  <IconRotate />
+                </IconTool>
+                <IconTool
+                  label={t ? "适合画面" : "Fit view"}
+                  onClick={() => {
+                    setTx(0);
+                    setTy(0);
+                    setScale(1);
+                  }}
+                  rail
+                >
+                  <IconFit />
+                </IconTool>
+                <IconTool label={t ? "撤销笔画" : "Undo stroke"} onClick={undoStroke} rail>
+                  <IconUndo />
+                </IconTool>
+                <IconTool label={t ? "清除标注" : "Clear marks"} onClick={clearMarkup} rail>
+                  <IconClear />
+                </IconTool>
+              </div>
+            </div>
+            <div className="pointer-events-auto absolute bottom-[4.25rem] left-12 right-3 z-[16] flex justify-center px-1">
+              <IosMarkupColorStrip
+                colors={STROKE_COLORS}
+                value={strokeColor}
+                onChange={setStrokeColor}
+                ariaLabel={t ? "画笔颜色" : "Stroke color"}
+              />
+            </div>
+          </>
+        ) : (
+          <div className="pointer-events-auto absolute bottom-3 left-1/2 z-[15] flex max-w-[calc(100%-1rem)] -translate-x-1/2 flex-col items-center gap-1.5">
+            <IosMarkupColorStrip
+              colors={STROKE_COLORS}
+              value={strokeColor}
+              onChange={setStrokeColor}
+              ariaLabel={t ? "画笔颜色" : "Stroke color"}
+            />
+            <div className="flex max-w-full items-center gap-0.5 rounded-[12px] border border-white/[0.09] bg-[#2b2b2b]/90 px-1 py-1 opacity-80 shadow-lg backdrop-blur-xl">
+              <IconTool active={tool === "pan"} label={t ? "移动" : "Move"} onClick={() => setTool("pan")}>
                 <IconHand />
               </IconTool>
-              <IconTool
-                active={tool === "draw"}
-                label={t ? "画笔" : "Brush"}
-                onClick={() => setTool("draw")}
-                rail
-              >
+              <IconTool active={tool === "draw"} label={t ? "画笔" : "Brush"} onClick={() => setTool("draw")}>
                 <IconBrush />
               </IconTool>
-              <IconTool
-                active={tool === "ruler"}
-                label={t ? "测量" : "Measure"}
-                onClick={() => setTool("ruler")}
-                rail
-              >
+              <IconTool active={tool === "ruler"} label={t ? "测量" : "Measure"} onClick={() => setTool("ruler")}>
                 <IconRuler />
               </IconTool>
-              <div className="my-0.5 h-px w-6 shrink-0 self-center bg-white/[0.08]" aria-hidden />
-              <div className="relative shrink-0" ref={colorWrapRef}>
-                <button
-                  type="button"
-                  title={t ? "颜色" : "Color"}
-                  aria-expanded={colorPanelOpen}
-                  aria-haspopup="listbox"
-                  className={`flex h-9 w-9 items-center justify-center rounded-md border transition ${
-                    colorPanelOpen
-                      ? "border-white/22 bg-white/[0.1]"
-                      : "border-white/[0.06] bg-black/22 hover:border-white/12 hover:bg-black/35"
-                  }`}
-                  onClick={() => setColorPanelOpen((o) => !o)}
-                >
-                  <span
-                    className="h-[18px] w-[18px] rounded-full border border-white/15 shadow-inner"
-                    style={{ backgroundColor: strokeColor }}
-                  />
-                </button>
-                {colorPanelOpen ? (
-                  <div
-                    role="listbox"
-                    className="absolute left-full top-1/2 z-50 ml-2 -translate-y-1/2 rounded-[10px] border border-white/[0.1] bg-[#2a2a2a]/96 p-2.5 shadow-[0_12px_40px_rgba(0,0,0,0.65)] backdrop-blur-lg"
-                  >
-                    <p className="mb-2 px-0.5 text-[9px] font-medium uppercase tracking-wider text-white/30">
-                      {t ? "颜色" : "Color"}
-                    </p>
-                    <div className="grid grid-cols-3 gap-1.5">
-                      {STROKE_COLORS.map((c) => (
-                        <button
-                          key={c}
-                          type="button"
-                          role="option"
-                          aria-selected={strokeColor === c}
-                          className={`h-8 w-8 rounded-lg border-2 transition ${
-                            strokeColor === c
-                              ? "border-white/85 ring-2 ring-[#5eb3ff]/45 ring-offset-1 ring-offset-[#2a2a2a]"
-                              : "border-transparent hover:scale-105 hover:border-white/18"
-                          }`}
-                          style={{ backgroundColor: c }}
-                          onClick={() => {
-                            setStrokeColor(c);
-                            setColorPanelOpen(false);
-                          }}
-                        />
-                      ))}
-                    </div>
-                  </div>
-                ) : null}
-              </div>
-              <div className="my-0.5 h-px w-6 shrink-0 self-center bg-white/[0.08]" aria-hidden />
-              <IconTool label={t ? "旋转" : "Rotate"} onClick={rotateCw} rail>
+              <div className="mx-0.5 h-7 w-px shrink-0 bg-white/[0.08]" aria-hidden />
+              <IconTool label={t ? "旋转" : "Rotate"} onClick={rotateCw}>
                 <IconRotate />
               </IconTool>
               <IconTool
@@ -622,86 +714,16 @@ export default function KeyframeProv3InteractiveViewer({
                   setTy(0);
                   setScale(1);
                 }}
-                rail
               >
                 <IconFit />
               </IconTool>
-              <IconTool label={t ? "撤销笔画" : "Undo stroke"} onClick={undoStroke} rail>
+              <IconTool label={t ? "撤销" : "Undo"} onClick={undoStroke}>
                 <IconUndo />
               </IconTool>
-              <IconTool label={t ? "清除标注" : "Clear marks"} onClick={clearMarkup} rail>
+              <IconTool label={t ? "清除" : "Clear"} onClick={clearMarkup}>
                 <IconClear />
               </IconTool>
             </div>
-          </div>
-        ) : (
-          <div
-            className="pointer-events-auto absolute bottom-4 left-1/2 z-[15] flex max-w-[calc(100%-1.5rem)] -translate-x-1/2 items-center gap-0.5 rounded-[10px] border border-white/[0.09] bg-[#2b2b2b]/90 px-1 py-1 opacity-80 shadow-lg backdrop-blur-xl"
-          >
-            <IconTool active={tool === "pan"} label={t ? "移动" : "Move"} onClick={() => setTool("pan")}>
-              <IconHand />
-            </IconTool>
-            <IconTool active={tool === "draw"} label={t ? "画笔" : "Brush"} onClick={() => setTool("draw")}>
-              <IconBrush />
-            </IconTool>
-            <IconTool active={tool === "ruler"} label={t ? "测量" : "Measure"} onClick={() => setTool("ruler")}>
-              <IconRuler />
-            </IconTool>
-            <div className="mx-0.5 h-7 w-px shrink-0 bg-white/[0.08]" aria-hidden />
-            <div className="relative shrink-0" ref={colorWrapRef}>
-              <button
-                type="button"
-                title={t ? "颜色" : "Color"}
-                aria-expanded={colorPanelOpen}
-                className={`flex h-9 w-9 items-center justify-center rounded-md border transition ${
-                  colorPanelOpen ? "border-white/25 bg-white/[0.12]" : "border-white/[0.06] bg-[#1a1a1a]"
-                }`}
-                onClick={() => setColorPanelOpen((o) => !o)}
-              >
-                <span className="h-5 w-5 rounded-full border border-white/20 shadow-inner" style={{ backgroundColor: strokeColor }} />
-              </button>
-              {colorPanelOpen ? (
-                <div
-                  role="listbox"
-                  className="absolute bottom-full left-1/2 z-50 mb-2 -translate-x-1/2 rounded-[10px] border border-white/[0.1] bg-[#323232] p-2.5 shadow-xl"
-                >
-                  <div className="grid grid-cols-3 gap-2">
-                    {STROKE_COLORS.map((c) => (
-                      <button
-                        key={c}
-                        type="button"
-                        className={`h-9 w-9 rounded-lg border-2 ${strokeColor === c ? "border-white/90" : "border-transparent"}`}
-                        style={{ backgroundColor: c }}
-                        onClick={() => {
-                          setStrokeColor(c);
-                          setColorPanelOpen(false);
-                        }}
-                      />
-                    ))}
-                  </div>
-                </div>
-              ) : null}
-            </div>
-            <div className="mx-0.5 h-7 w-px shrink-0 bg-white/[0.08]" aria-hidden />
-            <IconTool label={t ? "旋转" : "Rotate"} onClick={rotateCw}>
-              <IconRotate />
-            </IconTool>
-            <IconTool
-              label={t ? "适合画面" : "Fit view"}
-              onClick={() => {
-                setTx(0);
-                setTy(0);
-                setScale(1);
-              }}
-            >
-              <IconFit />
-            </IconTool>
-            <IconTool label={t ? "撤销" : "Undo"} onClick={undoStroke}>
-              <IconUndo />
-            </IconTool>
-            <IconTool label={t ? "清除" : "Clear"} onClick={clearMarkup}>
-              <IconClear />
-            </IconTool>
           </div>
         )}
 
@@ -710,19 +732,42 @@ export default function KeyframeProv3InteractiveViewer({
             {lang === "zh" ? frame.label_zh : frame.label_en}
           </span>
           <span className="text-[9px] tabular-nums text-white/25">{activeIndex + 1} / {keyframes.length}</span>
-          {stripMeta?.timeline === "analysis_240" && stripMeta.thumbnails_from_analysis_video !== false ? (
-            <span className="max-w-[90%] text-[8px] leading-tight text-emerald-400/75">
-              {lang === "zh"
-                ? "条图来自真 240 分析视频（与 A/B 同一解码帧号）"
-                : "Strips: true 240fps analysis file (same decode indices as A/B)"}
-            </span>
-          ) : stripMeta?.timeline === "fallback_source" ? (
-            <span className="max-w-[90%] text-[8px] leading-tight text-amber-300/80">
-              {lang === "zh" ? "条图可能未对齐分析轨（缺 analysis 文件）" : "Strips may not match analysis track"}
-            </span>
-          ) : null}
         </div>
       </div>
+    </div>
+  );
+}
+
+function IosMarkupColorStrip({
+  colors,
+  value,
+  onChange,
+  ariaLabel,
+}: {
+  colors: readonly string[];
+  value: string;
+  onChange: (c: string) => void;
+  ariaLabel: string;
+}) {
+  return (
+    <div
+      role="listbox"
+      aria-label={ariaLabel}
+      className="flex max-w-[min(100%,320px)] items-center gap-1.5 overflow-x-auto rounded-full border border-white/[0.12] bg-black/55 px-2 py-1.5 shadow-[inset_0_1px_0_rgba(255,255,255,0.06)] backdrop-blur-xl [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+    >
+      {colors.map((c) => (
+        <button
+          key={c}
+          type="button"
+          role="option"
+          aria-selected={value === c}
+          className={`h-7 w-7 shrink-0 rounded-full border-[2.5px] transition active:scale-95 ${
+            value === c ? "border-white shadow-[0_0_0_1.5px_rgba(255,255,255,0.22)]" : "border-white/25"
+          }`}
+          style={{ backgroundColor: c }}
+          onClick={() => onChange(c)}
+        />
+      ))}
     </div>
   );
 }

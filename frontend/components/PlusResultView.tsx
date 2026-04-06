@@ -141,6 +141,9 @@ export interface PlusAnalysisResult {
   screen_cropped_video_url?: string | null;
   screen_clean_video_url?: string | null;
   playback_video_url?: string | null;
+  video_url?: string | null;
+  original_video_url?: string | null;
+  analysis_video_url?: string | null;
   /** Screen pipeline: how routing_strategy mapped to last backend pass (debug / transparency). */
   routing_execution?: Record<string, unknown> | null;
   /** ROI / dense motion / visual-dedupe gate outcome + reasons (Screen Mode). */
@@ -2241,6 +2244,18 @@ export default function PlusResultView({ result, lang, externalVideoSrc, backend
                   activeIndex={activeKeyframe}
                   onActiveIndexChange={setActiveKeyframe}
                   lang={lang}
+                  downloadVideoUrl={
+                    resolveProv3ProductMediaUrl(
+                      String(
+                        result.playback_video_url ||
+                          result.video_url ||
+                          result.original_video_url ||
+                          result.analysis_video_url ||
+                          "",
+                      ).trim(),
+                    ) || undefined
+                  }
+                  keyframeDownloadUrlOnly={prov3Strict}
                   overlay={
                     <div className="pointer-events-none absolute inset-0">
                       <SkeletonCanvas

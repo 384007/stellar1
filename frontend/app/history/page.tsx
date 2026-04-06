@@ -1262,15 +1262,16 @@ export default function HistoryPage() {
         >
           {lang === "zh" ? (
             <>
-              <strong className="text-amber-200">数据保留 {DEFAULT_HISTORY_RETENTION_DAYS} 天</strong>
-              （云端 D1 与 R2）：Lite、Pro、Plus、Shot Lab 记录在创建满 {DEFAULT_HISTORY_RETENTION_DAYS} 天后会自动删除，含视频与报告 JSON；分享链接随之失效。
-              本机列表也会按同一期限清理。使用<strong className="text-amber-200">同一账号</strong>登录手机与电脑即可查看同步记录。
+              数据保留 {DEFAULT_HISTORY_RETENTION_DAYS} 天：Lite、Pro、Plus、Shot Lab 记录在创建满{" "}
+              {DEFAULT_HISTORY_RETENTION_DAYS} 天后会自动删除；分享链接随之失效。本机列表也会按同一期限清理。使用
+              <strong className="text-amber-200">同一账号</strong>登录手机与电脑即可查看同步记录。
             </>
           ) : (
             <>
-              <strong className="text-amber-200">{DEFAULT_HISTORY_RETENTION_DAYS}-day cloud retention</strong>{" "}
-              (D1 and R2): Lite, Pro, Plus, and Shot Lab rows are removed after {DEFAULT_HISTORY_RETENTION_DAYS} days, including video and report JSON; share links expire.
-              On-device lists follow the same window. Use the <strong className="text-amber-200">same account</strong> on phone and desktop to keep history in sync.
+              {DEFAULT_HISTORY_RETENTION_DAYS}-day retention: Lite, Pro, Plus, and Shot Lab records are removed{" "}
+              {DEFAULT_HISTORY_RETENTION_DAYS} days after creation; share links expire. On-device lists follow the
+              same window. Sign in with the <strong className="text-amber-200">same account</strong> on phone and
+              desktop to view synced records.
             </>
           )}
         </div>
