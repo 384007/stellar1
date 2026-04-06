@@ -448,6 +448,60 @@ def _prov3_validate_product_media_or_raise(result: dict, media_dir: Path) -> Non
     _prov3_strip_keyframe_b64(list(result.get("preview_keyframes") or []))
 
 
+def _log_prov3_frontend_media_playbook(result: dict, *, analysis_id: str, context: str) -> None:
+    """Log why Cloudflare/Next 「分析结果页」 may show no video or keyframes — for Modal ops debugging.
+
+    Typical causes: non-https video strings, missing ``keyframe_image_url`` on rows, low-trust empty official strip,
+    or browser cannot fetch Modal/R2 URLs (CORS / wrong ``NEXT_PUBLIC_MODAL_BACKEND_URL`` / expired worker URLs).
+    """
+    def _url_kind(u: str) -> str:
+        s = (u or "").strip()
+        if not s:
+            return "empty"
+        if s.startswith("https://"):
+            return "https"
+        if s.startswith("http://"):
+            return "http"
+        if s.startswith("/"):
+            return "path_only"
+        return "non_http"
+
+    def _count_rows_with_url(key: str) -> tuple[int, int]:
+        rows = list(result.get(key) or [])
+        n = len(rows)
+        with_u = sum(
+            1 for r in rows if isinstance(r, dict) and str(r.get("keyframe_image_url") or "").strip()
+        )
+        return n, with_u
+
+    pv = str(result.get("playback_video_url") or "")
+    av = str(result.get("analysis_video_url") or "")
+    vu = str(result.get("video_url") or "")
+    lo = str(result.get("low_trust_preview_only") or "")
+    fs = str(result.get("final_status") or "")
+    trust = str(result.get("analysis_trust") or result.get("trust_level") or "")
+
+    o_n, o_u = _count_rows_with_url("official_phase_keyframes")
+    p_n, p_u = _count_rows_with_url("preview_keyframes")
+    k_n, k_u = _count_rows_with_url("keyframes")
+
+    lines = [
+        f"[PRO_PROV3][UI_PLAYBOOK] analysis_id={analysis_id} context={context}",
+        "  若设置(Cloudflare)分析页无视频/关键帧图，优先核对本单 JSON 是否满足前端契约:",
+        "  (1) 视频: playback_video_url / video_url / analysis_video_url 须为浏览器可请求的绝对 URL(生产多为 https+R2)；",
+        "  (2) 关键帧: 展示行需含 keyframe_image_url(时间线 JPG)；高信任看 official_phase_keyframes，低信任看 preview_keyframes；",
+        "  (3) 路由 /pro/[id] 会先用 session 再 IndexedDB；仅含本机路径或非 http 时易空白。",
+        f"  本单: final_status={fs!r} low_trust_preview_only={lo!r} trust={trust!r}",
+        f"  行数 official={o_n}(url={o_u}) preview={p_n}(url={p_u}) keyframes={k_n}(url={k_u})",
+        f"  video_url[{_url_kind(vu)} len={len(vu)}]",
+        f"  playback[{_url_kind(pv)} len={len(pv)}]",
+        f"  analysis_video[{_url_kind(av)} len={len(av)}]",
+        "  排查: STELLAR_PROV3_R2_PUBLIC_BASE / R2 上传、Edge 回写、前端 NEXT_PUBLIC_MODAL_BACKEND_URL；"
+        "若 kind=path_only/non_http 则前端无法直接播放。",
+    ]
+    logger.info("\n".join(lines))
+
+
 async def _pro_media_file_handler(analysis_id: str, filename: str) -> FileResponse | RedirectResponse:
     media_dir = _safe_analysis_media_dir(analysis_id)
     safe_name = Path(filename).name
@@ -725,6 +779,15 @@ async def _run_pro_analyze_body(
                 logger.info("[PRO_PROV3][MEDIA] original_video_url=%s", result["original_video_url"])
                 logger.info("[PRO_PROV3][MEDIA] playback_video_url=%s", result["playback_video_url"])
                 logger.info("[PRO_PROV3][MEDIA] video_url=%s", result["video_url"])
+                logger.info(
+                    "[PRO_PROV3][MEDIA] analysis_video_url=%s",
+                    str(result.get("analysis_video_url") or ""),
+                )
+                _log_prov3_frontend_media_playbook(
+                    result,
+                    analysis_id=analysis_id,
+                    context="pro_v3_analyze_body_ok",
+                )
                 return result
             except FFmpegNotFoundError as exc:
                 raise HTTPException(status_code=503, detail=str(exc)) from exc
