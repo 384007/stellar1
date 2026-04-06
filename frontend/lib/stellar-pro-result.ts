@@ -142,6 +142,9 @@ export function proExpandedToPlusViewModel(r: Record<string, any>): PlusAnalysis
   const official = Array.isArray(r.official_phase_keyframes)
     ? r.official_phase_keyframes.filter((k: unknown) => k != null && typeof k === "object" && !Array.isArray(k))
     : [];
+  const keyframesTop = Array.isArray(r.keyframes)
+    ? r.keyframes.filter((k: unknown) => k != null && typeof k === "object" && !Array.isArray(k))
+    : [];
   const preview = Array.isArray(r.preview_keyframes)
     ? r.preview_keyframes.filter((k: unknown) => k != null && typeof k === "object" && !Array.isArray(k))
     : [];
@@ -150,8 +153,13 @@ export function proExpandedToPlusViewModel(r: Record<string, any>): PlusAnalysis
     String(r.analysis_trust ?? r.trust_level ?? "") === "low_trust" ||
     r.low_trust_preview_only === true;
   const stripKfB64 = String(r.pipeline ?? "") === "prov3";
-  // Official product strip: A/B-approved frames only — never substitute ``preview_keyframes`` or legacy ``keyframes``.
-  const displayKeyframesRaw = isLowTrust ? [] : official.length ? official : [];
+  /** High trust: prefer ``official_phase_keyframes``; some payloads only populate top-level ``keyframes``. */
+  const officialForModel = isLowTrust
+    ? official
+    : official.length > 0
+      ? official
+      : keyframesTop;
+  const displayKeyframesRaw = isLowTrust ? [] : officialForModel;
   type NormalizedKf = {
     phase: string;
     label_en: string;
@@ -196,7 +204,7 @@ export function proExpandedToPlusViewModel(r: Record<string, any>): PlusAnalysis
             : undefined,
       };
     });
-  const normalizedOfficial = normalizeKeyframes(official as Array<Record<string, unknown>>) as NormalizedKf[];
+  const normalizedOfficial = normalizeKeyframes(officialForModel as Array<Record<string, unknown>>) as NormalizedKf[];
   const normalizedPreview = normalizeKeyframes(preview as Array<Record<string, unknown>>) as NormalizedKf[];
   const normalizedDisplay = normalizeKeyframes(displayKeyframesRaw as Array<Record<string, unknown>>) as NormalizedKf[];
   const phasesWithKf = new Set(

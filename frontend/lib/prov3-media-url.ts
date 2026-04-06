@@ -13,16 +13,18 @@ function modalApiOriginForMediaResolution(): string {
 }
 
 /**
- * True when URL targets R2-backed prov3 objects (`…/prov3-media/{analysis_id}/…`).
- * Backend HeadObject-verifies these before returning analyze success — safe to skip client
- * HEAD/img probes that can false-fail while `<img src>` still works.
+ * True when URL targets durable or product media paths we treat as verified — safe to skip client
+ * `<img>` decode probes that often false-fail on cross-origin / latency while `<img src>` still works.
+ *
+ * Covers R2 (`…/prov3-media/…`) and Modal product routes (`…/pro-v3/media/…`).
  */
 export function isProv3DurableR2ProductUrl(url: string): boolean {
   const u = String(url ?? "").trim();
   if (!u) return false;
   try {
     const parsed = /^https?:\/\//i.test(u) ? new URL(u) : new URL(u, "https://invalid.local");
-    return parsed.pathname.includes("/prov3-media/");
+    const path = parsed.pathname.toLowerCase();
+    return path.includes("/prov3-media/") || path.includes("/pro-v3/media/");
   } catch {
     return false;
   }

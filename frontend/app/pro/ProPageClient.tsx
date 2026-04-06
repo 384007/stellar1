@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useCallback, useEffect, useRef } from "react";
+import { useState, useCallback, useEffect, useRef, type Dispatch, type SetStateAction } from "react";
 import { useRouter } from "next/navigation";
 import UploadZone from "@/components/UploadZone";
 import PlusResultView from "@/components/PlusResultView";
@@ -8,7 +8,7 @@ import ScreenModeCapture from "@/components/ScreenModeCapture";
 import { preloadPoseModel } from "@/lib/mediapipe-assets";
 import AnalysisWaiting from "@/components/AnalysisWaiting";
 import type { PoseSnapshot } from "@/components/KeyframeStrip";
-import { saveAnalysisVideo } from "@/lib/video-store";
+import { getAnalysisVideoBlob, saveAnalysisVideo } from "@/lib/video-store";
 import {
   DEFAULT_PROV3_MODAL_URL,
   normalizeProv3UrlListsFromPrecheck,
@@ -42,6 +42,39 @@ import {
   reconcileProPageReanalyzeSession,
 } from "@/lib/reanalyze-from-history";
 import { loadProAnalysisById } from "@/lib/load-pro-analysis-by-id";
+
+/**
+ * IndexedDB video can land slightly after ``router.replace`` / session restore; PlusResultView skips IDB when
+ * ``externalVideoSrc`` is set, so we attach blob here (same backoff as PlusResultView).
+ */
+function scheduleProVideoFromIndexedDB(
+  analysisId: string,
+  setSrc: Dispatch<SetStateAction<string | null>>,
+  isCancelled: () => boolean,
+) {
+  const gapsMs = [0, 150, 400, 1000, 2000];
+  void (async () => {
+    for (let i = 0; i < gapsMs.length; i++) {
+      if (i > 0) await new Promise((r) => setTimeout(r, gapsMs[i] - gapsMs[i - 1]));
+      if (isCancelled()) return;
+      const blob = await getAnalysisVideoBlob(analysisId).catch(() => null);
+      if (blob && blob.size > 0) {
+        if (isCancelled()) return;
+        setSrc((prev) => {
+          if (prev?.startsWith("blob:")) {
+            try {
+              URL.revokeObjectURL(prev);
+            } catch {
+              /* ignore */
+            }
+          }
+          return URL.createObjectURL(blob);
+        });
+        return;
+      }
+    }
+  })();
+}
 
 function isVideoBlobForOverlay(blob: Blob, filename: string): boolean {
   const t = (blob.type || "").toLowerCase();
@@ -255,6 +288,7 @@ export default function ProPageClient({ deepLinkAnalysisId }: { deepLinkAnalysis
               } else {
                 setProVideoSrc(null);
               }
+              scheduleProVideoFromIndexedDB(deepId, setProVideoSrc, () => cancelled);
               return;
             }
             // Session had payload but we skipped UI (e.g. analyze still marked in-flight, or Strict Mode
@@ -293,6 +327,8 @@ export default function ProPageClient({ deepLinkAnalysisId }: { deepLinkAnalysis
             ).trim(),
           );
           if (vu.startsWith("http")) setProVideoSrc(vu);
+          else setProVideoSrc(null);
+          scheduleProVideoFromIndexedDB(deepId, setProVideoSrc, () => cancelled);
         }
       } catch {
         if (!cancelled) {
