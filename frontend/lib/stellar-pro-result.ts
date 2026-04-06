@@ -126,8 +126,8 @@ export function proExpandedToPlusViewModel(r: Record<string, any>): PlusAnalysis
     frame_index: Number((kf as { frame_index?: unknown }).frame_index ?? 0),
   }));
   const phasesWithKf = new Set(
-    normalizedKeyframes.map((k: { phase?: string }) =>
-      String(k.phase ?? "")
+    keyframes.map((kf) =>
+      String((kf as { phase?: unknown }).phase ?? "")
         .toLowerCase()
         .replace(/[\s-]+/g, "_"),
     ),
