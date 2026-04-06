@@ -23,7 +23,7 @@ MMAction2 + MMPose + extras: `backend/requirements-modal.txt` (no torch/ultralyt
   Optional volume: `/models/tsn_kinetics400.pth` (and matching config name) overrides baked weights.
 
 ASGI entry: ``main:app``. Pro v3 路由均在 ``/pro-v3`` 下：``POST /pro-v3/analyze``、``GET /pro-v3/media/...``、``POST /pro-v3/keyframes/*``（见 ``routers.prov3_api``）。``STELLAR_MODAL_PRO_V3_ONLY=1`` 时不加载旧 ``/stellar-pro/analyze``。
-``fastapi_app`` 使用 ``timeout=3600``；若未设置 ``STELLAR_PROV3_USE_FAST_240FPS``，默认 ``1``（跳过 minterpolate，避免 300s 级超时与取消后 runner 挂起）。
+``fastapi_app`` 使用 ``cpu=2``、``timeout=3600``。Worker 启动时 **强制** ``STELLAR_PROV3_USE_FAST_240FPS=0``、``STELLAR_PROV3_ALLOW_MINTERPOLATE_ON_MODAL=1``（真 240 / MCI；Modal Secret 中同名变量会被覆盖）。片长仍受 ``STELLAR_PROV3_MINTERPOLATE_MAX_DURATION_S`` 限制（默认 45s）；更长片段走 ``fps=240`` dup。若需 dup 轨须改 ``modal_app.py`` 或业务逻辑。
 """
 from __future__ import annotations
 
@@ -101,6 +101,10 @@ image = (
         # decord / native wheels occasionally fall back to compile on slim images
         "build-essential",
         "ffmpeg",
+    )
+    .run_commands(
+        "ffmpeg -hide_banner -filters 2>&1 | grep -qw minterpolate || "
+        '(echo "[modal][build] FATAL: apt ffmpeg lacks minterpolate — Pro v3 true 240 cannot run" && exit 1)'
     )
     .pip_install_from_requirements("backend/requirements-modal.txt")
     .run_commands(
@@ -276,8 +280,8 @@ def _wire_swingnet_paths() -> None:
 # Do not add warm pools here without an explicit product decision.
 # Default Modal function timeout is 300s; Pro v3 (240fps ffmpeg + ML) can exceed that — raise cap (Modal allows up to 24h).
 @app.function(
-    cpu=1,
-    # PyTorch + TensorFlow + MMAction in one worker; 4GiB can OOM on cold import.
+    cpu=2,
+    # Pro v3: minterpolate + PyTorch/TF/MMAction — 2 vCPU helps ffmpeg/x264 and avoids single-core MCI stalls.
     memory=6144,
     timeout=MODAL_FASTAPI_FUNCTION_TIMEOUT_S,
     volumes={"/models": stellar_models_volume},
@@ -294,10 +298,10 @@ def fastapi_app():
     # To enforce one analyze per worker: set Modal secret STELLAR_PROV3_ANALYZE_SINGLE_FLIGHT=1
     if "STELLAR_PROV3_ANALYZE_SINGLE_FLIGHT" not in os.environ:
         os.environ["STELLAR_PROV3_ANALYZE_SINGLE_FLIGHT"] = "0"
-    # minterpolate (MCI) on 1 CPU is slow enough to hit Modal's old 300s wall; cancellation leaves ffmpeg in a thread
-    # and can block runner shutdown. Fast 240fps (fps dup) is the safe default; set STELLAR_PROV3_USE_FAST_240FPS=0 for MCI.
-    if "STELLAR_PROV3_USE_FAST_240FPS" not in os.environ:
-        os.environ["STELLAR_PROV3_USE_FAST_240FPS"] = "1"
+    # True 240 (MCI): always on for this worker — overrides Modal Secret if those keys were set (dup/sample needs a code change).
+    # Clips longer than STELLAR_PROV3_MINTERPOLATE_MAX_DURATION_S still use fps=dup (see video_240fps_service).
+    os.environ["STELLAR_PROV3_USE_FAST_240FPS"] = "0"
+    os.environ["STELLAR_PROV3_ALLOW_MINTERPOLATE_ON_MODAL"] = "1"
     _wire_stellar_model_paths()
     _wire_mmaction2_paths()
     _wire_swingnet_paths()
@@ -324,11 +328,12 @@ def fastapi_app():
         file=sys.stderr,
     )
     _sf = os.environ.get("STELLAR_PROV3_ANALYZE_SINGLE_FLIGHT", "0")
-    _fast = os.environ.get("STELLAR_PROV3_USE_FAST_240FPS", "1")
+    _fast = os.environ.get("STELLAR_PROV3_USE_FAST_240FPS", "0")
+    _mci = os.environ.get("STELLAR_PROV3_ALLOW_MINTERPOLATE_ON_MODAL", "1")
     _pro = (
         f"[modal] pro_v3_api POST /pro-v3/analyze GET /pro-v3/media/* POST /pro-v3/keyframes/* asgi=main:app "
         f"STELLAR_MODAL_PRO_V3_ONLY=1 STELLAR_PROV3_ANALYZE_SINGLE_FLIGHT={_sf} "
-        f"STELLAR_PROV3_USE_FAST_240FPS={_fast} actual_sha={_sha}"
+        f"STELLAR_PROV3_USE_FAST_240FPS={_fast} STELLAR_PROV3_ALLOW_MINTERPOLATE_ON_MODAL={_mci} actual_sha={_sha}"
     )
     print(_pro, flush=True, file=sys.stderr)
 

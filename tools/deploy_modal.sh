@@ -30,6 +30,8 @@ python3 -m pip install -q -U modal
 
 # Baked into the Modal image and printed at worker startup (`modal_app.fastapi_app`).
 # Modal Pro: STELLAR_MODAL_PRO_V3_ONLY=1 + STELLAR_RUNTIME=modal — POST /pro-v3/analyze only; no /stellar-pro/analyze.
+# Pro v3 true 240: `fastapi_app` forces STELLAR_PROV3_USE_FAST_240FPS=0 and STELLAR_PROV3_ALLOW_MINTERPOLATE_ON_MODAL=1
+# (overrides Modal Secret). Image build fails if apt ffmpeg lacks `minterpolate`.
 export STELLAR_GIT_SHA="$(git -C "$ROOT" rev-parse HEAD 2>/dev/null || echo unknown)"
 export STELLAR_GIT_BRANCH="$(git -C "$ROOT" rev-parse --abbrev-ref HEAD 2>/dev/null || echo unknown)"
 export STELLAR_BUILD_TIME="$(date -u +%Y-%m-%dT%H:%M:%SZ)"

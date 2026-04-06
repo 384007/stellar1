@@ -418,6 +418,15 @@ async def health_check():
     )
     _sw_ck = resolve_swingnet_checkpoint_path()
 
+    _explicit_rt = (os.getenv("STELLAR_RUNTIME") or "").strip().lower()
+    _fast_240 = _env_truthy("STELLAR_PROV3_USE_FAST_240FPS")
+    _allow_mci_modal = _env_truthy("STELLAR_PROV3_ALLOW_MINTERPOLATE_ON_MODAL")
+    _modal_skip_mci = _explicit_rt == "modal" and not _allow_mci_modal
+    try:
+        _mci_max_s = float(os.getenv("STELLAR_PROV3_MINTERPOLATE_MAX_DURATION_S") or "45")
+    except ValueError:
+        _mci_max_s = 45.0
+
     _ff_ok = False
     _mci = False
     try:
@@ -461,6 +470,15 @@ async def health_check():
                 "pipeline": "cleanup -> analysis_240fps_timeline (minterpolate when available) -> frame_enhance",
                 "ffmpeg_resolvable": _ff_ok,
                 "minterpolate_available": _mci,
+                "mci_policy": {
+                    "STELLAR_RUNTIME": _explicit_rt or None,
+                    "use_fast_240fps": _fast_240,
+                    "allow_minterpolate_on_modal": _allow_mci_modal,
+                    "modal_would_skip_mci": _modal_skip_mci,
+                    "env_allows_minterpolate": (not _fast_240) and (not _modal_skip_mci),
+                    "minterpolate_max_duration_s": _mci_max_s,
+                    "note": "Unknown duration or duration > max still uses fps=dup; ffmpeg must expose minterpolate filter.",
+                },
             },
             "ab_weights": {
                 "a_engine": "wmcnally/golfdb:SwingNet (eight events + top-k)",

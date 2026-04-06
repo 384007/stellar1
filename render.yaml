@@ -6,6 +6,10 @@ services:
     dockerContext: backend
     rootDir: backend
     envVars:
+      - key: STELLAR_RUNTIME
+        value: "render"
+      - key: STELLAR_PROV3_USE_FAST_240FPS
+        value: "0"
       - key: PYTHON_VERSION
         value: "3.11.11"
       - key: GEMINI_API_KEY

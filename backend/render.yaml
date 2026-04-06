@@ -8,6 +8,9 @@ services:
     envVars:
       - key: STELLAR_RUNTIME
         value: "render"
+      # Pro v3 true 240: minterpolate when duration ≤ STELLAR_PROV3_MINTERPOLATE_MAX_DURATION_S (see Dockerfile ffmpeg check).
+      - key: STELLAR_PROV3_USE_FAST_240FPS
+        value: "0"
       - key: PYTHON_VERSION
         value: "3.11.11"
       - key: GEMINI_API_KEY

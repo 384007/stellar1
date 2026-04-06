@@ -33,6 +33,7 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install modal
 
+      # Pro v3 MCI: modal_app forces FAST_240FPS=0 + ALLOW_MINTERPOLATE_ON_MODAL=1 at worker start; build checks ffmpeg minterpolate.
       - name: Deploy to Modal
         env:
           MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
