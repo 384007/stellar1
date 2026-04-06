@@ -491,6 +491,7 @@ export default function KeyframeProv3InteractiveViewer({
           {dataUrl && !imgBroken ? (
             // eslint-disable-next-line @next/next/no-img-element
             <img
+              key={dataUrl}
               ref={imgRef}
               src={dataUrl}
               alt={lang === "zh" ? frame.label_zh : frame.label_en}

@@ -358,6 +358,7 @@ function PlusKeyframePhoto({
   return (
     // eslint-disable-next-line @next/next/no-img-element
     <img
+      key={dataUrl}
       src={dataUrl}
       alt={alt}
       className={className}
@@ -1600,6 +1601,8 @@ export default function PlusResultView({ result, lang, externalVideoSrc, backend
   const [showGuideLines, setShowGuideLines] = useState(true);
   const [videoSrc, setVideoSrc] = useState<string | null>(externalVideoSrc ?? null);
   const videoSrcLoaded = useRef(!!externalVideoSrc);
+  const [videoIdbExhausted, setVideoIdbExhausted] = useState(false);
+  const lastVideoAnalysisIdRef = useRef<string>("");
   const [showPosturePractice, setShowPosturePractice] = useState(false);
   const lowTrustPreviewOnly = isLowTrustPreviewOnly(result);
   const officialKeyframes =
@@ -1624,6 +1627,25 @@ export default function PlusResultView({ result, lang, externalVideoSrc, backend
     }
   }, [activeKeyframe, displayKeyframes.length]);
 
+  useEffect(() => {
+    const id = String(result.analysis_id ?? "");
+    if (id === lastVideoAnalysisIdRef.current) return;
+    lastVideoAnalysisIdRef.current = id;
+    videoSrcLoaded.current = false;
+    setVideoIdbExhausted(false);
+    setVideoSrc((prev) => {
+      const next = externalVideoSrc ?? null;
+      if (prev && prev.startsWith("blob:") && prev !== next) {
+        try {
+          URL.revokeObjectURL(prev);
+        } catch {
+          /* ignore */
+        }
+      }
+      return next;
+    });
+  }, [result.analysis_id, externalVideoSrc]);
+
   // Video tab: parent blob URL first; else IndexedDB with short backoff (saveAnalysisVideo may lag).
   useEffect(() => {
     if (activeTab !== "video") return;
@@ -1636,6 +1658,7 @@ export default function PlusResultView({ result, lang, externalVideoSrc, backend
         return externalVideoSrc;
       });
       videoSrcLoaded.current = true;
+      setVideoIdbExhausted(false);
       return;
     }
 
@@ -1643,6 +1666,7 @@ export default function PlusResultView({ result, lang, externalVideoSrc, backend
     const id = result.analysis_id;
     if (!id) {
       videoSrcLoaded.current = true;
+      setVideoIdbExhausted(true);
       return;
     }
 
@@ -1662,12 +1686,16 @@ export default function PlusResultView({ result, lang, externalVideoSrc, backend
               }
               return URL.createObjectURL(blob);
             });
+            setVideoIdbExhausted(false);
           }
           videoSrcLoaded.current = true;
           return;
         }
       }
-      if (!cancelled) videoSrcLoaded.current = true;
+      if (!cancelled) {
+        videoSrcLoaded.current = true;
+        setVideoIdbExhausted(true);
+      }
     })();
 
     return () => {
@@ -2085,6 +2113,14 @@ export default function PlusResultView({ result, lang, externalVideoSrc, backend
               sourceFrameCount={result.video_meta?.source_frame_count}
               skeletonStyle="plus"
             />
+          ) : videoIdbExhausted ? (
+            <div className="glass-card p-6 text-center">
+              <p className="text-xs text-white/50 leading-relaxed">
+                {lang === "zh"
+                  ? "本机未找到该分析的视频缓存。时间线关键帧若仍指向旧服务器的 /pro-v3/media/ 链接，也可能已失效。请重新分析或使用历史中的「重新分析」。"
+                  : "No cached video for this analysis on this device. Timeline keyframe URLs under /pro-v3/media/ may also be expired. Re-analyze or use Re-analyze from history."}
+              </p>
+            </div>
           ) : (
             <div className="glass-card p-8 text-center">
               <div className="h-5 w-5 mx-auto mb-2 animate-spin rounded-full border-2 border-white/20 border-t-white/60" />

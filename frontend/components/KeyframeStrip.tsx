@@ -58,6 +58,7 @@ function KeyframeStripMedia({
       <div className={`relative ${enlarged ? "min-h-[65vh] w-full" : ""} ${className ?? ""}`}>
         {/* eslint-disable-next-line @next/next/no-img-element */}
         <img
+          key={imgSrc}
           src={imgSrc}
           alt={kf.phase}
           className={

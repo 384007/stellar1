@@ -1229,6 +1229,12 @@ export default function VideoAnalysisOverlay({
   const [showTips, setShowTips] = useState(false);
   const [exportBusy, setExportBusy] = useState(false);
   const exportBusyRef = useRef(false);
+  /** Stops <video> from retrying a dead remote URL (e.g. expired Modal /pro-v3/media). */
+  const [videoLoadFailed, setVideoLoadFailed] = useState(false);
+
+  useEffect(() => {
+    setVideoLoadFailed(false);
+  }, [videoSrc]);
 
   const displayExpanded = immersive || isFsApi;
 
@@ -1927,35 +1933,46 @@ export default function VideoAnalysisOverlay({
                 }
           }
         >
-          <video
-            ref={videoRef}
-            src={videoSrc}
-            controls={false}
-            playsInline
-            preload="auto"
-            className="absolute inset-0 z-0 h-full w-full object-contain [touch-action:manipulation]"
-            onClick={() => {
-              const vid = videoRef.current;
-              if (!vid) return;
-              if (vid.paused) void vid.play().catch(() => {});
-              else vid.pause();
-            }}
-            onLoadedMetadata={onVideoMeta}
-            onDurationChange={onVideoMeta}
-            onTimeUpdate={() => setUiTick((n) => n + 1)}
-            onPlay={() => {
-              setPlaying(true);
-              setUiTick((n) => n + 1);
-            }}
-            onPause={() => {
-              setPlaying(false);
-              setUiTick((n) => n + 1);
-            }}
-            onEnded={() => {
-              setPlaying(false);
-              setUiTick((n) => n + 1);
-            }}
-          />
+          {videoLoadFailed ? (
+            <div className="absolute inset-0 z-0 flex flex-col items-center justify-center gap-2 bg-black px-4 text-center">
+              <p className="text-xs text-white/55 leading-relaxed">
+                {lang === "zh"
+                  ? "视频无法加载（链接可能已失效或未迁移到持久存储）。请重新分析或使用历史中的「重新分析」。"
+                  : "Video failed to load (URL may be expired or not on durable storage). Re-analyze or use Re-analyze from history."}
+              </p>
+            </div>
+          ) : (
+            <video
+              ref={videoRef}
+              src={videoSrc}
+              controls={false}
+              playsInline
+              preload="auto"
+              className="absolute inset-0 z-0 h-full w-full object-contain [touch-action:manipulation]"
+              onClick={() => {
+                const vid = videoRef.current;
+                if (!vid) return;
+                if (vid.paused) void vid.play().catch(() => {});
+                else vid.pause();
+              }}
+              onError={() => setVideoLoadFailed(true)}
+              onLoadedMetadata={onVideoMeta}
+              onDurationChange={onVideoMeta}
+              onTimeUpdate={() => setUiTick((n) => n + 1)}
+              onPlay={() => {
+                setPlaying(true);
+                setUiTick((n) => n + 1);
+              }}
+              onPause={() => {
+                setPlaying(false);
+                setUiTick((n) => n + 1);
+              }}
+              onEnded={() => {
+                setPlaying(false);
+                setUiTick((n) => n + 1);
+              }}
+            />
+          )}
           <canvas
             ref={canvasRef}
             className="absolute inset-0 z-[1] h-full w-full pointer-events-none touch-none"

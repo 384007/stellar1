@@ -73,6 +73,16 @@ def prov3_analyze_single_flight_active() -> bool:
     return _modal_pro_single_flight_enabled()
 
 
+def _prov3_durable_media_required() -> bool:
+    """Modal (and similar) workers use ephemeral ``/tmp`` — require R2 unless explicitly opted out."""
+    v = (os.getenv("STELLAR_PROV3_REQUIRE_R2") or "").strip().lower()
+    if v in ("0", "false", "no", "off"):
+        return False
+    if v in ("1", "true", "yes", "on"):
+        return True
+    return _modal_pro_single_flight_enabled()
+
+
 router_pro_v3 = APIRouter(prefix="/pro-v3", tags=["pro-v3"])
 router_keyframes = APIRouter(prefix="/keyframes", tags=["pro-v3-keyframes"])
 
@@ -396,6 +406,15 @@ async def _run_pro_analyze_body(
 
     prov3_begin_analyze()
     try:
+        if _prov3_durable_media_required() and not prov3_r2_media_fully_configured():
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    "Pro v3 requires durable media (Cloudflare R2) on this runtime: set R2_ENDPOINT, "
+                    "R2_ACCESS_KEY, R2_SECRET_KEY, R2_BUCKET, and STELLAR_PROV3_R2_PUBLIC_BASE. "
+                    "For local/ephemeral-only testing on Modal, set STELLAR_PROV3_REQUIRE_R2=0."
+                ),
+            )
         with tempfile.TemporaryDirectory(prefix="stellar_pro_analyze_") as tmpdir:
             input_path = str(Path(tmpdir) / f"input{suffix}")
             work_dir = os.path.join(tmpdir, "work")

@@ -67,11 +67,48 @@ export function prov3RowsMeetStaticUrlPolicy(rows: Prov3KeyframeRowLike[]): bool
   return rows.every((k) => isValidProv3KeyframeImageUrl(String(k?.keyframe_image_url ?? "")));
 }
 
+const PROV3_MEDIA_HEAD_MS = 4500;
+
+/** Worker-local media path; often 404 after another Modal instance or restart. */
+export function isProv3WorkerMediaUrl(url: string): boolean {
+  const u = url.trim().split("?")[0].toLowerCase();
+  return u.includes("/pro-v3/media/");
+}
+
+/**
+ * Cheap HEAD for Modal ``/pro-v3/media/`` URLs — avoids hanging on full image decode when object is gone.
+ * Returns ``true`` if definitely missing (404), ``false`` if present, ``null`` if inconclusive (CORS/network).
+ */
+export async function prov3KeyframeMediaHeadMissing(
+  url: string,
+  timeoutMs = PROV3_MEDIA_HEAD_MS,
+): Promise<boolean | null> {
+  if (!isProv3WorkerMediaUrl(url)) return null;
+  try {
+    const c = new AbortController();
+    const t = window.setTimeout(() => c.abort(), timeoutMs);
+    const r = await fetch(url, {
+      method: "HEAD",
+      mode: "cors",
+      cache: "no-store",
+      signal: c.signal,
+    });
+    window.clearTimeout(t);
+    if (r.status === 404) return true;
+    if (r.ok) return false;
+    return null;
+  } catch {
+    return null;
+  }
+}
+
 export async function verifyProv3KeyframeUrlsLoad(
   urls: string[],
   timeoutMs = 20000,
 ): Promise<{ ok: true } | { ok: false; url?: string }> {
   for (const url of urls) {
+    const head = await prov3KeyframeMediaHeadMissing(url, PROV3_MEDIA_HEAD_MS);
+    if (head === true) return { ok: false, url };
     const decoded = await new Promise<boolean>((resolve) => {
       const img = new Image();
       const t = window.setTimeout(() => {
