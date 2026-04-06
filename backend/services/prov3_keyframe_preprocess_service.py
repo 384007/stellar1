@@ -48,6 +48,8 @@ def run_preprocess(
         cancel_check()
     timeline = build_analysis_timeline(str(cleanup["analysis_video"]), local_dir)
     afps = int(timeline.get("analysis_fps", 240))
+    if afps != 240:
+        raise RuntimeError(f"true240_required: analysis_fps_mismatch={afps}")
     if cancel_check:
         cancel_check()
     frames = generate_analysis_frames(

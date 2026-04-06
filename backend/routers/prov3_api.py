@@ -300,6 +300,63 @@ async def _run_pro_analyze_body(
                     shutil.copy2(playback_src, playback_dst)
                     playback_video_url = f"{base}{mp}/media/{analysis_id}/{playback_name}"
 
+                analysis_src = Path(str(result.get("_prov3_motion", {}).get("analysis_video") or ""))
+                analysis_video_url = ""
+                if analysis_src.exists() and analysis_src.is_file():
+                    analysis_name = f"analysis_timeline{analysis_src.suffix or '.mp4'}"
+                    analysis_dst = media_dir / analysis_name
+                    shutil.copy2(analysis_src, analysis_dst)
+                    analysis_video_url = f"{base}{mp}/media/{analysis_id}/{analysis_name}"
+
+                keyframe_images = list(result.get("keyframe_images") or [])
+                keyframe_url_by_file: dict[str, str] = {}
+                persisted_rows: list[dict] = []
+                for row in keyframe_images:
+                    fp = Path(str(row.get("file_path") or ""))
+                    fn = Path(str(row.get("file_name") or "")).name
+                    if not fn or not fp.exists() or not fp.is_file():
+                        continue
+                    dst = media_dir / fn
+                    shutil.copy2(fp, dst)
+                    url = f"{base}{mp}/media/{analysis_id}/{fn}"
+                    keyframe_url_by_file[fn] = url
+                    new_row = dict(row)
+                    new_row.pop("file_path", None)
+                    new_row["keyframe_image_url"] = url
+                    persisted_rows.append(new_row)
+                if persisted_rows:
+                    result["keyframe_images"] = persisted_rows
+
+                event_to_file = {
+                    "Address": "address.jpg",
+                    "Toe-up": "toe_up.jpg",
+                    "Mid-backswing": "mid_backswing.jpg",
+                    "Top": "top.jpg",
+                    "Mid-downswing": "mid_downswing.jpg",
+                    "Impact": "impact.jpg",
+                    "Mid-follow-through": "mid_follow_through.jpg",
+                    "Finish": "finish.jpg",
+                }
+                phase_to_event = {
+                    "address": "Address",
+                    "takeaway": "Toe-up",
+                    "backswing": "Mid-backswing",
+                    "top": "Top",
+                    "downswing": "Mid-downswing",
+                    "impact": "Impact",
+                    "follow_through": "Mid-follow-through",
+                    "finish": "Finish",
+                }
+                for kf in list(result.get("keyframes") or []):
+                    phase = str(kf.get("phase") or "")
+                    event = phase_to_event.get(phase, "")
+                    fn = event_to_file.get(event, "")
+                    if fn and fn in keyframe_url_by_file:
+                        kf["keyframe_image_url"] = keyframe_url_by_file[fn]
+                        kf["keyframe_image_source"] = "analysis_video"
+                    if "keyframe_image_path" in kf:
+                        kf.pop("keyframe_image_path", None)
+
                 screen_cropped_video_url = ""
                 screen_src = Path(str(result.get("screen_cropped_video_url") or ""))
                 if screen_src.exists() and screen_src.is_file():
@@ -318,10 +375,14 @@ async def _run_pro_analyze_body(
                 result["original_video_url"] = original_video_url
                 result["video_url"] = original_video_url
                 result["playback_video_url"] = playback_video_url or original_video_url
+                if analysis_video_url:
+                    result["analysis_video_url"] = analysis_video_url
                 if screen_cropped_video_url:
                     result["screen_cropped_video_url"] = screen_cropped_video_url
                 result["screen_mode"] = bool(screen_mode)
                 result["pro_http_path"] = mp
+                result.pop("_prov3_motion", None)
+                result.pop("prov3", None)
 
                 logger.info("[PRO_PROV3][MEDIA] original_video_url=%s", result["original_video_url"])
                 logger.info("[PRO_PROV3][MEDIA] playback_video_url=%s", result["playback_video_url"])

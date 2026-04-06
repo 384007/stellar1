@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Dict, List
+from typing import Any, Dict, List
 
 import cv2
 import numpy as np
@@ -72,3 +72,63 @@ def generate_analysis_frames(
         "analysis_frames": analysis_frames,
         "enhanced_local_frames": enhanced_local_frames,
     }
+
+
+_EVENT_FILE_NAMES: dict[str, str] = {
+    "Address": "address.jpg",
+    "Toe-up": "toe_up.jpg",
+    "Mid-backswing": "mid_backswing.jpg",
+    "Top": "top.jpg",
+    "Mid-downswing": "mid_downswing.jpg",
+    "Impact": "impact.jpg",
+    "Mid-follow-through": "mid_follow_through.jpg",
+    "Finish": "finish.jpg",
+}
+
+
+def persist_final_keyframe_images(
+    analysis_video: str,
+    keyframes: List[dict[str, Any]],
+    output_dir: str,
+) -> list[dict[str, Any]]:
+    """Persist final keyframe JPEGs sampled from the analysis timeline video."""
+    Path(output_dir).mkdir(parents=True, exist_ok=True)
+    cap = cv2.VideoCapture(analysis_video)
+    if not cap.isOpened():
+        raise RuntimeError(f"cannot_open_analysis_video:{analysis_video}")
+    total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+    if total <= 0:
+        cap.release()
+        raise RuntimeError(f"analysis_video_has_no_frames:{analysis_video}")
+
+    saved: list[dict[str, Any]] = []
+    try:
+        for row in keyframes:
+            event_name = str(row.get("event_name") or "")
+            file_name = _EVENT_FILE_NAMES.get(event_name)
+            if not file_name:
+                continue
+            frame_index = int(row.get("frame_index") or 0)
+            frame_index = max(0, min(frame_index, total - 1))
+            cap.set(cv2.CAP_PROP_POS_FRAMES, float(frame_index))
+            ok, frame_bgr = cap.read()
+            if not ok or frame_bgr is None:
+                raise RuntimeError(f"decode_failed:event={event_name}:frame_index={frame_index}")
+            out_path = str(Path(output_dir) / file_name)
+            if not cv2.imwrite(out_path, frame_bgr, [int(cv2.IMWRITE_JPEG_QUALITY), 92]):
+                raise RuntimeError(f"write_failed:{out_path}")
+            saved.append(
+                {
+                    "event_name": event_name,
+                    "frame_index": frame_index,
+                    "file_name": file_name,
+                    "file_path": out_path,
+                    "keyframe_image_source": "analysis_video",
+                }
+            )
+    finally:
+        cap.release()
+
+    if len(saved) != 8:
+        raise RuntimeError(f"persist_keyframes_incomplete: expected=8 got={len(saved)}")
+    return saved
