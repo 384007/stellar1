@@ -36,6 +36,12 @@ import {
   type ReanalyzeFromHistoryPayload,
 } from "@/lib/reanalyze-from-history";
 import { expandStellarProForUi, proExpandedToPlusViewModel } from "@/lib/stellar-pro-result";
+import {
+  isProv3StrictMediaPolicyResult,
+  prov3HistoryKeyframesIncomplete,
+  prov3HistoryMergePayloadScore,
+  type Prov3ResultLike,
+} from "@/lib/prov3-keyframe-media";
 
 function isFiniteAnalysisScore(v: unknown): v is number {
   return typeof v === "number" && Number.isFinite(v);
@@ -58,6 +64,10 @@ function prov3ScreenModeFromHistoryRecord(rec: AnalysisRecord): boolean {
 
 /** D1 list rows are compacted (~90k cap); keyframe JPEGs often live only in R2. Detect stripped/poisoned cache (URL or base64). */
 function plusKeyframesMissingImages(parsed: ParsedResult): boolean {
+  const asV3 = parsed as unknown as Prov3ResultLike;
+  if (isProv3StrictMediaPolicyResult(asV3)) {
+    return prov3HistoryKeyframesIncomplete(asV3);
+  }
   const lowTrust =
     String(parsed.final_status ?? "") !== "pass" ||
     String(parsed.analysis_trust ?? parsed.trust_level ?? "") === "low_trust" ||
@@ -181,6 +191,8 @@ interface ParsedResult {
   training_plan?: Record<string, { focus: string; drills: string[]; duration: string }>;
   /** Pro / PlusResultView：屏幕模式分析 */
   screen_mode?: boolean;
+  /** Pro v3 product (`POST /pro-v3/analyze`) */
+  pipeline?: string;
 }
 
 interface UserInfo {
@@ -476,14 +488,22 @@ export default function HistoryPage() {
       const out = { ...sr };
       const sj = sr.result_json || "";
       const lj = local.result_json || "";
-      const serverImg = keyframeImagePayloadScore(sj);
-      const localImg = keyframeImagePayloadScore(lj);
-      if (localImg > serverImg) {
-        out.result_json = local.result_json;
-      } else if (serverImg > localImg) {
-        out.result_json = sr.result_json;
-      } else if (lj.length > sj.length) {
-        out.result_json = local.result_json;
+      const v3s = prov3HistoryMergePayloadScore(sj);
+      const v3l = prov3HistoryMergePayloadScore(lj);
+      if (v3s > 0 || v3l > 0) {
+        if (v3l > v3s) out.result_json = local.result_json;
+        else if (v3s > v3l) out.result_json = sr.result_json;
+        else out.result_json = lj.length >= sj.length ? local.result_json : sr.result_json;
+      } else {
+        const serverImg = keyframeImagePayloadScore(sj);
+        const localImg = keyframeImagePayloadScore(lj);
+        if (localImg > serverImg) {
+          out.result_json = local.result_json;
+        } else if (serverImg > localImg) {
+          out.result_json = sr.result_json;
+        } else if (lj.length > sj.length) {
+          out.result_json = local.result_json;
+        }
       }
       // Keep server video when set; otherwise use local R2 key / https URL (fixes "video missing" after partial sync).
       if (!(sr.video_r2_key || "").trim() && (local.video_r2_key || "").trim()) {
@@ -1756,7 +1776,11 @@ export default function HistoryPage() {
                                     </p>
                                   </div>
                                 ) : (
-                                  <KeyframeStrip keyframes={parsed.keyframes} lang={lang} />
+                                  <KeyframeStrip
+                                    keyframes={parsed.keyframes}
+                                    lang={lang}
+                                    urlOnlyTimeline={parsed.pipeline === "prov3"}
+                                  />
                                 )}
                               </div>
                             )}

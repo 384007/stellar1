@@ -19,13 +19,15 @@ import { slimPoseFramesForCloudRow, subsamplePoseFramesEven } from "./analysis-p
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function stripResultForStorage(result: any): any {
   const out = { ...result };
+  const isProv3 = out.pipeline === "prov3";
   const slimKeyframeList = (rows: any[]) =>
     rows.map((kf: any) => {
       const { image_base64, pose_snapshot, ...meta } = kf;
       return {
         ...meta,
         pose_snapshot: pose_snapshot && typeof pose_snapshot === "object" ? pose_snapshot : undefined,
-        image_base64: typeof image_base64 === "string" ? image_base64 : undefined,
+        image_base64:
+          isProv3 ? undefined : typeof image_base64 === "string" ? image_base64 : undefined,
       };
     });
 

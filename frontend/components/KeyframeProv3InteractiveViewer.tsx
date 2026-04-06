@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { keyframeImageDataUrl } from "@/lib/image-base64";
+import { PROV3_KEYFRAME_MEDIA_FAIL_EN, PROV3_KEYFRAME_MEDIA_FAIL_ZH } from "@/lib/prov3-keyframe-media";
 import {
   getFrameState,
   loadProv3KfStore,
@@ -146,7 +146,7 @@ export default function KeyframeProv3InteractiveViewer({
   const [imgBroken, setImgBroken] = useState(false);
 
   const frame = keyframes[activeIndex];
-  const dataUrl = frame ? String(frame.keyframe_image_url || "").trim() || keyframeImageDataUrl(frame.image_base64) : null;
+  const dataUrl = frame ? String(frame.keyframe_image_url || "").trim() || null : null;
 
   useEffect(() => {
     setStore(loadProv3KfStore(analysisId));
@@ -154,7 +154,7 @@ export default function KeyframeProv3InteractiveViewer({
 
   useEffect(() => {
     setImgBroken(false);
-  }, [activeIndex, frame?.image_base64, frame?.keyframe_image_url]);
+  }, [activeIndex, frame?.keyframe_image_url]);
 
   const frameState: Prov3KfFrameState = useMemo(
     () => getFrameState(store, activeIndex),
@@ -501,8 +501,8 @@ export default function KeyframeProv3InteractiveViewer({
               onError={() => setImgBroken(true)}
             />
           ) : (
-            <div className="flex h-48 items-center justify-center text-xs text-white/35">
-              {t ? "无图" : "No image"}
+            <div className="flex h-48 max-w-md items-center justify-center px-4 text-center text-xs leading-relaxed text-red-200/90">
+              {t ? PROV3_KEYFRAME_MEDIA_FAIL_ZH : PROV3_KEYFRAME_MEDIA_FAIL_EN}
             </div>
           )}
         </div>

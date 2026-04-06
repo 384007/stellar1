@@ -20,14 +20,12 @@ interface Keyframe {
   label_en: string;
   label_zh: string;
   timestamp: number;
+  /** Pro v3: true-240 analysis timeline JPG URL (preferred over base64). */
+  keyframe_image_url?: string;
   /** Optional: compact D1 rows or R2 merge failures may omit images. */
   image_base64?: string;
   pose_snapshot?: PoseSnapshot | null;
   skeleton_overlay?: string;
-}
-
-function hasKeyframeImage(kf: Keyframe): boolean {
-  return keyframeImageDataUrl(kf.image_base64) !== null;
 }
 
 function KeyframeStripMedia({
@@ -38,6 +36,7 @@ function KeyframeStripMedia({
   lang,
   showSkeleton,
   proMode,
+  urlOnlyTimeline,
 }: {
   kf: Keyframe;
   uniqueId: string;
@@ -46,16 +45,20 @@ function KeyframeStripMedia({
   lang: "en" | "zh";
   showSkeleton: boolean;
   proMode: boolean;
+  /** Pro v3 history: only show timeline JPG URLs — no base64 fallback */
+  urlOnlyTimeline?: boolean;
 }) {
   const [imgBroken, setImgBroken] = useState(false);
   const showSkel = showSkeleton && !!kf.pose_snapshot?.joints?.length;
-  const dataUrl = keyframeImageDataUrl(kf.image_base64);
-  if (dataUrl && !imgBroken) {
+  const url = String(kf.keyframe_image_url ?? "").trim();
+  const b64Url = urlOnlyTimeline ? null : keyframeImageDataUrl(kf.image_base64);
+  const imgSrc = urlOnlyTimeline ? (url || null) : url || b64Url;
+  if (imgSrc && !imgBroken) {
     return (
       <div className={`relative ${enlarged ? "min-h-[65vh] w-full" : ""} ${className ?? ""}`}>
         {/* eslint-disable-next-line @next/next/no-img-element */}
         <img
-          src={dataUrl}
+          src={imgSrc}
           alt={kf.phase}
           className={
             enlarged
@@ -72,7 +75,7 @@ function KeyframeStripMedia({
       </div>
     );
   }
-  if (showSkel) {
+  if (showSkel && !urlOnlyTimeline) {
     return (
       <div
         className={`relative flex items-center justify-center bg-black/50 ${className ?? ""}`}
@@ -91,7 +94,13 @@ function KeyframeStripMedia({
       style={{ minHeight: enlarged ? "65vh" : 112 }}
     >
       <span className="text-[10px] text-white/30">
-        {lang === "en" ? "Image unavailable" : "关键帧图片缺失"}
+        {urlOnlyTimeline
+          ? lang === "en"
+            ? "Timeline JPG missing — re-analyze"
+            : "缺少真240时间线图片，请重新分析"
+          : lang === "en"
+            ? "Image unavailable"
+            : "关键帧图片缺失"}
       </span>
     </div>
   );
@@ -210,12 +219,15 @@ interface KeyframeStripProps {
   lang: "en" | "zh";
   /** Pro: stronger skeleton glow + thicker overlay */
   mode?: "default" | "pro";
+  /** Pro v3: URLs only, no base64 thumbnails */
+  urlOnlyTimeline?: boolean;
 }
 
 export default function KeyframeStrip({
   keyframes,
   lang,
   mode = "default",
+  urlOnlyTimeline = false,
 }: KeyframeStripProps) {
   const [selectedIdx, setSelectedIdx] = useState<number | null>(null);
   const [showSkeleton, setShowSkeleton] = useState(true);
@@ -259,6 +271,7 @@ export default function KeyframeStrip({
             lang={lang}
             showSkeleton={showSkeleton}
             proMode={proMode}
+            urlOnlyTimeline={urlOnlyTimeline}
           />
           <div className="absolute bottom-3 left-3 rounded-full bg-black/60 backdrop-blur-sm px-3 py-1">
             <span className="text-xs font-semibold text-brand-gold/90">
@@ -291,6 +304,7 @@ export default function KeyframeStrip({
                 lang={lang}
                 showSkeleton={showSkeleton}
                 proMode={proMode}
+                urlOnlyTimeline={urlOnlyTimeline}
               />
 
               <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/80 to-transparent p-2">

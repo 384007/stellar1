@@ -189,6 +189,60 @@ def _inject_keyframe_urls(rows: list[dict], keyframe_url_by_file: dict[str, str]
             kf.pop("keyframe_image_path", None)
 
 
+_MIN_PROV3_JPEG_BYTES = 256
+
+
+def _prov3_strip_keyframe_b64(rows: list) -> None:
+    for r in rows:
+        if isinstance(r, dict):
+            r.pop("image_base64", None)
+
+
+def _prov3_assert_row_media_on_disk(row: dict, media_dir: Path) -> None:
+    url = str(row.get("keyframe_image_url") or "").strip()
+    if not url:
+        raise RuntimeError("prov3_media_gate:missing_keyframe_image_url")
+    fn = Path(url.split("?")[0]).name
+    low = fn.lower()
+    if not low.endswith((".jpg", ".jpeg")):
+        raise RuntimeError(f"prov3_media_gate:keyframe_not_jpeg:{fn}")
+    dest = (media_dir / fn).resolve()
+    if media_dir not in dest.parents and dest != media_dir:
+        raise RuntimeError(f"prov3_media_gate:bad_keyframe_path:{fn}")
+    if not dest.is_file() or dest.stat().st_size < _MIN_PROV3_JPEG_BYTES:
+        raise RuntimeError(f"prov3_media_gate:keyframe_file_missing_or_tiny:{fn}")
+
+
+def _prov3_assert_timeline_video_on_disk(media_dir: Path) -> None:
+    ok = False
+    for p in media_dir.iterdir():
+        if p.is_file() and p.name.startswith("analysis_timeline") and p.stat().st_size > 4096:
+            ok = True
+            break
+    if not ok:
+        raise RuntimeError("prov3_media_gate:analysis_timeline_video_missing_on_disk")
+
+
+def _prov3_validate_product_media_or_raise(result: dict, media_dir: Path) -> None:
+    """Every user-visible keyframe must be a persisted true-240 timeline JPG with a public URL."""
+    _prov3_assert_timeline_video_on_disk(media_dir)
+    if not str(result.get("analysis_video_url") or "").strip():
+        raise RuntimeError("prov3_media_gate:missing_analysis_video_url")
+    if not list(result.get("keyframes") or []):
+        raise RuntimeError("prov3_media_gate:empty_display_keyframes")
+    for key in ("keyframes", "official_phase_keyframes", "preview_keyframes"):
+        rows = list(result.get(key) or [])
+        if not rows:
+            continue
+        for i, row in enumerate(rows):
+            if not isinstance(row, dict):
+                raise RuntimeError(f"prov3_media_gate:invalid_row:{key}:{i}")
+            _prov3_assert_row_media_on_disk(row, media_dir)
+    _prov3_strip_keyframe_b64(list(result.get("keyframes") or []))
+    _prov3_strip_keyframe_b64(list(result.get("official_phase_keyframes") or []))
+    _prov3_strip_keyframe_b64(list(result.get("preview_keyframes") or []))
+
+
 async def _pro_media_file_handler(analysis_id: str, filename: str) -> FileResponse:
     media_dir = _safe_analysis_media_dir(analysis_id)
     safe_name = Path(filename).name
@@ -362,6 +416,8 @@ async def _run_pro_analyze_body(
                 _inject_keyframe_urls(list(result.get("keyframes") or []), keyframe_url_by_file)
                 _inject_keyframe_urls(list(result.get("official_phase_keyframes") or []), keyframe_url_by_file)
                 _inject_keyframe_urls(list(result.get("preview_keyframes") or []), keyframe_url_by_file)
+
+                _prov3_validate_product_media_or_raise(result, media_dir)
 
                 screen_cropped_video_url = ""
                 screen_src = Path(str(result.get("screen_cropped_video_url") or ""))

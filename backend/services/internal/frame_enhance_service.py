@@ -140,6 +140,9 @@ def persist_final_keyframe_images(
             out_path = str(Path(output_dir) / file_name)
             if not cv2.imwrite(out_path, frame_bgr, [int(cv2.IMWRITE_JPEG_QUALITY), 92]):
                 raise RuntimeError(f"write_failed:{out_path}")
+            wp = Path(out_path)
+            if not wp.is_file() or wp.stat().st_size < 256:
+                raise RuntimeError(f"write_failed_empty:{out_path}")
             saved.append(
                 {
                     "event_name": event_name,

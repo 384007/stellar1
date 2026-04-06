@@ -1,5 +1,10 @@
 "use client";
 
+import {
+  isProv3StrictMediaPolicyResult,
+  prov3HistoryKeyframesIncomplete,
+  type Prov3ResultLike,
+} from "@/lib/prov3-keyframe-media";
 import { getAnalysisVideoBlob } from "@/lib/video-store";
 
 export type LoadedProAnalysis = {
@@ -17,6 +22,8 @@ export async function loadProAnalysisById(
   const id = analysisId.trim();
   if (!id || id.length > 128) return null;
 
+  let incompleteLocalFallback: LoadedProAnalysis | null = null;
+
   try {
     const key = "stellar_history_local";
     const existing = JSON.parse(localStorage.getItem(key) || "[]") as Array<{
@@ -29,7 +36,14 @@ export async function loadProAnalysisById(
       const raw = JSON.parse(hit.result_json) as Record<string, unknown>;
       raw.analysis_id = String(raw.analysis_id || id);
       const videoBlob = await getAnalysisVideoBlob(id);
-      return { raw, videoBlob };
+      const needCloudDetail =
+        Boolean(token && !token.startsWith("local-")) &&
+        isProv3StrictMediaPolicyResult(raw as Prov3ResultLike) &&
+        prov3HistoryKeyframesIncomplete(raw as Prov3ResultLike);
+      if (!needCloudDetail) {
+        return { raw, videoBlob };
+      }
+      incompleteLocalFallback = { raw, videoBlob };
     }
   } catch {
     /* ignore */
@@ -67,5 +81,5 @@ export async function loadProAnalysisById(
     }
   }
 
-  return null;
+  return incompleteLocalFallback;
 }

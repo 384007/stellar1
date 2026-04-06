@@ -121,6 +121,7 @@ export function proExpandedToPlusViewModel(r: Record<string, any>): PlusAnalysis
     : [];
   const isLowTrust =
     String(r.final_status ?? "") !== "pass" || String(r.analysis_trust ?? r.trust_level ?? "") === "low_trust";
+  const stripKfB64 = String(r.pipeline ?? "") === "prov3";
   const displayKeyframesRaw = isLowTrust
     ? (preview.length ? preview : keyframes)
     : (official.length ? official : keyframes);
@@ -153,8 +154,9 @@ export function proExpandedToPlusViewModel(r: Record<string, any>): PlusAnalysis
             : fallbackLabel,
         frame_index: Number.isFinite(frameIndexRaw) ? frameIndexRaw : 0,
         timestamp: Number.isFinite(timestampRaw) ? timestampRaw : 0,
-        image_base64:
-          typeof (kf as { image_base64?: unknown }).image_base64 === "string"
+        image_base64: stripKfB64
+          ? ""
+          : typeof (kf as { image_base64?: unknown }).image_base64 === "string"
             ? String((kf as { image_base64?: string }).image_base64)
             : "",
         keyframe_image_url:
@@ -327,7 +329,7 @@ export function expandStellarProForUi(raw: Record<string, any>): Record<string, 
           label_zh: String(kf.label_zh ?? phase),
           frame_index: Number(kf.frame_index ?? 0),
           timestamp: Number(kf.timestamp ?? 0),
-          image_base64: String(kf.image_base64 ?? ""),
+          image_base64: String(raw.pipeline ?? "") === "prov3" ? "" : String(kf.image_base64 ?? ""),
           keyframe_image_url:
             typeof kf.keyframe_image_url === "string" ? kf.keyframe_image_url : undefined,
           keyframe_image_source:

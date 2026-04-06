@@ -16,6 +16,13 @@ import { getAnalysisVideoBlob } from "@/lib/video-store";
 import { isPlusScoreWithheld } from "@/lib/safe-analysis-score";
 import { keyframeImageDataUrl } from "@/lib/image-base64";
 import KeyframeProv3InteractiveViewer from "@/components/KeyframeProv3InteractiveViewer";
+import {
+  isProv3StrictMediaPolicyResult,
+  useProv3KeyframeDisplayGate,
+  PROV3_KEYFRAME_MEDIA_FAIL_ZH,
+  PROV3_KEYFRAME_MEDIA_FAIL_EN,
+  type Prov3KeyframeGateState,
+} from "@/lib/prov3-keyframe-media";
 
 /* ═══════════════ Types ═══════════════ */
 
@@ -292,14 +299,21 @@ function isLowTrustPreviewOnly(result: PlusAnalysisResult): boolean {
   return String(result.analysis_trust || "") === "low_trust";
 }
 
-function plusKeyframeImageSrc(kf: { keyframe_image_url?: string; image_base64?: string } | null | undefined): string | null {
+function plusKeyframeImageSrc(
+  kf: { keyframe_image_url?: string; image_base64?: string } | null | undefined,
+  urlOnly?: boolean,
+): string | null {
   const u = String(kf?.keyframe_image_url ?? "").trim();
   if (u) return u;
+  if (urlOnly) return null;
   return keyframeImageDataUrl(kf?.image_base64) ?? null;
 }
 
-function plusKeyframeImageUsable(kf: { keyframe_image_url?: string; image_base64?: string } | null | undefined): boolean {
-  return plusKeyframeImageSrc(kf) !== null;
+function plusKeyframeImageUsable(
+  kf: { keyframe_image_url?: string; image_base64?: string } | null | undefined,
+  urlOnly?: boolean,
+): boolean {
+  return plusKeyframeImageSrc(kf, urlOnly) !== null;
 }
 
 function PlusKeyframePhoto({
@@ -309,6 +323,7 @@ function PlusKeyframePhoto({
   className,
   placeholderClassName,
   lang = "zh",
+  urlOnly = false,
 }: {
   keyframe_image_url?: string;
   image_base64?: string;
@@ -316,11 +331,19 @@ function PlusKeyframePhoto({
   className?: string;
   placeholderClassName?: string;
   lang?: "en" | "zh";
+  /** Pro v3: never use base64 as visible source */
+  urlOnly?: boolean;
 }) {
   const [broken, setBroken] = useState(false);
-  const dataUrl = plusKeyframeImageSrc({ keyframe_image_url, image_base64 });
+  const dataUrl = plusKeyframeImageSrc({ keyframe_image_url, image_base64 }, urlOnly);
   const usable = dataUrl !== null;
-  const ph = lang === "en" ? "No image" : "无图";
+  const ph = urlOnly
+    ? lang === "en"
+      ? "Timeline JPG missing"
+      : "时间线关键帧图缺失"
+    : lang === "en"
+      ? "No image"
+      : "无图";
   if (!usable || broken) {
     return (
       <div
@@ -873,7 +896,9 @@ function MotionCorrectionPanel({ poseFrame, phase, lang }: { poseFrame: PoseFram
 async function saveHighlight(
   keyframe: { keyframe_image_url?: string; image_base64?: string },
   label: string,
+  options?: { urlOnly?: boolean },
 ) {
+  const urlOnly = Boolean(options?.urlOnly);
   const remote = String(keyframe.keyframe_image_url ?? "").trim();
   if (remote) {
     try {
@@ -889,9 +914,10 @@ async function saveHighlight(
         return;
       }
     } catch {
-      /* fallback to base64 */
+      if (urlOnly) return;
     }
   }
+  if (urlOnly) return;
   const dataUrl = keyframeImageDataUrl(keyframe.image_base64);
   if (!dataUrl) return;
   const link = document.createElement("a");
@@ -997,7 +1023,9 @@ function SkeletonToggles({
 
 /* ═══════════════ Full Swing Tab ═══════════════ */
 
-function FullSwingView({ result, lang }: Props) {
+type FullSwingViewProps = Props & { prov3Strict: boolean; prov3KfGate: Prov3KeyframeGateState };
+
+function FullSwingView({ result, lang, prov3Strict, prov3KfGate }: FullSwingViewProps) {
   const [activePhase, setActivePhase] = useState(0);
   const [playing, setPlaying] = useState(false);
   const [showSkeleton, setShowSkeleton] = useState(true);
@@ -1030,6 +1058,26 @@ function FullSwingView({ result, lang }: Props) {
   const currentPose = poseForPhase(result, phaseKey, activePhase);
   const phaseLabel = PHASE_LABELS[phaseKey] || { en: phaseKey, zh: phaseKey };
   const phaseEval = result.swing_phase_evaluations?.find(e => e.phase === phaseKey);
+
+  if (prov3Strict) {
+    if (prov3KfGate === "checking" || prov3KfGate === "idle") {
+      return (
+        <div className="flex flex-col items-center justify-center rounded-xl border border-white/10 bg-black/30 py-20">
+          <div className="h-8 w-8 animate-spin rounded-full border-2 border-white/15 border-t-brand-purple/80" />
+          <p className="mt-4 max-w-sm px-6 text-center text-xs text-white/50">
+            {lang === "zh" ? "正在校验真 240 时间线关键帧图片…" : "Verifying true-240 timeline keyframe images…"}
+          </p>
+        </div>
+      );
+    }
+    if (prov3KfGate === "fail") {
+      return (
+        <div className="rounded-xl border border-red-500/35 bg-red-500/10 p-4 text-sm leading-relaxed text-red-100/95">
+          {lang === "zh" ? PROV3_KEYFRAME_MEDIA_FAIL_ZH : PROV3_KEYFRAME_MEDIA_FAIL_EN}
+        </div>
+      );
+    }
+  }
 
   return (
     <div className="space-y-4">
@@ -1074,13 +1122,14 @@ function FullSwingView({ result, lang }: Props) {
                 alt={phaseLabel.en}
                 className="w-full h-full object-contain absolute inset-0"
                 lang={lang}
+                urlOnly={prov3Strict}
               />
             )}
             <SkeletonCanvas key={`skel-${showProRef}`} poseFrame={currentPose} showSkeleton={showSkeleton} showGuideLines={showGuideLines} />
             <SkeletonToggles showSkeleton={showSkeleton} showGuideLines={showGuideLines}
               onSkel={() => setShowSkeleton(s => !s)} onGuide={() => setShowGuideLines(g => !g)} lang={lang} />
-            {currentKf && plusKeyframeImageUsable(currentKf) && (
-              <button onClick={() => void saveHighlight(currentKf, phaseLabel.en)}
+            {currentKf && plusKeyframeImageUsable(currentKf, prov3Strict) && (
+              <button onClick={() => void saveHighlight(currentKf, phaseLabel.en, { urlOnly: prov3Strict })}
                 className="absolute top-3 right-3 rounded-lg bg-black/40 backdrop-blur-sm p-2 text-white/50 hover:text-white border border-white/10 transition"
                 style={{ zIndex: 20 }}>
                 <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}><path strokeLinecap="round" strokeLinejoin="round" d="M3 16.5v2.25A2.25 2.25 0 0 0 5.25 21h13.5A2.25 2.25 0 0 0 21 18.75V16.5M16.5 12 12 16.5m0 0L7.5 12m4.5 4.5V3" /></svg>
@@ -1146,6 +1195,7 @@ function FullSwingView({ result, lang }: Props) {
                         className="w-full h-full object-cover"
                         placeholderClassName="h-12 w-full"
                         lang={lang}
+                        urlOnly={prov3Strict}
                       />
                     ) : (
                       <div className="w-full h-full bg-white/5" />
@@ -1176,6 +1226,7 @@ function FullSwingView({ result, lang }: Props) {
                 key={`${idx}-${kf.label_en}`}
                 keyframe_image_url={kf.keyframe_image_url}
                 image_base64={kf.image_base64}
+                urlOnly={prov3Strict}
                 alt={kf.label_en}
                 className="h-20 w-full rounded object-cover"
                 placeholderClassName="h-20 w-full rounded"
@@ -1539,6 +1590,8 @@ function isProv3KeyframeViewer(result: PlusAnalysisResult): boolean {
 
 export default function PlusResultView({ result, lang, externalVideoSrc, backendUrl, coachingMode, initialActiveTab }: Props) {
   const overlayCoachingMode = coachingMode ?? (result.type === "pro" ? "pro" : "plus");
+  const prov3Strict = isProv3StrictMediaPolicyResult(result);
+  const prov3KfGate = useProv3KeyframeDisplayGate(result);
   const [activeTab, setActiveTab] = useState<TabKey>(() => initialActiveTab ?? "diagnosis");
   const [activeKeyframe, setActiveKeyframe] = useState(0);
   const [showAllIssues, setShowAllIssues] = useState(false);
@@ -2123,7 +2176,20 @@ export default function PlusResultView({ result, lang, externalVideoSrc, backend
               {lang === "zh" ? "低信任，关键帧未通过验证：以下仅为预览图，不作为正式相位关键帧。" : "Low trust: keyframes not validated. The strip below is preview only, not official phase keyframes."}
             </div>
           )}
-          {displayKeyframes && displayKeyframes.length > 0 && (
+          {prov3Strict && (prov3KfGate === "checking" || prov3KfGate === "idle") && (
+            <div className="glass-card flex flex-col items-center justify-center border border-white/10 bg-black/25 py-14">
+              <div className="h-7 w-7 animate-spin rounded-full border-2 border-white/15 border-t-brand-gold/80" />
+              <p className="mt-3 max-w-xs px-4 text-center text-[11px] text-white/45">
+                {lang === "zh" ? "正在校验真 240 时间线关键帧图片…" : "Verifying true-240 timeline keyframe images…"}
+              </p>
+            </div>
+          )}
+          {prov3Strict && prov3KfGate === "fail" && (
+            <div className="glass-card border border-red-500/35 bg-red-500/10 p-4 text-sm leading-relaxed text-red-100/95">
+              {lang === "zh" ? PROV3_KEYFRAME_MEDIA_FAIL_ZH : PROV3_KEYFRAME_MEDIA_FAIL_EN}
+            </div>
+          )}
+          {displayKeyframes && displayKeyframes.length > 0 && (!prov3Strict || prov3KfGate === "ok") && (
             <div className="glass-card overflow-hidden">
               {(result.keyframes_degraded || result.keyframe_display_mode === "degraded_debug_strip" || result.final_keyframe_gate_pass === false) && (
                 <div className="mx-3 mt-3 inline-flex items-center rounded-full border border-amber-400/50 bg-amber-500/15 px-3 py-1 text-[11px] font-medium text-amber-200">
@@ -2159,13 +2225,14 @@ export default function PlusResultView({ result, lang, externalVideoSrc, backend
                   }
                   topRightActions={
                     displayKeyframes[safeActiveKeyframe] &&
-                    plusKeyframeImageUsable(displayKeyframes[safeActiveKeyframe]) ? (
+                    plusKeyframeImageUsable(displayKeyframes[safeActiveKeyframe], prov3Strict) ? (
                       <button
                         type="button"
                         onClick={() =>
                           void saveHighlight(
                             displayKeyframes[safeActiveKeyframe],
                             displayKeyframes[safeActiveKeyframe].label_en,
+                            { urlOnly: prov3Strict },
                           )
                         }
                         className="rounded-lg border border-white/[0.08] bg-black/30 p-2 text-white/40 opacity-60 backdrop-blur-sm transition hover:border-white/15 hover:bg-black/45 hover:text-white/80 hover:opacity-95"
@@ -2185,6 +2252,7 @@ export default function PlusResultView({ result, lang, externalVideoSrc, backend
                     alt="Swing frame"
                     className="absolute inset-0 h-full w-full object-contain"
                     lang={lang}
+                    urlOnly={prov3Strict}
                   />
                   <SkeletonCanvas
                     poseFrame={getPoseForKf(safeActiveKeyframe)}
@@ -2198,10 +2266,14 @@ export default function PlusResultView({ result, lang, externalVideoSrc, backend
                     onGuide={() => setShowGuideLines((g) => !g)}
                     lang={lang}
                   />
-                  {displayKeyframes[safeActiveKeyframe] && plusKeyframeImageUsable(displayKeyframes[safeActiveKeyframe]) && (
+                  {displayKeyframes[safeActiveKeyframe] && plusKeyframeImageUsable(displayKeyframes[safeActiveKeyframe], prov3Strict) && (
                     <button
                       onClick={() =>
-                        void saveHighlight(displayKeyframes[safeActiveKeyframe], displayKeyframes[safeActiveKeyframe].label_en)
+                        void saveHighlight(
+                          displayKeyframes[safeActiveKeyframe],
+                          displayKeyframes[safeActiveKeyframe].label_en,
+                          { urlOnly: prov3Strict },
+                        )
                       }
                       className="absolute right-3 top-3 rounded-lg border border-white/10 bg-black/40 p-2 text-white/50 backdrop-blur-sm transition hover:text-white"
                       style={{ zIndex: 20 }}
@@ -2240,6 +2312,7 @@ export default function PlusResultView({ result, lang, externalVideoSrc, backend
                       className="w-full h-full object-cover"
                       placeholderClassName="w-full h-full"
                       lang={lang}
+                      urlOnly={prov3Strict}
                     />
                   </button>
                 ))}
@@ -2428,7 +2501,9 @@ export default function PlusResultView({ result, lang, externalVideoSrc, backend
       )}
 
       {/* ─── Full Swing Tab ─── */}
-      {activeTab === "fullswing" && <FullSwingView result={result} lang={lang} />}
+      {activeTab === "fullswing" && (
+        <FullSwingView result={result} lang={lang} prov3Strict={prov3Strict} prov3KfGate={prov3KfGate} />
+      )}
 
       {/* ─── Pro Compare Tab ─── */}
       {activeTab === "compare" && (
