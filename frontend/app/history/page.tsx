@@ -35,7 +35,11 @@ import {
   queueReanalyzeFromHistory,
   type ReanalyzeFromHistoryPayload,
 } from "@/lib/reanalyze-from-history";
-import { expandStellarProForUi, proExpandedToPlusViewModel } from "@/lib/stellar-pro-result";
+import {
+  expandStellarProForUi,
+  normalizeProResultKeyframeArraysForTrust,
+  proExpandedToPlusViewModel,
+} from "@/lib/stellar-pro-result";
 import {
   isProv3StrictMediaPolicyResult,
   prov3HistoryKeyframesIncomplete,
@@ -938,22 +942,7 @@ export default function HistoryPage() {
       if (!json) return {};
       const r = JSON.parse(json) as Record<string, unknown>;
       if (!r || typeof r !== "object") return {};
-      const finalStatus = String(r.final_status ?? "");
-      const trust = String(r.analysis_trust ?? r.trust_level ?? "");
-      const lowTrust = finalStatus !== "pass" || trust === "low_trust" || r.low_trust_preview_only === true;
-      const keyframes = Array.isArray(r.keyframes) ? r.keyframes : [];
-      const official = Array.isArray(r.official_phase_keyframes) ? r.official_phase_keyframes : [];
-      const preview = Array.isArray(r.preview_keyframes) ? r.preview_keyframes : [];
-      if (!lowTrust) {
-        if (official.length > 0) {
-          r.keyframes = official;
-        }
-      } else {
-        if (preview.length === 0 && keyframes.length > 0) {
-          r.preview_keyframes = keyframes;
-        }
-        r.keyframes = [];
-      }
+      normalizeProResultKeyframeArraysForTrust(r);
       normalizeProv3MediaInRaw(r);
       return r as ParsedResult;
     } catch {

@@ -1,12 +1,16 @@
 import asyncio
 import base64
+import contextvars
 import logging
 import os
 import json
 import re
 import threading
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
+from contextlib import contextmanager
 from functools import partial
 from typing import Any, Optional
+from urllib.parse import urlparse
 
 logger = logging.getLogger(__name__)
 
@@ -26,13 +30,71 @@ PLUS_OBSERVATION_TIMEOUT_S = float(os.getenv("STELLAR_PLUS_OBSERVE_TIMEOUT_S", "
 # VERTEX_AI_LOCATION (default us-central1; use asia-southeast1 / asia-northeast1 for SG/Tokyo), VERTEX_GEMINI_MODEL.
 # Auth: Application Default Credentials — GOOGLE_APPLICATION_CREDENTIALS=/path/to/sa.json or workload identity.
 # Optional extra keys: GEMINI_API_KEY_2 … GEMINI_API_KEY_10 (same format as GEMINI_API_KEY). On quota/429, try next.
+#
+# Reverse-proxy hosts (same env names as ``frontend/lib/gemini-proxy.ts``):
+#   GEMINI_PROXY_ALI, GEMINI_PROXY_JD — mirror ``generativelanguage.googleapis.com`` REST paths.
+# Modal default: **Google direct** first with a short deadline; if no response in time, try ALI → JD.
+#   STELLAR_GEMINI_DIRECT_FIRST_TIMEOUT_S — default 10 (seconds wall-clock per direct attempt).
+#   STELLAR_GEMINI_PROXY_PHASE_TIMEOUT_S — defaults to PRO_AI_TIMEOUT_S for reverse-proxy attempts.
+
+GEMINI_DEVELOPER_API_ORIGIN = "https://generativelanguage.googleapis.com"
 
 _genai = None
 _vertex_inited = False
 _gemini_dev_lock = threading.Lock()
 
+# Set by ``gemini_modal_cn_proxy_first_context`` during Pro v3 enrich when the request hints China
+# (``X-Stellar-Network-Hint: cn`` and/or ``CF-IPCountry: CN`` from Edge) and this process is the
+# Modal worker — developer API then prefers ``GEMINI_PROXY_*`` before the short direct-Google attempt.
+_gemini_modal_cn_proxy_first: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "gemini_modal_cn_proxy_first", default=False
+)
+
+
+def _stellar_modal_runtime() -> bool:
+    """True on Modal Pro workers (aligned with ``prov3_analyze_single_flight_active`` heuristics)."""
+    if (os.getenv("STELLAR_RUNTIME") or "").strip().lower() == "modal":
+        return True
+    if (os.getenv("MODAL_REGION") or "").strip():
+        return True
+    # Modal injects task identity in containers; covers cases where STELLAR_RUNTIME is unset.
+    if (os.getenv("MODAL_TASK_ID") or "").strip():
+        return True
+    v3 = (os.getenv("STELLAR_MODAL_PRO_V3_ONLY") or "").strip().lower()
+    return v3 in ("1", "true", "yes")
+
+
+@contextmanager
+def gemini_modal_cn_proxy_first_context(cn_network_hint: bool):
+    """Scope for Pro v3 Gemini: Modal + CN hint → hit reverse proxies before short direct Google."""
+    enabled = bool(cn_network_hint) and _stellar_modal_runtime()
+    tok = _gemini_modal_cn_proxy_first.set(enabled)
+    try:
+        yield
+    finally:
+        _gemini_modal_cn_proxy_first.reset(tok)
+
 
 _gemini_proxy_logged = False
+
+_gemini_reverse_proxy_logged = False
+
+
+def _reverse_proxy_origins_from_env() -> list[str]:
+    out: list[str] = []
+    for key in ("GEMINI_PROXY_ALI", "GEMINI_PROXY_JD"):
+        v = (os.getenv(key) or "").strip().rstrip("/")
+        if v and v not in out:
+            out.append(v)
+    return out
+
+
+def _endpoint_log_label(endpoint: str) -> str:
+    try:
+        netloc = urlparse(endpoint).netloc
+        return netloc or endpoint[:64]
+    except Exception:
+        return endpoint[:64]
 
 
 def _effective_gemini_https_proxy() -> str:
@@ -68,17 +130,33 @@ def _log_gemini_proxy_once() -> None:
         print("[stellar-ai] gemini developer_api: proxy + transport=rest", flush=True)
 
 
-def _genai_configure_developer(api_key: str) -> None:
-    """Configure google-generativeai; force REST when proxy set so traffic goes through SG/JP tunnel."""
+def _genai_configure_developer(api_key: str, *, api_endpoint: str | None = None) -> None:
+    """Configure google-generativeai.
+
+    * ``HTTPS_PROXY`` / ``GEMINI_HTTPS_PROXY`` — tunnel egress (unchanged).
+    * ``api_endpoint`` — reverse-proxy origin (``GEMINI_PROXY_*``) replacing Google host for REST paths.
+    """
     import google.generativeai as genai
 
+    global _gemini_reverse_proxy_logged
+    ep = (api_endpoint or GEMINI_DEVELOPER_API_ORIGIN).strip().rstrip("/")
+    direct = GEMINI_DEVELOPER_API_ORIGIN.rstrip("/")
+    custom_origin = ep != direct
+
     _apply_gemini_outbound_proxy_env()
-    use_rest = bool(_effective_gemini_https_proxy())
+    has_tunnel = bool(_effective_gemini_https_proxy())
+    use_rest = has_tunnel or custom_origin
     if use_rest:
         _log_gemini_proxy_once()
+    if custom_origin and not _gemini_reverse_proxy_logged:
+        _gemini_reverse_proxy_logged = True
+        logger.info("[gemini] reverse-proxy api_endpoint=%s (ALI/JD or custom)", _endpoint_log_label(ep))
+
     kwargs: dict = {"api_key": api_key}
     if use_rest:
         kwargs["transport"] = "rest"
+    if custom_origin:
+        kwargs["client_options"] = {"api_endpoint": ep}
     genai.configure(**kwargs)
 
 
@@ -131,42 +209,157 @@ def _call_gemini_developer_sync(
     for img_b64 in images:
         content_parts.append({"mime_type": "image/jpeg", "data": img_b64})
 
+    direct = GEMINI_DEVELOPER_API_ORIGIN.rstrip("/")
+    proxies = _reverse_proxy_origins_from_env()
+    cn_modal_route = bool(_gemini_modal_cn_proxy_first.get())
+    proxy_first = cn_modal_route and bool(proxies)
+    if cn_modal_route and not proxies:
+        logger.warning(
+            "[gemini] Modal+China route hint active but GEMINI_PROXY_ALI / GEMINI_PROXY_JD unset — "
+            "using direct Google (configure proxies for CN egress)",
+        )
+    direct_timeout = max(1.0, float(os.getenv("STELLAR_GEMINI_DIRECT_FIRST_TIMEOUT_S", "10")))
+    proxy_timeout = max(direct_timeout, float(os.getenv("STELLAR_GEMINI_PROXY_PHASE_TIMEOUT_S", str(PRO_AI_TIMEOUT_S))))
+
+    def _do_generate(key: str, endpoint: str):
+        _genai_configure_developer(key, api_endpoint=endpoint)
+        model = genai.GenerativeModel(model_name)
+        return model.generate_content(
+            content_parts,
+            generation_config=genai.GenerationConfig(
+                temperature=temperature,
+                max_output_tokens=max_tokens,
+                response_mime_type="application/json",
+            ),
+        )
+
+    def _finalize_response(response: Any, idx: int, ep: str) -> tuple[str, int]:
+        if not response.candidates or not response.text:
+            raise RuntimeError("Gemini returned empty response")
+        slot = idx + 1
+        ak = developer_key_label(slot)
+        logger.info(
+            "[gemini] developer_api ok endpoint=%s ai_key=%s",
+            _endpoint_log_label(ep),
+            ak,
+        )
+        print(f"[stellar-ai] ai_key={ak} gemini_endpoint={_endpoint_log_label(ep)}", flush=True)
+        return response.text, slot
+
     last_err: BaseException | None = None
+    direct_timed_out = False
+
+    def _run_with_deadline(fn_submit, timeout_s: float):
+        """Run one generate in a side thread; on timeout do not wait for the orphan call (Modal-friendly)."""
+        pool = ThreadPoolExecutor(max_workers=1)
+        try:
+            fut = fn_submit(pool)
+            return fut.result(timeout=timeout_s)
+        finally:
+            pool.shutdown(wait=False)
+
     with _gemini_dev_lock:
-        for idx, key in enumerate(keys):
-            try:
-                _genai_configure_developer(key)
-                model = genai.GenerativeModel(model_name)
-                response = model.generate_content(
-                    content_parts,
-                    generation_config=genai.GenerationConfig(
-                        temperature=temperature,
-                        max_output_tokens=max_tokens,
-                        response_mime_type="application/json",
-                    ),
-                )
-                if not response.candidates or not response.text:
-                    raise RuntimeError("Gemini returned empty response")
-                slot = idx + 1
-                ak = developer_key_label(slot)
-                logger.info("[gemini] developer_api ok ai_key=%s", ak)
-                # Modal / Render often only surface stdout; search logs for [stellar-ai] ai_key=
-                print(f"[stellar-ai] ai_key={ak}", flush=True)
-                return response.text, slot
-            except Exception as e:
-                last_err = e
-                if idx < len(keys) - 1 and _is_gemini_quota_error(e):
+        # Phase 1 — Google direct only, short deadline (skipped on Modal when client hints CN + proxies exist).
+        if not proxy_first:
+            for idx, key in enumerate(keys):
+                try:
+                    response = _run_with_deadline(
+                        lambda p, k=key: p.submit(_do_generate, k, direct),
+                        direct_timeout,
+                    )
+                    return _finalize_response(response, idx, direct)
+                except FuturesTimeoutError:
+                    direct_timed_out = True
+                    last_err = TimeoutError(f"gemini direct first-try timeout {direct_timeout}s")
                     logger.warning(
-                        "[gemini] key slot %s quota/rate limited (%s), trying next",
+                        "[gemini] direct Google no response within %ss (key_slot=%s) → %s",
+                        direct_timeout,
                         idx + 1,
+                        "GEMINI_PROXY_* phase" if proxies else f"retry direct timeout={proxy_timeout}s",
+                    )
+                    break
+                except Exception as e:
+                    last_err = e
+                    if idx < len(keys) - 1 and _is_gemini_quota_error(e):
+                        logger.warning(
+                            "[gemini] direct key slot %s quota/rate limited (%s), trying next key",
+                            idx + 1,
+                            e,
+                        )
+                        print(
+                            f"[stellar-ai] ai_key slot {idx + 1} hit quota/rate limit, trying next key",
+                            flush=True,
+                        )
+                        continue
+                    if proxies:
+                        logger.warning(
+                            "[gemini] direct failed (%s), trying reverse-proxy hosts",
+                            e,
+                        )
+                        break
+                    raise
+        else:
+            logger.info(
+                "[gemini] Modal + CN network hint: using GEMINI_PROXY_* first (skip direct %ss phase)",
+                int(direct_timeout),
+            )
+
+        # Phase 2a — ALI / JD with long timeout
+        for ep in proxies:
+            for idx, key in enumerate(keys):
+                try:
+                    response = _run_with_deadline(
+                        lambda p, k=key, e=ep: p.submit(_do_generate, k, e),
+                        proxy_timeout,
+                    )
+                    return _finalize_response(response, idx, ep)
+                except Exception as e:
+                    last_err = e
+                    if idx < len(keys) - 1 and _is_gemini_quota_error(e):
+                        logger.warning(
+                            "[gemini] proxy=%s slot %s quota (%s), next key",
+                            _endpoint_log_label(ep),
+                            idx + 1,
+                            e,
+                        )
+                        continue
+                    logger.warning(
+                        "[gemini] proxy=%s failed (%s), next origin or fallback",
+                        _endpoint_log_label(ep),
                         e,
                     )
-                    print(
-                        f"[stellar-ai] ai_key slot {idx + 1} hit quota/rate limit, trying next key",
-                        flush=True,
+                    break
+
+        # Phase 2b — direct timed out but no proxies: one long-timeout direct pass per key
+        if direct_timed_out and not proxies:
+            for idx, key in enumerate(keys):
+                try:
+                    response = _run_with_deadline(
+                        lambda p, k=key: p.submit(_do_generate, k, direct),
+                        proxy_timeout,
                     )
-                    continue
-                raise
+                    return _finalize_response(response, idx, direct)
+                except Exception as e:
+                    last_err = e
+                    if idx < len(keys) - 1 and _is_gemini_quota_error(e):
+                        continue
+                    break
+
+        # Phase 2c — proxies failed: final direct attempts with long timeout
+        if proxies and last_err is not None:
+            for idx, key in enumerate(keys):
+                try:
+                    response = _run_with_deadline(
+                        lambda p, k=key: p.submit(_do_generate, k, direct),
+                        proxy_timeout,
+                    )
+                    return _finalize_response(response, idx, direct)
+                except Exception as e:
+                    last_err = e
+                    if idx < len(keys) - 1 and _is_gemini_quota_error(e):
+                        continue
+                    break
+
     if last_err:
         raise last_err
     raise RuntimeError("Gemini developer API call failed")
@@ -711,7 +904,7 @@ def _get_model(name: str = ""):
         raise RuntimeError("GEMINI_API_KEY not configured on server")
     _get_genai()
     with _gemini_dev_lock:
-        _genai_configure_developer(keys[0])
+        _genai_configure_developer(keys[0], api_endpoint=None)
         genai = _get_genai()
         return genai.GenerativeModel(name)
 
@@ -732,10 +925,12 @@ async def _call_gemini(
         return text, None
 
     loop = asyncio.get_event_loop()
-    return await loop.run_in_executor(
-        None,
-        partial(_call_gemini_developer_sync, prompt, images, max_tokens, temperature),
-    )
+    ctx = contextvars.copy_context()
+
+    def _runner() -> tuple[str, int]:
+        return _call_gemini_developer_sync(prompt, images, max_tokens, temperature)
+
+    return await loop.run_in_executor(None, ctx.run, _runner)
 
 
 async def run_gemini_vision(
@@ -807,13 +1002,15 @@ async def _call_vision_ai(
     label: str = "vision",
     *,
     timeout_s: float,
+    qwen_fallback: bool = True,
 ) -> tuple[str, str, Optional[int]]:
-    """Try Gemini first; on failure fall back to Qwen if available.
+    """Try Gemini first; on failure optionally fall back to Qwen.
 
     Returns (response_text, provider, key_slot). key_slot is 1-based index into GEMINI_API_KEY,
     GEMINI_API_KEY_2, … when provider is gemini and developer API; None for Vertex or Qwen.
 
     ``timeout_s`` caps wall-clock time for the whole provider chain (Gemini attempt + optional Qwen).
+    Pro v3 text reports set ``qwen_fallback=False`` so only Gemini + ``GEMINI_PROXY_*`` chain applies.
     """
     async def _inner() -> tuple[str, str, Optional[int]]:
         gemini_err = None
@@ -833,7 +1030,7 @@ async def _call_vision_ai(
             gemini_err = e
             logger.warning("[ai] gemini_fail label=%s err=%s", label, e)
 
-        if _has_qwen():
+        if qwen_fallback and _has_qwen():
             try:
                 text = await _call_qwen(prompt, images, max_tokens, temperature)
                 logger.info("[ai] vision_ok provider=qwen label=%s (gemini failed first)", label)
@@ -842,6 +1039,8 @@ async def _call_vision_ai(
             except Exception as e2:
                 logger.warning("[ai] qwen_fail label=%s err=%s", label, e2)
 
+        if not qwen_fallback and gemini_err:
+            raise RuntimeError(f"Gemini failed for {label} (qwen_fallback disabled): {gemini_err}") from gemini_err
         raise RuntimeError(f"All AI providers failed for {label}: {gemini_err}")
 
     try:
@@ -948,6 +1147,26 @@ async def analyze_prov3_motion_report_only(
     prompt = template.format(
         motion_context=json.dumps(motion_context, indent=2, ensure_ascii=False),
     )
+    # CN Modal without GEMINI_PROXY_*: DashScope is reachable from mainland — no extra proxy env to set.
+    if not _use_vertex() and _prov3_cn_modal_skip_gemini_for_report() and _has_qwen():
+        try:
+            logger.info(
+                "[ai] prov3_report qwen_first label=%s (Modal+CN, no GEMINI_PROXY_*)",
+                call_label,
+            )
+            text = await asyncio.wait_for(
+                _call_qwen(prompt, [], max_tokens, temp),
+                timeout=PRO_AI_TIMEOUT_S,
+            )
+            out = extract_json_from_response(text)
+            out["ai_provider"] = "qwen"
+            return out
+        except Exception as e:
+            logger.warning(
+                "[ai] prov3_report qwen_first failed label=%s err=%s → gemini chain",
+                call_label,
+                e,
+            )
     try:
         text, provider, key_slot = await _call_vision_ai(
             prompt, [], max_tokens, temp, call_label, timeout_s=PRO_AI_TIMEOUT_S,

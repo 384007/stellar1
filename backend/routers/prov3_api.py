@@ -42,6 +42,7 @@ from services.prov3_analyze_control import (
     prov3_finish_analyze,
     prov3_request_cancel,
 )
+from services.gemini_service import gemini_modal_cn_proxy_first_context
 from services.pro_prov3_analyze_service import run_pro_video_analyze_via_prov3
 from services.pro_prov3_gemini_enrich import enrich_pro_prov3_response
 from services.prov3_keyframe_a_extractor_service import run_a_extract
@@ -165,6 +166,14 @@ def _pro_analyze_ingress_echo(route: str, request: Request) -> None:
     logger.info("%s", msg)
 
 
+def _prov3_cn_network_hint_from_request(request: Request) -> bool:
+    """China mainland hint for Modal Gemini routing: client header and/or Cloudflare country (forwarded by Edge)."""
+    if request.headers.get("x-stellar-network-hint", "").strip().lower() == "cn":
+        return True
+    cc = (request.headers.get("cf-ipcountry") or request.headers.get("CF-IPCountry") or "").strip().upper()
+    return cc == "CN"
+
+
 class Prov3AnalyzeStartBody(BaseModel):
     """Start a background Pro v3 analyze from a video already stored in R2 (same-origin upload)."""
 
@@ -203,6 +212,8 @@ async def _prov3_analyze_async_worker(
     media_prefix: str,
     lock_acquired: bool,
     user_id: str,
+    *,
+    cn_network_hint: bool = False,
 ) -> None:
     """Runs after ``/analyze/start`` returns; updates R2 job records; releases Modal single-flight lock."""
     try:
@@ -251,6 +262,7 @@ async def _prov3_analyze_async_worker(
             rough_impact_time_s,
             screen_mode,
             media_prefix,
+            cn_network_hint=cn_network_hint,
         )
         rkey = prov3_async_job_result_key(job_id)
         await asyncio.to_thread(r2_put_json_object, rkey, {"result": result})
@@ -525,6 +537,7 @@ async def _run_pro_analyze(
                 rough_impact_time_s,
                 screen_mode,
                 media_prefix,
+                cn_network_hint=_prov3_cn_network_hint_from_request(request),
             )
         finally:
             _MODAL_PRO_ANALYZE_LOCK.release()
@@ -538,6 +551,7 @@ async def _run_pro_analyze(
         rough_impact_time_s,
         screen_mode,
         media_prefix,
+        cn_network_hint=_prov3_cn_network_hint_from_request(request),
     )
 
 
@@ -548,6 +562,8 @@ async def _run_pro_analyze_body(
     rough_impact_time_s: Optional[float],
     screen_mode: bool,
     media_prefix: str,
+    *,
+    cn_network_hint: bool = False,
 ) -> dict:
     suffix = Path(original_filename or "video.mp4").suffix or ".mp4"
     mp = media_prefix.rstrip("/")
@@ -585,7 +601,8 @@ async def _run_pro_analyze_body(
                 # enrich_pro_prov3_response may pop _prov3_motion (e.g. low_trust Gemini skip or pass+Gemini).
                 # Snapshot so analysis_timeline copy + media gate always see the true-240 file path.
                 prov3_motion_snapshot = dict(result.get("_prov3_motion") or {})
-                result = await enrich_pro_prov3_response(result, region="global")
+                with gemini_modal_cn_proxy_first_context(cn_network_hint):
+                    result = await enrich_pro_prov3_response(result, region="global")
                 analysis_id = str(result.get("analysis_id") or "").strip()
                 if not analysis_id:
                     raise RuntimeError("pro_analyze failed: missing analysis_id")
@@ -756,11 +773,13 @@ async def pro_v3_analyze_start(
 
     _pro_analyze_ingress_echo("PRO_PROV3_ASYNC_START", request)
     rid = (request.headers.get("x-request-id") or "").strip() or secrets.token_hex(4)
+    cn_hint = _prov3_cn_network_hint_from_request(request)
     logger.info(
-        "[PRO_PROV3][ASYNC][API] rid=%s path=%s screen_mode=%s",
+        "[PRO_PROV3][ASYNC][API] rid=%s path=%s screen_mode=%s cn_network_hint=%s",
         rid,
         request.url.path,
         "true" if body.screen_mode else "false",
+        int(cn_hint),
     )
 
     if not prov3_r2_media_fully_configured():
@@ -811,6 +830,7 @@ async def pro_v3_analyze_start(
         "/pro-v3",
         lock_acquired,
         user_id,
+        cn_network_hint=cn_hint,
     )
     logger.info("[PRO_PROV3][ASYNC][API] rid=%s job_id=%s background_tasks scheduled", rid, job_id)
     return {"job_id": job_id, "status": "accepted"}

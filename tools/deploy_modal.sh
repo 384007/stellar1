@@ -8,6 +8,17 @@
 #   OR run `modal token new` once so ~/.modal is populated — then this script still works
 #      if those env vars are already exported in your shell.
 #   2) Python 3 with pip.
+#
+# Modal Secret ``custom-secret`` (must exist before traffic hits Pro v3 Gemini from CN):
+#   - GEMINI_API_KEY (+ optional GEMINI_API_KEY_2 …), R2_*, JWT_SECRET, etc.
+#   - GEMINI_PROXY_ALI, GEMINI_PROXY_JD — reverse-proxy bases for China (same values as Cloudflare
+#     Pages secrets; see tools/modal-custom-secret.example.env). AI cannot set these for you; paste
+#     your PoP / vendor mirror URLs in the Modal dashboard.
+#
+# Cloudflare Pages (Edge + browser Gemini): Settings → Environment variables → add the same
+# GEMINI_PROXY_* names (often as Secrets). Example CLI from repo root:
+#   npx wrangler pages secret put GEMINI_PROXY_ALI --project-name stellar-ai
+#   npx wrangler pages secret put GEMINI_PROXY_JD --project-name stellar-ai
 
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"

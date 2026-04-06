@@ -38,7 +38,11 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ detail: "source_r2_key required" }, { status: 400 });
   }
 
-  const modalUrls = buildProv3ModalUrlList(getCfEnv, auth.cnHint);
+  const clientCnHint =
+    (request.headers.get("x-stellar-network-hint") || "").trim().toLowerCase() === "cn";
+  const cnHint = auth.cnHint || clientCnHint;
+
+  const modalUrls = buildProv3ModalUrlList(getCfEnv, cnHint);
   const base = normalizeProHttpApiBase(modalUrls[0] || "");
   if (!base) {
     return NextResponse.json({ detail: "Modal backend URL not configured" }, { status: 503 });
@@ -49,7 +53,11 @@ export async function POST(request: NextRequest) {
     "Content-Type": "application/json",
     Authorization: request.headers.get("authorization") || "",
   };
-  if (auth.cnHint) headers["X-Stellar-Network-Hint"] = "cn";
+  if (cnHint) headers["X-Stellar-Network-Hint"] = "cn";
+  const cfCountry = request.headers.get("cf-ipcountry") || request.headers.get("CF-IPCountry");
+  if (cfCountry?.trim()) {
+    headers["CF-IPCountry"] = cfCountry.trim();
+  }
 
   const fr = await fetch(url, {
     method: "POST",

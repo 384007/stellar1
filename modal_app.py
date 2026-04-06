@@ -199,6 +199,10 @@ image = (
 app = modal.App(
     name="stellar-ai",
     image=image,
+    # Dashboard: Modal → stellar-ai → Secrets → ``custom-secret`` (same name as here).
+    # Required for Pro v3 Gemini in CN: add GEMINI_PROXY_ALI / GEMINI_PROXY_JD (HTTPS origins, no
+    # trailing slash) mirroring ``generativelanguage.googleapis.com`` REST paths — match CF Pages
+    # secrets so Edge + Modal behave the same. See ``tools/modal-custom-secret.example.env``.
     secrets=[modal.Secret.from_name("custom-secret")],
 )
 
