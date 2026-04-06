@@ -72,7 +72,39 @@ export function formatProAnalyzeHttpError(status: number, detail: string): strin
   if (status === 422 && (d.includes("取消") || /cancel/i.test(d))) {
     return d;
   }
+  const human = humanizeProv3MediaGateDetail(d);
+  if (human) return `Pro分析失败 [${status}]: ${human}`;
   return `Pro分析失败 [${status}]: ${d}`;
+}
+
+/**
+ * Edge job 轮询 `status: failed` 时 detail 常为内部码；避免用户只看到 `prov3_media_gate:…`。
+ * （根因多在服务端；例如低信任时 keyframes 为空但 preview 有图，旧后端会误报 empty_display_keyframes。）
+ */
+export function humanizeProv3JobFailureDetail(detail: string): string {
+  const d = (detail || "").trim();
+  if (!d) return "Pro 分析失败";
+  const human = humanizeProv3MediaGateDetail(d);
+  return human || d;
+}
+
+function humanizeProv3MediaGateDetail(d: string): string | null {
+  if (!d.includes("prov3_media_gate:")) return null;
+  if (d.includes("empty_display_keyframes")) {
+    return (
+      "服务端媒体校验与低信任结果格式不一致（已在新版后端修复）。请部署最新 Pro v3 API 后重试，或更换片段再分析。"
+    );
+  }
+  if (d.includes("missing_keyframe_image_url")) {
+    return "关键帧未生成可访问的图片链接，请重试或缩短视频。";
+  }
+  if (d.includes("analysis_timeline_video_missing_on_disk")) {
+    return "真 240 分析时间线视频未正确落盘，请重试。";
+  }
+  if (d.includes("missing_analysis_video_url")) {
+    return "缺少分析时间线视频地址，请重试或联系支持。";
+  }
+  return `媒体校验未通过（${d}）。请重试或联系支持。`;
 }
 
 function sleep(ms: number): Promise<void> {
@@ -232,7 +264,7 @@ export async function runProv3AnalyzeMultipart(
       if (st === "failed") {
         throw new Error(
           typeof j.detail === "string" && j.detail.trim()
-            ? j.detail
+            ? humanizeProv3JobFailureDetail(j.detail)
             : "Pro 分析失败",
         );
       }

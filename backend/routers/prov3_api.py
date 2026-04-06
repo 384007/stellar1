@@ -409,11 +409,19 @@ def _rewrite_prov3_result_urls_to_r2(result: dict, r2_by_fn: dict[str, str]) -> 
 
 
 def _prov3_validate_product_media_or_raise(result: dict, media_dir: Path) -> None:
-    """Every user-visible keyframe must be a persisted true-240 timeline JPG with a public URL."""
+    """Every user-visible keyframe must be a persisted true-240 timeline JPG with a public URL.
+
+    On ``low_trust``, ``keyframes`` / ``official_phase_keyframes`` may be empty while
+    ``preview_keyframes`` still holds the persisted timeline JPGs — gate those rows too.
+    """
     _prov3_assert_timeline_video_on_disk(media_dir)
     if not str(result.get("analysis_video_url") or "").strip():
         raise RuntimeError("prov3_media_gate:missing_analysis_video_url")
-    if not list(result.get("keyframes") or []):
+    has_any_rows = any(
+        bool(list(result.get(k) or []))
+        for k in ("keyframes", "official_phase_keyframes", "preview_keyframes")
+    )
+    if not has_any_rows:
         raise RuntimeError("prov3_media_gate:empty_display_keyframes")
     for key in ("keyframes", "official_phase_keyframes", "preview_keyframes"):
         rows = list(result.get(key) or [])
