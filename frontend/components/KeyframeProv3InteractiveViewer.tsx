@@ -12,6 +12,7 @@ import {
   type Prov3KfStore,
 } from "@/lib/keyframe-prov3-storage";
 import { keyframeImageDataUrl } from "@/lib/image-base64";
+import { downloadHrefAsFile } from "@/lib/download-href-as-file";
 
 type Tool = "pan" | "draw" | "ruler";
 
@@ -31,35 +32,6 @@ const STROKE_COLORS = [
   "#ff2d55",
   "#a2845e",
 ] as const;
-
-function triggerBlobDownload(blob: Blob, filename: string) {
-  const href = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = href;
-  a.download = filename;
-  a.rel = "noopener";
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  URL.revokeObjectURL(href);
-}
-
-async function downloadHrefAsFile(href: string, filename: string, fallbackOpen: boolean) {
-  try {
-    if (href.startsWith("data:")) {
-      const res = await fetch(href);
-      const blob = await res.blob();
-      triggerBlobDownload(blob, filename);
-      return;
-    }
-    const r = await fetch(href, { mode: "cors" });
-    if (!r.ok) throw new Error(String(r.status));
-    const blob = await r.blob();
-    triggerBlobDownload(blob, filename);
-  } catch {
-    if (fallbackOpen && href.startsWith("http")) window.open(href, "_blank", "noopener,noreferrer");
-  }
-}
 
 function imageContainRect(cw: number, ch: number, nw: number, nh: number) {
   if (!nw || !nh) return { x: 0, y: 0, w: cw, h: ch };
@@ -164,10 +136,6 @@ interface Props {
   overlay?: React.ReactNode;
   /** 骨架 + 辅助线竖条（置于左侧，工具栏紧随其后） */
   skeletonRail?: React.ReactNode;
-  /** e.g. download highlight */
-  topRightActions?: React.ReactNode;
-  /** 可下载的分析视频（R2 / Modal 绝对 URL） */
-  downloadVideoUrl?: string | null;
   /** 与 Pro v3 一致：仅允许 URL 关键帧，禁止用内嵌 base64 下载 */
   keyframeDownloadUrlOnly?: boolean;
 }
@@ -181,8 +149,6 @@ export default function KeyframeProv3InteractiveViewer({
   lang,
   overlay,
   skeletonRail,
-  topRightActions,
-  downloadVideoUrl,
   keyframeDownloadUrlOnly = false,
 }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -738,7 +704,7 @@ export default function KeyframeProv3InteractiveViewer({
   );
 }
 
-/** 点击当前色块后在按钮右侧展开更小、更淡的色板 */
+/** 调色板按钮；点击后在同位置叠层淡入色板（无常驻色点） */
 function StrokeColorPicker({
   colors,
   value,
@@ -770,7 +736,7 @@ function StrokeColorPicker({
   }, [open]);
 
   return (
-    <div ref={rootRef} className="relative flex shrink-0 items-center gap-1">
+    <div ref={rootRef} className="relative z-[30] flex h-9 w-9 shrink-0 items-center justify-center">
       <button
         type="button"
         title={ariaLabel}
@@ -778,14 +744,17 @@ function StrokeColorPicker({
         aria-expanded={open}
         aria-haspopup="listbox"
         onClick={() => setOpen((v) => !v)}
-        className="h-[22px] w-[22px] shrink-0 rounded-full border border-white/18 opacity-50 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.06)] transition hover:opacity-75 active:scale-95"
-        style={{ backgroundColor: value }}
-      />
+        className={`absolute inset-0 z-10 flex items-center justify-center rounded-xl border border-white/[0.11] bg-gradient-to-b from-white/[0.08] to-white/[0.02] text-white/42 shadow-[inset_0_1px_0_rgba(255,255,255,0.07),0_4px_18px_rgba(0,0,0,0.25)] backdrop-blur-md transition-all duration-200 ease-out hover:border-white/[0.18] hover:from-white/[0.11] hover:text-white/72 active:scale-[0.96] ${
+          open ? "pointer-events-none scale-[0.92] opacity-0" : "opacity-100"
+        }`}
+      >
+        <IconPalette />
+      </button>
       {open ? (
         <div
           role="listbox"
           aria-label={ariaLabel}
-          className="flex max-w-[min(calc(100vw-5rem),220px)] items-center gap-0.5 overflow-x-auto rounded-full border border-white/[0.07] bg-black/35 px-1 py-0.5 opacity-60 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)] backdrop-blur-md [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+          className="absolute left-1/2 top-1/2 z-20 flex max-w-[min(calc(100vw-4rem),268px)] animate-color-popover items-center gap-1 overflow-x-auto rounded-2xl border border-white/[0.14] bg-gradient-to-br from-white/[0.12] via-black/45 to-black/[0.62] px-2.5 py-1.5 shadow-[0_14px_44px_rgba(0,0,0,0.55),inset_0_1px_0_rgba(255,255,255,0.1)] ring-1 ring-white/[0.05] backdrop-blur-xl [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
         >
           {colors.map((c) => (
             <button
@@ -793,8 +762,11 @@ function StrokeColorPicker({
               type="button"
               role="option"
               aria-selected={value === c}
-              className={`h-[14px] w-[14px] shrink-0 rounded-full border transition active:scale-95 ${
-                value === c ? "border-white/55 opacity-95 ring-1 ring-white/15" : "border-white/12 opacity-70 hover:opacity-90"
+              title={c}
+              className={`h-4 w-4 shrink-0 rounded-full border border-black/30 shadow-[0_1px_4px_rgba(0,0,0,0.4)] transition-[transform,opacity,box-shadow] duration-150 ease-out hover:scale-110 hover:opacity-100 active:scale-95 ${
+                value === c
+                  ? "opacity-100 ring-2 ring-white/50 ring-offset-1 ring-offset-black/50 scale-105"
+                  : "opacity-[0.72] hover:ring-1 hover:ring-white/25"
               }`}
               style={{ backgroundColor: c }}
               onClick={() => {
@@ -898,6 +870,18 @@ function IconClear() {
   return (
     <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden>
       <path strokeLinecap="round" strokeLinejoin="round" d="m19 7-.867 12.142A2 2 0 0 1 16.138 21H7.862a2 2 0 0 1-1.995-1.858L5 7m5 4v6m4-6v6m1-10V5a1 1 0 0 0-1-1h-4a1 1 0 0 0-1 1v2M4 7h16" />
+    </svg>
+  );
+}
+
+function IconPalette() {
+  return (
+    <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden>
+      <path
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        d="M9.53 16.122a3 3 0 0 0-5.78 1.128 2.25 2.25 0 0 1-2.4 2.245 4.5 4.5 0 0 0 8.4-2.245c0-.399-.078-.78-.22-1.128zm0 0a15.998 15.998 0 0 0 3.388-1.62m-5.043-.025a15.994 15.994 0 0 1 1.622-3.395m3.42 3.42a15.995 15.995 0 0 0 4.764-4.648l3.876-5.814a1.151 1.151 0 0 0-1.597-1.597L14.146 6.32a15.996 15.996 0 0 0-4.649 4.763m3.42 3.42a6.776 6.776 0 0 0-3.42-3.42"
+      />
     </svg>
   );
 }
