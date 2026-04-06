@@ -19,6 +19,7 @@ import shutil
 import signal
 import subprocess
 import threading
+import time
 from pathlib import Path
 from typing import Any
 
@@ -394,6 +395,89 @@ def ffprobe_video_meta(path: str) -> dict[str, Any]:
     }
 
 
+def _parse_frame_rate_token(raw: str | None) -> float:
+    if not raw or raw in ("0/0", "N/A"):
+        return 0.0
+    try:
+        a, b = str(raw).split("/")
+        return float(a) / max(float(b), 1e-9)
+    except (ValueError, ZeroDivisionError):
+        return 0.0
+
+
+def ffprobe_stream_codec_meta(path: str) -> dict[str, Any]:
+    """First video stream codec / pixel format / declared frame rates (for strict true240 fast-path gates)."""
+    pb = _resolve_ffprobe()
+    if not pb:
+        return {}
+    cmd = [
+        pb,
+        "-v",
+        "error",
+        "-select_streams",
+        "v:0",
+        "-show_entries",
+        "stream=codec_name,pix_fmt,r_frame_rate,avg_frame_rate",
+        "-of",
+        "json",
+        path,
+    ]
+    try:
+        out = subprocess.run(cmd, capture_output=True, text=True, timeout=120, check=False)
+    except subprocess.TimeoutExpired:
+        logger.warning("[prov3][ffprobe] codec probe timeout path=%s", path)
+        return {}
+    if out.returncode != 0:
+        return {}
+    try:
+        data = json.loads(out.stdout or "{}")
+    except json.JSONDecodeError:
+        return {}
+    streams = data.get("streams") or []
+    if not streams or not isinstance(streams[0], dict):
+        return {}
+    s0 = streams[0]
+    return {
+        "codec_name": str(s0.get("codec_name") or "").lower(),
+        "pix_fmt": str(s0.get("pix_fmt") or "").lower(),
+        "r_frame_rate": str(s0.get("r_frame_rate") or ""),
+        "avg_frame_rate": str(s0.get("avg_frame_rate") or ""),
+        "r_fps": _parse_frame_rate_token(str(s0.get("r_frame_rate") or "")),
+        "avg_fps": _parse_frame_rate_token(str(s0.get("avg_frame_rate") or "")),
+    }
+
+
+def _stderr_progress_reader(proc: subprocess.Popen[Any], label: str) -> None:
+    """Drain ffmpeg stderr in a worker thread so the pipe never fills (avoids deadlock)."""
+    err = proc.stderr
+    if err is None:
+        return
+    try:
+        for line in iter(err.readline, ""):
+            if not line:
+                break
+            s = line.strip()
+            if not s:
+                continue
+            low = s.lower()
+            if (
+                "frame=" in s
+                or "speed=" in s
+                or low.startswith("time=")
+                or "bitrate=" in low
+                or "fps=" in s
+            ):
+                logger.info("[%s] ffmpeg_progress %s", label, s)
+            elif "ffmpeg version" in low or low.startswith("configuration:"):
+                continue
+            elif "deprecated" in low or "warning" in low:
+                logger.info("[%s] ffmpeg %s", label, s)
+            else:
+                logger.debug("[%s] ffmpeg %s", label, s)
+    except Exception as exc:
+        logger.warning("[%s] stderr reader stopped: %s", label, exc)
+
+
 _ffmpeg_active: set[subprocess.Popen[Any]] = set()
 _ffmpeg_active_lock = threading.Lock()
 _sigterm_hook_installed = False
@@ -528,38 +612,107 @@ def run_ffmpeg(
     label: str = "ffmpeg",
     loglevel: str = "error",
     stats_period_s: int | None = None,
+    stream_progress_logs: bool = False,
+    progress_stats_period_s: int = 2,
 ) -> None:
     ensure_sigterm_kills_ffmpeg()
-    pre: list[str] = [ffmpeg_bin(), "-hide_banner", "-loglevel", loglevel]
-    if stats_period_s is not None and int(stats_period_s) > 0:
-        pre.extend(["-stats_period", str(int(stats_period_s))])
+    eff_loglevel = loglevel
+    if stream_progress_logs and eff_loglevel in ("quiet", "panic", "fatal", "error"):
+        eff_loglevel = "info"
+    pre: list[str] = [
+        ffmpeg_bin(),
+        "-hide_banner",
+        "-nostdin",
+        "-loglevel",
+        eff_loglevel,
+    ]
+    eff_stats = stats_period_s
+    if stream_progress_logs and (eff_stats is None or int(eff_stats) <= 0):
+        eff_stats = max(1, int(progress_stats_period_s))
+    if eff_stats is not None and int(eff_stats) > 0:
+        pre.extend(["-stats_period", str(int(eff_stats))])
     pre.extend(["-y"])
     cmd = pre + args
+    if not stream_progress_logs:
+        proc = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        with _ffmpeg_active_lock:
+            _ffmpeg_active.add(proc)
+        stdout = stderr = ""
+        try:
+            stdout, stderr = proc.communicate(timeout=timeout_s)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            try:
+                stdout, stderr = proc.communicate(timeout=60)
+            except Exception:
+                stdout, stderr = "", ""
+            err = (stderr or stdout or "").strip()
+            raise RuntimeError(f"{label} timed out after {timeout_s}s: {err[:2000]}")
+        finally:
+            with _ffmpeg_active_lock:
+                _ffmpeg_active.discard(proc)
+        if proc.returncode != 0:
+            err = (stderr or stdout or "").strip()
+            raise RuntimeError(f"{label} failed (exit {proc.returncode}): {err[:2000]}")
+        return
+
     proc = subprocess.Popen(
         cmd,
-        stdout=subprocess.PIPE,
+        stdout=subprocess.DEVNULL,
         stderr=subprocess.PIPE,
         text=True,
+        bufsize=1,
     )
     with _ffmpeg_active_lock:
         _ffmpeg_active.add(proc)
-    stdout = stderr = ""
+    reader = threading.Thread(
+        target=_stderr_progress_reader,
+        args=(proc, label),
+        name=f"{label}_ffmpeg_stderr",
+        daemon=True,
+    )
+    reader.start()
+    deadline = time.monotonic() + float(timeout_s)
+    hb_start = time.monotonic()
+    hb_last = hb_start
     try:
-        stdout, stderr = proc.communicate(timeout=timeout_s)
-    except subprocess.TimeoutExpired:
-        proc.kill()
-        try:
-            stdout, stderr = proc.communicate(timeout=60)
-        except Exception:
-            stdout, stderr = "", ""
-        err = (stderr or stdout or "").strip()
-        raise RuntimeError(f"{label} timed out after {timeout_s}s: {err[:2000]}")
+        while proc.poll() is None:
+            now = time.monotonic()
+            if now - hb_last >= 30.0:
+                logger.info(
+                    "[%s] ffmpeg_still_running elapsed_s=%.0f (waiting for progress lines)",
+                    label,
+                    now - hb_start,
+                )
+                hb_last = now
+            if now >= deadline:
+                proc.terminate()
+                try:
+                    proc.wait(timeout=30)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                    try:
+                        proc.wait(timeout=30)
+                    except Exception:
+                        pass
+                raise RuntimeError(f"{label} timed out after {timeout_s}s")
+            time.sleep(0.25)
+        if proc.returncode != 0:
+            raise RuntimeError(f"{label} failed (exit {proc.returncode})")
     finally:
+        if proc.stderr is not None:
+            try:
+                proc.stderr.close()
+            except OSError:
+                pass
+        reader.join(timeout=15.0)
         with _ffmpeg_active_lock:
             _ffmpeg_active.discard(proc)
-    if proc.returncode != 0:
-        err = (stderr or stdout or "").strip()
-        raise RuntimeError(f"{label} failed (exit {proc.returncode}): {err[:2000]}")
 
 
 def ffmpeg_has_filter(name: str) -> bool:
