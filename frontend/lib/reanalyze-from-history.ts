@@ -76,8 +76,38 @@ export async function fetchLabVideoBlobForReanalyze(jobId: string): Promise<Blob
   return null;
 }
 
+const REMOTE_VIDEO_FETCH_MS = 12_000;
+
+function abortSignalForMs(ms: number): AbortSignal | undefined {
+  if (typeof AbortSignal !== "undefined" && typeof AbortSignal.timeout === "function") {
+    return AbortSignal.timeout(ms);
+  }
+  return undefined;
+}
+
 /**
- * 按顺序：直链 URL → 本机 IndexedDB → 登录用户 R2（/api/history/video）
+ * Avoid a full GET to Modal /pro-v3/media when the file was never persisted (e.g. prior 422).
+ * HEAD is cheap; if unsupported or CORS blocks it, we still try GET below.
+ */
+async function prov3MediaUrlCertainlyMissing(u: string): Promise<boolean> {
+  if (!u.includes("/pro-v3/media/")) return false;
+  try {
+    const sig = abortSignalForMs(5000);
+    const r = await fetch(u, {
+      method: "HEAD",
+      mode: "cors",
+      cache: "no-store",
+      ...(sig ? { signal: sig } : {}),
+    });
+    return r.status === 404;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * 按顺序：analysisVideoUrl → videoUrl → IndexedDB → /api/history/video（与产品约定一致）。
+ * 对可能未落盘的 Pro v3 media URL 先 HEAD，404 则跳过，避免与 POST /pro-v3/analyze 同时打满一条无意义 GET。
  */
 export async function fetchVideoBlobForHistoryReanalyze(
   analysisId: string,
@@ -88,7 +118,13 @@ export async function fetchVideoBlobForHistoryReanalyze(
   for (const u of candidates) {
     if (/^https?:\/\//i.test(u) || u.startsWith("/")) {
       try {
-        const r = await fetch(u);
+        if (await prov3MediaUrlCertainlyMissing(u)) continue;
+        const sig = abortSignalForMs(REMOTE_VIDEO_FETCH_MS);
+        const r = await fetch(u, {
+          mode: "cors",
+          cache: "no-store",
+          ...(sig ? { signal: sig } : {}),
+        });
         if (r.ok) {
           const blob = await r.blob();
           if (blob.size > 0) return blob;

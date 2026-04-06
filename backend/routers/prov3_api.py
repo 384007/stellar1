@@ -426,6 +426,12 @@ async def _run_pro_analyze_body(
                 _inject_keyframe_urls(list(result.get("official_phase_keyframes") or []), keyframe_url_by_file)
                 _inject_keyframe_urls(list(result.get("preview_keyframes") or []), keyframe_url_by_file)
 
+                result["original_video_url"] = original_video_url
+                result["video_url"] = original_video_url
+                result["playback_video_url"] = playback_video_url or original_video_url
+                if analysis_video_url:
+                    result["analysis_video_url"] = analysis_video_url
+
                 _prov3_validate_product_media_or_raise(result, media_dir)
 
                 screen_cropped_video_url = ""
@@ -443,11 +449,6 @@ async def _run_pro_analyze_body(
                     shutil.copy2(contact_src, contact_dst)
                     result["contact_sheet_url"] = f"{base}{mp}/media/{analysis_id}/{contact_name}"
 
-                result["original_video_url"] = original_video_url
-                result["video_url"] = original_video_url
-                result["playback_video_url"] = playback_video_url or original_video_url
-                if analysis_video_url:
-                    result["analysis_video_url"] = analysis_video_url
                 if screen_cropped_video_url:
                     result["screen_cropped_video_url"] = screen_cropped_video_url
                 result["screen_mode"] = bool(screen_mode)

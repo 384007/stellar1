@@ -220,6 +220,9 @@ export default function ProPageClient({ deepLinkAnalysisId }: { deepLinkAnalysis
       try {
         const loaded = await loadProAnalysisById(deepId, token);
         if (cancelled) return;
+        if (analysisInFlightRef.current) {
+          return;
+        }
         if (!loaded) {
           setError(
             lang === "zh"
@@ -424,6 +427,7 @@ export default function ProPageClient({ deepLinkAnalysisId }: { deepLinkAnalysis
     prov3ScreenOpenDiagnosisTabRef.current = resolveProv3ScreenMode(filename, prov3ScreenMode);
     setProcessingProScreenMode(resolveProv3ScreenMode(filename, prov3ScreenMode));
     setStage("processing");
+    setResult(null);
     setResultRenderError(null);
     setError("");
     setProgress(0);
