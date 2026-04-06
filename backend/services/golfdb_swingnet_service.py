@@ -222,6 +222,25 @@ def _video_to_batch(
     return batch, sample_indices.astype(np.int64), fps, total
 
 
+def _validate_true240_timeline(video_path: str, analysis_fps: float) -> tuple[float, int]:
+    if abs(float(analysis_fps) - 240.0) > 0.5:
+        raise RuntimeError(f"true240_required: analysis_fps={analysis_fps}")
+    cap = cv2.VideoCapture(video_path)
+    if not cap.isOpened():
+        cap.release()
+        raise RuntimeError(f"cannot_open_analysis_video:{video_path}")
+    fps = float(cap.get(cv2.CAP_PROP_FPS) or 0.0)
+    total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+    cap.release()
+    if total <= 0:
+        raise RuntimeError(f"analysis_timeline_empty:{video_path}")
+    if fps <= 0:
+        raise RuntimeError("analysis_timeline_fps_unknown")
+    if abs(fps - 240.0) > 0.5:
+        raise RuntimeError(f"true240_required: video_fps={fps:.3f}")
+    return fps, total
+
+
 def _run_forward(model: EventDetector, batch: torch.Tensor, device: torch.device, seq_len: int) -> np.ndarray:
     n = batch.shape[1]
     raw_sl = int(os.getenv("STELLAR_SWINGNET_SEQ_LEN") or "64")
@@ -303,10 +322,10 @@ def run_swingnet_extract(
     ``frame_index`` values are **decode indices** in ``video_path`` (the 240fps analysis MP4).
     ``analysis_fps`` is accepted for API symmetry with preprocess; indices do not depend on OpenCV fps.
     """
-    _ = analysis_fps
     if not swingnet_enabled():
         return None
     try:
+        _validate_true240_timeline(video_path, analysis_fps)
         model, device = _load_model()
         batch, sample_indices, fps, total = _video_to_batch(video_path)
         probs = _run_forward(model, batch, device, seq_len=64)
@@ -320,6 +339,10 @@ def run_swingnet_extract(
             probs = probs[:m]
             sample_indices = sample_indices[:m]
         kfs = _keyframes_from_probs(probs, sample_indices)
+        for row in kfs:
+            fi = int(row.get("frame_index", 0))
+            if fi < 0 or fi >= int(total):
+                raise RuntimeError(f"analysis_timeline_index_out_of_range:{fi}/{total}")
         span = max(int(total), int(np.max(sample_indices)) + 1) if len(sample_indices) else int(total)
         span = max(span, 1)
         kfs, _spread = spread_keyframes_min_decode_gap(kfs, span)
@@ -342,8 +365,10 @@ def run_swingnet_extract(
             analysis_id,
         )
         return kfs
+    except RuntimeError:
+        raise
     except Exception as exc:
-        logger.warning("[SwingNet] A-path failed (%s) — heuristic fallback", exc)
+        logger.warning("[SwingNet] A-path failed (%s)", exc)
         return None
 
 
@@ -360,7 +385,7 @@ def swingnet_b_refine(
         return keyframes
     probs = ctx["probs"]
     sample_indices = ctx["sample_indices"]
-    fps = float(ctx["source_fps"])
+    _fps = float(ctx["source_fps"])
     total = int(ctx["total_frames"])
     t = probs.shape[0]
     out: list[dict[str, Any]] = []
@@ -378,6 +403,7 @@ def swingnet_b_refine(
         best_off = int(np.argmax(sub))
         row_new = lo + best_off
         sf = int(sample_indices[row_new])
+        sf = max(0, min(sf, total - 1))
         conf = round(float(probs[row_new, k]), 4)
         cloned = dict(item)
         cloned["frame_index"] = int(sf)

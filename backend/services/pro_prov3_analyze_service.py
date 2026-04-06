@@ -22,6 +22,7 @@ from PIL import Image, ImageDraw
 from lib.prov3.keyframes.constants import EVENT_SEQUENCE
 from lib.prov3.keyframes.decode_spacing import spread_keyframes_min_decode_gap
 from services.internal.prov3_ffmpeg import ffmpeg_extract_frames_bgr_by_decode_index, ffprobe_video_meta
+from services.internal.frame_enhance_service import persist_final_keyframe_images
 from services.prov3_keyframe_orchestrator_service import run_keyframe_analyze
 
 logger = logging.getLogger(__name__)
@@ -187,7 +188,11 @@ def _probe_video(path: str) -> tuple[float, int, float]:
     return fps, max(n, 1), dur
 
 
-def _build_ui_keyframes(raw_keyframes: list[dict[str, Any]], video_path: str) -> list[dict[str, Any]]:
+def _build_ui_keyframes(
+    raw_keyframes: list[dict[str, Any]],
+    analysis_video_path: str,
+    analysis_fps: float,
+) -> list[dict[str, Any]]:
     """Decode JPEG strips from the **true 240fps analysis** MP4 (``prov3.analysis_video``).
 
     Keyframes use **decode frame indices** in that file (same contract as SwingNet / ``generate_analysis_frames``).
@@ -196,7 +201,7 @@ def _build_ui_keyframes(raw_keyframes: list[dict[str, Any]], video_path: str) ->
     """
     meta_pf: dict[str, Any] = {}
     try:
-        meta_pf = ffprobe_video_meta(video_path)
+        meta_pf = ffprobe_video_meta(analysis_video_path)
     except Exception as exc:
         logger.warning("[PRO_PROV3] thumb ffprobe meta failed: %s", exc)
 
@@ -206,11 +211,11 @@ def _build_ui_keyframes(raw_keyframes: list[dict[str, Any]], video_path: str) ->
     h_pf = int(meta_pf.get("height") or 0)
     fps_pf = float(meta_pf.get("fps") or 0.0)
 
-    cap = cv2.VideoCapture(video_path)
+    cap = cv2.VideoCapture(analysis_video_path)
     opened = cap.isOpened()
     if not opened:
-        logger.warning("[PRO_PROV3] OpenCV cannot open video for thumbnails: %s", video_path)
-    rotation = int(_prov3_thumb_container_rotation_degrees(video_path)) if opened else 0
+        logger.warning("[PRO_PROV3] OpenCV cannot open video for thumbnails: %s", analysis_video_path)
+    rotation = int(_prov3_thumb_container_rotation_degrees(analysis_video_path)) if opened else 0
     n_cv = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0) if opened else 0
     fps_cv = float(cap.get(cv2.CAP_PROP_FPS) or 0.0) if opened else 0.0
     w_cv = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH) or 0) if opened else 0
@@ -226,25 +231,6 @@ def _build_ui_keyframes(raw_keyframes: list[dict[str, Any]], video_path: str) ->
     h_meta = h_pf or h_cv
 
     fi_max = max((int(k.get("frame_index") or 0) for k in raw_keyframes), default=0)
-    timeline_n = max(fi_max + 1, 1)
-    if nb_eff > 0:
-        timeline_n = max(timeline_n, nb_eff)
-    if dur_s > 0:
-        timeline_n = max(timeline_n, int(round(dur_s * ANALYSIS_FPS)))
-
-    nframes = max(n_cv, 1) if opened else 1
-    use_remap = bool(opened and timeline_n >= 8 and nframes + 3 < timeline_n)
-    if use_remap:
-        logger.info(
-            "[PRO_PROV3] thumb OpenCV fallback may remap timeline_n=%s -> opencv_frames=%s "
-            "(ffprobe_nb=%s dur_s=%.3f stream_fps=%.2f)",
-            timeline_n,
-            nframes,
-            nb_probe,
-            dur_s,
-            stream_fps,
-        )
-
     order = {name: i for i, name in enumerate(EVENT_SEQUENCE)}
     rows = sorted(raw_keyframes, key=lambda k: order.get(str(k.get("event_name")), 99))
 
@@ -261,7 +247,7 @@ def _build_ui_keyframes(raw_keyframes: list[dict[str, Any]], video_path: str) ->
     if uniq_decode and w_meta > 0 and h_meta > 0:
         try:
             bgr_map = ffmpeg_extract_frames_bgr_by_decode_index(
-                video_path,
+                analysis_video_path,
                 uniq_decode,
                 width=w_meta,
                 height=h_meta,
@@ -285,17 +271,14 @@ def _build_ui_keyframes(raw_keyframes: list[dict[str, Any]], video_path: str) ->
             ev = str(k.get("event_name") or "")
             phase = EVENT_NAME_TO_PHASE.get(ev, "address")
             fi = int(k.get("frame_index") or 0)
-            time_s = float(fi) / ANALYSIS_FPS
+            time_s = float(fi) / max(float(analysis_fps), 1.0)
             frame_bgr = None
             src_idx = decode_idx
             if ffmpeg_ok and decode_idx in bgr_map:
                 frame_bgr = _prov3_thumb_rotate_bgr(bgr_map[decode_idx], rotation)
             elif opened:
-                if use_remap:
-                    denom = max(timeline_n - 1, 1)
-                    src_idx = int(round(fi * (nframes - 1) / denom))
-                else:
-                    src_idx = fi
+                src_idx = fi
+                nframes = max(n_cv, 1)
                 src_idx = max(0, min(src_idx, nframes - 1))
                 frame_bgr = _prov3_thumb_read_frame_bgr(cap, src_idx, rotation)
             b64 = _jpeg_b64_bgr(frame_bgr) if frame_bgr is not None else ""
@@ -307,13 +290,10 @@ def _build_ui_keyframes(raw_keyframes: list[dict[str, Any]], video_path: str) ->
                     "label_zh": EVENT_LABELS_ZH.get(ev, phase),
                     "timestamp": round(time_s, 4),
                     "image_base64": b64,
-                    "decode_frame_index": decode_idx,
-                    "source_frame_index": src_idx,
-                    "source_pose_idx": src_idx,
+                    "frame_index": fi,
                     "confidence": round(conf, 4),
-                    "prov3_event_name": ev,
-                    "analysis_fps": int(ANALYSIS_FPS),
-                    "keyframe_source": "analysis_240",
+                    "analysis_fps": int(round(float(analysis_fps))),
+                    "keyframe_image_source": "analysis_video",
                 }
             )
     finally:
@@ -402,11 +382,8 @@ def run_pro_video_analyze_via_prov3(
     av_path = str(prov3.analysis_video or "").strip()
     thumb_ok = bool(av_path and Path(av_path).is_file())
     if not thumb_ok:
-        logger.error(
-            "[PRO_PROV3] analysis_video missing or not on disk — UI strips cannot be aligned to true-240 analysis",
-        )
-    # Prefer analysis_240fps.mp4 (same file as A/B); last resort cleanup path (indices may mismatch).
-    thumb_src = av_path if thumb_ok else input_video_path
+        raise RuntimeError("analysis_video_missing: true240 analysis video is required")
+
     if thumb_ok and len(raw_kfs) == 8:
         try:
             meta_sp = ffprobe_video_meta(av_path)
@@ -425,7 +402,22 @@ def run_pro_video_analyze_via_prov3(
         except Exception as exc:
             logger.warning("[PRO_PROV3] strip keyframe spread skipped: %s", exc)
 
-    ui_keyframes = _build_ui_keyframes(raw_kfs, thumb_src)
+    persisted_kfs = persist_final_keyframe_images(av_path, raw_kfs, str(work / "keyframe_images"))
+    event_to_phase = {v: k for k, v in EVENT_NAME_TO_PHASE.items()}
+    persisted_by_phase = {
+        event_to_phase.get(str(x["event_name"]), "").strip(): x
+        for x in persisted_kfs
+        if event_to_phase.get(str(x["event_name"]), "").strip()
+    }
+
+    ui_keyframes = _build_ui_keyframes(raw_kfs, av_path, float(prov3.analysis_fps or ANALYSIS_FPS))
+    for row in ui_keyframes:
+        phase = str(row.get("phase") or "")
+        saved = persisted_by_phase.get(phase)
+        if saved:
+            row["keyframe_image_path"] = str(saved["file_path"])
+            row["keyframe_image_file"] = str(saved["file_name"])
+            row["keyframe_image_source"] = "analysis_video"
     avg_c = _avg_confidence(ui_keyframes)
     total_score = round(min(100.0, max(0.0, avg_c * 100.0)), 1)
 
@@ -472,7 +464,7 @@ def run_pro_video_analyze_via_prov3(
     phase_keyframes: dict[str, int] = {}
     for k in ui_keyframes:
         ph = str(k.get("phase") or "")
-        spi = k.get("source_frame_index")
+        spi = k.get("frame_index")
         if ph and isinstance(spi, int):
             phase_keyframes[ph] = spi
 
@@ -483,9 +475,9 @@ def run_pro_video_analyze_via_prov3(
         "trust_level": analysis_trust,
         "pipeline": "prov3",
         "keyframes_strip": {
-            "timeline": "analysis_240" if thumb_ok else "fallback_source",
+            "timeline": "analysis_240",
             "analysis_fps": int(prov3.analysis_fps or ANALYSIS_FPS),
-            "thumbnails_from_analysis_video": thumb_ok,
+            "thumbnails_from_analysis_video": True,
         },
         "summary": summary,
         "summary_zh": summary_zh,
@@ -524,6 +516,7 @@ def run_pro_video_analyze_via_prov3(
         "skeleton_data": {"frames": [], "total_frames": 0},
         "pose_frames": [],
         "phase_keyframes": phase_keyframes,
+        "keyframe_images": persisted_kfs,
         "prov3": {
             "status": status,
             "trust_level": trust,

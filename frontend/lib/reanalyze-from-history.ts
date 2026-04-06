@@ -8,6 +8,7 @@ export type ReanalyzeFromHistoryPayload = {
   /** 仅 `/analyze`：与历史记录类型对应的模式（Pro 记录走 `/pro`，此处一般为 lite） */
   analysisMode?: "lite" | "pro";
   videoUrl?: string;
+  analysisVideoUrl?: string;
   /**
    * Pro v3：原分析为屏幕模式时保留；再次分析时传给 `screen_mode` 表单字段。
    */
@@ -81,17 +82,20 @@ export async function fetchLabVideoBlobForReanalyze(jobId: string): Promise<Blob
 export async function fetchVideoBlobForHistoryReanalyze(
   analysisId: string,
   videoUrl?: string,
+  analysisVideoUrl?: string,
 ): Promise<Blob | null> {
-  const trimmed = (videoUrl || "").trim();
-  if (trimmed && /^https?:\/\//i.test(trimmed)) {
-    try {
-      const r = await fetch(trimmed);
-      if (r.ok) {
-        const blob = await r.blob();
-        if (blob.size > 0) return blob;
+  const candidates = [(videoUrl || "").trim(), (analysisVideoUrl || "").trim()].filter(Boolean);
+  for (const u of candidates) {
+    if (/^https?:\/\//i.test(u) || u.startsWith("/")) {
+      try {
+        const r = await fetch(u);
+        if (r.ok) {
+          const blob = await r.blob();
+          if (blob.size > 0) return blob;
+        }
+      } catch {
+        /* fall through */
       }
-    } catch {
-      /* fall through */
     }
   }
 
