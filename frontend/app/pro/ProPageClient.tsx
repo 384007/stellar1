@@ -444,20 +444,8 @@ export default function ProPageClient({ deepLinkAnalysisId }: { deepLinkAnalysis
       if (prev) try { URL.revokeObjectURL(prev); } catch { /* */ }
       return null;
     });
-    const t0 = Date.now();
-    const progressInterval = setInterval(() => {
-      const elapsed = (Date.now() - t0) / 1000;
-      setProgress((prev) => {
-        if (prev >= 99) return prev;
-        const target = elapsed < 10
-          ? Math.min(55, elapsed * 5.5)
-          : elapsed < 60
-          ? 55 + (elapsed - 10) * 0.6
-          : 85 + Math.min(13.5, (elapsed - 60) * 0.05);
-        const next = prev + (target - prev) * 0.12 + Math.random() * 1.5;
-        return Math.min(next, 98.5);
-      });
-    }, 800);
+    // Single POST /pro-v3/analyze: stay at a modest % until the request returns (no fake crawl to ~99%).
+    setProgress(42);
 
     const proAbort = new AbortController();
     proAnalyzeAbortRef.current = proAbort;
@@ -483,7 +471,6 @@ export default function ProPageClient({ deepLinkAnalysisId }: { deepLinkAnalysis
         });
         res = out.response;
       } catch (e) {
-        clearInterval(progressInterval);
         const msg = e instanceof Error ? e.message : "";
         if (msg === "分析已停止" || msg === "Analysis stopped") {
           setError("");
@@ -503,8 +490,6 @@ export default function ProPageClient({ deepLinkAnalysisId }: { deepLinkAnalysis
         setStage("upload");
         return;
       }
-
-      clearInterval(progressInterval);
 
       if (!res.ok) {
         let detail = "Pro analysis failed";
@@ -607,7 +592,6 @@ export default function ProPageClient({ deepLinkAnalysisId }: { deepLinkAnalysis
         });
       }, 0);
     } catch (err: unknown) {
-      clearInterval(progressInterval);
       setProcessingProScreenMode(false);
       const msg = err instanceof Error ? err.message : "";
       if (
