@@ -401,6 +401,7 @@ _safe_load("routers.prov3_api", "", [])
 
 @app.get("/health")
 async def health_check():
+    from lib.prov3.r2_media import prov3_r2_media_fully_configured
     from routers.prov3_api import prov3_analyze_single_flight_active
     from services.prov3_analyze_control import prov3_analyze_in_flight_count
     from services.golfdb_swingnet_paths import resolve_swingnet_checkpoint_path
@@ -426,6 +427,14 @@ async def health_check():
         _mci_timeout = max(60, int(os.getenv("STELLAR_PROV3_MINTERPOLATE_TIMEOUT_S") or "3600"))
     except ValueError:
         _mci_timeout = 3600
+
+    _prov3_r2_full = prov3_r2_media_fully_configured()
+    _prov3_r2_durable_required = (os.getenv("STELLAR_PROV3_REQUIRE_R2") or "").strip().lower() not in (
+        "0",
+        "false",
+        "no",
+        "off",
+    )
 
     _ff_ok = False
     _mci = False
@@ -490,6 +499,12 @@ async def health_check():
             "swingnet_engine": "wmcnally/golfdb:SwingNet",
             "swingnet_weights_present": bool(_sw_ck),
             "swingnet_checkpoint": _sw_ck or None,
+            "r2_media": {
+                "fully_configured": _prov3_r2_full,
+                "durable_required_for_product_analyze": _prov3_r2_durable_required,
+                "prov3_analyze_storage_ready": (not _prov3_r2_durable_required) or _prov3_r2_full,
+                "note": "No secrets: fully_configured = R2_ENDPOINT, R2_ACCESS_KEY, R2_SECRET_KEY, R2_BUCKET, STELLAR_PROV3_R2_PUBLIC_BASE all set.",
+            },
         },
         "env": {
             "GEMINI_API_KEY": "set" if gemini_key else "missing",
