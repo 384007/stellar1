@@ -942,8 +942,8 @@ export default function ProPageClient({ deepLinkAnalysisId }: { deepLinkAnalysis
             {error && (
               <div className="mx-auto mb-6 max-w-lg rounded-xl bg-red-500/10 border border-red-500/20 p-4 text-sm text-red-400">
                 <p className="font-semibold mb-1">{lang === "zh" ? "分析出错" : "Error"}</p>
-                <p className="text-red-400/80 break-words">{error}</p>
-                <button onClick={() => setError("")} className="mt-3 text-xs text-white/50 underline hover:text-white/70">
+                <p className="text-red-400/80 break-words whitespace-pre-line">{error}</p>
+                <button type="button" onClick={() => setError("")} className="mt-3 text-xs text-white/50 underline hover:text-white/70">
                   {lang === "zh" ? "关闭" : "Close"}
                 </button>
               </div>
