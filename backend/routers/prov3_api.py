@@ -16,7 +16,7 @@ import tempfile
 from pathlib import Path
 from typing import Optional
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
+from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, RedirectResponse
 from pydantic import BaseModel, Field
 
@@ -728,12 +728,17 @@ async def _run_pro_analyze_body(
 async def pro_v3_analyze_start(
     request: Request,
     body: Prov3AnalyzeStartBody,
+    background_tasks: BackgroundTasks,
     current_user: Optional[dict] = Depends(get_current_user),
 ):
     """Queue a full Pro v3 analyze from R2 (``videos/{user_id}/…``); returns ``job_id`` immediately.
 
     Poll job status via the same-origin app route that reads R2 (``/api/prov3/analyze/job/…``).
     One in-flight analyze per Modal worker when single-flight is enabled (same lock as sync ``/analyze``).
+
+    The heavy work is scheduled with ``BackgroundTasks`` (not ``asyncio.create_task``): on Modal/ASGI the
+    request scope can tear down before a detached task runs, leaving R2 stuck at ``accepted`` and the UI
+    polling forever.
     """
     if not current_user or not current_user.get("is_pro"):
         raise HTTPException(status_code=403, detail="Pro membership required")
@@ -788,18 +793,18 @@ async def pro_v3_analyze_start(
         job_id,
         {"status": "accepted", "job_id": job_id, "user_id": user_id},
     )
-    asyncio.create_task(
-        _prov3_analyze_async_worker(
-            job_id,
-            key,
-            body.screen_mode,
-            body.rough_impact_time_s,
-            api_base,
-            "/pro-v3",
-            lock_acquired,
-            user_id,
-        )
+    background_tasks.add_task(
+        _prov3_analyze_async_worker,
+        job_id,
+        key,
+        body.screen_mode,
+        body.rough_impact_time_s,
+        api_base,
+        "/pro-v3",
+        lock_acquired,
+        user_id,
     )
+    logger.info("[PRO_PROV3][ASYNC][API] rid=%s job_id=%s background_tasks scheduled", rid, job_id)
     return {"job_id": job_id, "status": "accepted"}
 
 
