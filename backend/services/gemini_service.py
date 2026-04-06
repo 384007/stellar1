@@ -811,13 +811,13 @@ Respond with ONLY this JSON (no markdown, no backticks). Use the same shape as s
     "release_point": "description"
   }},
   "training_plan": {{
-    "day1": {{"focus": "topic", "drills": ["drill1", "drill2"], "duration": "30 min"}},
-    "day2": {{"focus": "topic", "drills": ["drill1", "drill2"], "duration": "30 min"}},
-    "day3": {{"focus": "topic", "drills": ["drill1", "drill2"], "duration": "30 min"}},
-    "day4": {{"focus": "topic", "drills": ["drill1", "drill2"], "duration": "30 min"}},
-    "day5": {{"focus": "topic", "drills": ["drill1", "drill2"], "duration": "30 min"}},
-    "day6": {{"focus": "topic", "drills": ["drill1", "drill2"], "duration": "30 min"}},
-    "day7": {{"focus": "topic", "drills": ["drill1", "drill2"], "duration": "rest/review"}}
+    "day1": {{"focus": "中文主题", "drills": ["中文练习1", "中文练习2"], "duration": "30 min"}},
+    "day2": {{"focus": "...", "drills": ["...", "..."], "duration": "30 min"}},
+    "day3": {{"focus": "...", "drills": ["...", "..."], "duration": "30 min"}},
+    "day4": {{"focus": "...", "drills": ["...", "..."], "duration": "30 min"}},
+    "day5": {{"focus": "...", "drills": ["...", "..."], "duration": "30 min"}},
+    "day6": {{"focus": "...", "drills": ["...", "..."], "duration": "30 min"}},
+    "day7": {{"focus": "复习", "drills": ["中文复习1", "中文复习2"], "duration": "rest/review"}}
   }},
   "detected_club": {{
     "club_type": "UNKNOWN",
@@ -830,6 +830,7 @@ Rules:
 - detected_club MUST stay UNKNOWN / 0.0 confidence (no club images).
 - Do not reference "image 1…8" or "the attached strip".
 - Ground every major claim in angle series or keyframe_metrics timing; avoid fictional visuals.
+- training_plan: each day's "focus" and both "drills" strings MUST be Simplified Chinese.
 """
 
 PROV3_REPORT_PROMPT = """You are an elite PGA-level coach writing a truthful coaching report from motion metadata only.
@@ -892,17 +893,17 @@ Return ONLY valid JSON:
     {{"phase": "address", "score": 0, "action_assessment_en": "...", "action_assessment_zh": "..."}}
   ],
   "training_plan": {{
-    "day1": {{"focus": "topic (Chinese)", "drills": ["drill1", "drill2"], "duration": "30 min"}},
+    "day1": {{"focus": "中文训练主题", "drills": ["中文练习要点1", "中文练习要点2"], "duration": "30 min"}},
     "day2": {{"focus": "...", "drills": ["...", "..."], "duration": "30 min"}},
     "day3": {{"focus": "...", "drills": ["...", "..."], "duration": "30 min"}},
     "day4": {{"focus": "...", "drills": ["...", "..."], "duration": "30 min"}},
     "day5": {{"focus": "...", "drills": ["...", "..."], "duration": "30 min"}},
     "day6": {{"focus": "...", "drills": ["...", "..."], "duration": "30 min"}},
-    "day7": {{"focus": "复习与录像对比", "drills": ["drill1"], "duration": "20 min"}}
+    "day7": {{"focus": "复习与录像对比", "drills": ["中文复习要点1", "中文复习要点2"], "duration": "20 min"}}
   }}
 }}
 
-training_plan MUST include day1 through day7; focus can be Chinese; drills concrete and short.
+training_plan MUST include day1 through day7; focus and BOTH drill strings MUST be Simplified Chinese (specific cues).
 keyframe_evaluations length MUST equal len(MOTION_CONTEXT.keyframes); order MUST match that array.
 """
 
@@ -923,43 +924,54 @@ Do not claim you lack information because there are no pictures — the numeric 
 MOTION_CONTEXT (JSON):
 {motion_context}
 
-Return ONLY the same JSON schema as before (total_score, scores, issues, issues_zh, suggestions, suggestions_zh, summary, summary_zh, keyframe_evaluations, training_plan day1-day7).
+Return ONLY the same JSON schema as before (total_score, scores, issues, issues_zh, suggestions, suggestions_zh, summary, summary_zh, keyframe_evaluations, training_plan day1-day7). training_plan: each day "focus" and both "drills" entries MUST be Simplified Chinese.
 """
 
-PROV3_REPORT_LIMITED_PROMPT = """LIMITED TRUST REPORT — Stellar Pro v3 (screen / keyframe verification failed).
+PROV3_REPORT_LIMITED_PROMPT = """BELOW HIGH-TRUST BAR — Stellar Pro v3 (screen / keyframe verification did not reach the studio gate).
 
-The player's video may be from a SCREEN, re-recorded source, or keyframe verification did not reach the high-trust bar.
+You still have MOTION_CONTEXT: phase timestamps, dense_motion_proxy per phase, swing_window_s, fps. Write a **substantive** coaching report from that data — same structure as formal mode. The player should read **what the timeline and proxies suggest**, not a wall of "low trust" disclaimers.
 
-Hard rules:
-1) State clearly that keyframe alignment did NOT pass the high-trust gate. Use exact phrase in Chinese: "关键帧不符，结论受限" and in English: "Key frames did not pass verification; conclusions are limited."
-2) Do NOT write a confident, tour-level definitive report. Hedge every technical claim. Do NOT invent ball flight, clubface aim, or precise angles.
-3) You MAY still give safe practice guidance and filming tips (lighting, full-screen swing video, direct camera capture).
-4) MOTION_CONTEXT JSON is the only numeric source — same phase names as formal mode; remind the reader often that phase timing/labels are not fully trusted.
-5) TRUTH FIRST: If motion data shows no credible swing, say so. If capture/trust flags suggest poor quality, say blur/moiré/untrusted timeline honestly — do not pretend the clip is studio-grade.
+One-line disclosure only (do not repeat "低信任 / limited trust" throughout the prose):
+- Start summary_zh with ONE short sentence, e.g. 「自动关键帧未达最高置信档；下文依据时间线与能量代理。」
+- Start summary with ONE short English sentence with the same meaning.
+- After that, write like a real coach: phase-by-phase observations (Address → … → Finish), concrete issues, and drills. Do not pad summaries with repeated trust warnings.
 
-PER-KEYFRAME (mandatory, same as formal mode):
-- "keyframe_evaluations": EXACTLY one object per row in MOTION_CONTEXT.keyframes, SAME ORDER.
-- Each: {{"phase": "<same as row>", "score": <0-100 conservative>, "action_assessment_en": "1-4 sentences with uncertainty hedges", "action_assessment_zh": "1-4句，标注不确定性"}}
-- Every phase gets a score and text — even when hedging heavily.
+Truth (non-negotiable):
+- Ground claims in MOTION_CONTEXT only. Do NOT invent ball flight, clubface aim, or details that need pixels.
+- If the window is collapsed or proxies show no credible swing, say so **once**, then still give useful tempo, balance, and re-recording guidance.
+- Do NOT claim you "saw" the golfer; infer from numbers only.
+
+PER-KEYFRAME (mandatory):
+- "keyframe_evaluations": EXACTLY one object per MOTION_CONTEXT.keyframes row, SAME ORDER.
+- Each: {{"phase": "<same as row>", "score": <0-100>, "action_assessment_en": "1-4 sentences: what proxy/timing imply", "action_assessment_zh": "1-4句：该阶段能量/间隔说明了什么"}}
+- Avoid repeating "低信任" in every row; at most one mild hedge in the whole array if needed.
+
+training_plan day1–day7:
+- "focus": Chinese training theme.
+- "drills": exactly **two strings, both in Simplified Chinese** (specific cues or steps).
+
+issues / issues_zh / suggestions / suggestions_zh: minimum 3 each; phase-prefixed like formal mode (English phases: Address, Takeaway, … / Chinese: 站姿, 起杆, …).
+
+summary: **380–650 English words** after the opening disclosure line — phase-ordered, concrete.
+summary_zh: **480–800 汉字** after the opening disclosure line — 同样按阶段展开，写清楚数据支撑的结论。
 
 MOTION_CONTEXT (JSON):
 {motion_context}
 
 Return ONLY valid JSON with the SAME schema as formal Pro v3 reports:
 {{
-  "total_score": <0-100 keep conservative, prefer 35-55>,
+  "total_score": <0-100>,
   "scores": {{"grip": <0-100>, "stance": <0-100>, "backswing": <0-100>, "downswing": <0-100>, "follow_through": <0-100>}},
   "issues": ["Phase: ...", "..."],
   "issues_zh": ["阶段：...", "..."],
   "suggestions": ["Phase: ...", "..."],
   "suggestions_zh": ["阶段：...", "..."],
-  "summary": "280-520 words English; must mention limited trust / keyframe failure; say what the data does or does not support",
-  "summary_zh": "400-750 汉字；必须包含「关键帧不符，结论受限」；如实写数据能支撑什么、不能支撑什么",
+  "summary": "...",
+  "summary_zh": "...",
   "keyframe_evaluations": [{{"phase": "address", "score": 0, "action_assessment_en": "...", "action_assessment_zh": "..."}}],
-  "training_plan": {{ "day1": {{"focus": "...", "drills": ["..."], "duration": "30 min"}}, ... day7 }}
+  "training_plan": {{ "day1": {{"focus": "中文主题", "drills": ["中文练习1", "中文练习2"], "duration": "30 min"}}, ... "day7": {{...}} }}
 }}
 
-Minimum 3 items each for issues, issues_zh, suggestions, suggestions_zh. training_plan day1-day7 required.
 keyframe_evaluations length MUST equal len(MOTION_CONTEXT.keyframes).
 """
 

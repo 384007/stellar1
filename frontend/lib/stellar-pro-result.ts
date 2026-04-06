@@ -237,8 +237,14 @@ export function proExpandedToPlusViewModel(r: Record<string, any>): PlusAnalysis
   const day1 = plan && typeof plan === "object" ? Object.values(plan)[0] : undefined;
   /** Gemini / limited 报告可能省略 drills 或非数组 — 避免 `undefined.join` 抛错整页白屏 */
   const drillsArr = day1 && Array.isArray(day1.drills) ? day1.drills : [];
-  const drillZh = drillsArr.filter((x) => String(x ?? "").trim()).join("；");
-  const drillEn = drillsArr.filter((x) => String(x ?? "").trim()).join("; ");
+  const trimmedDrills = drillsArr.map((x) => String(x ?? "").trim()).filter(Boolean);
+  const drillZh = trimmedDrills.join("；");
+  /** Pro v3 训练计划 drills 多为纯中文：英文区用 summary 摘要，避免把中文塞进 description_en */
+  const drillsLatin = trimmedDrills.filter((x) => /[A-Za-z]/.test(x));
+  const drillEn =
+    drillsLatin.length > 0
+      ? drillsLatin.join("; ")
+      : summary.slice(0, 280) || "Follow the report suggestions.";
   const training = {
     title_zh: day1?.focus || "针对性训练",
     title_en: day1?.focus || "Targeted training",

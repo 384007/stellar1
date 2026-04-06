@@ -9,13 +9,14 @@ from services.gemini_service import analyze_prov3_motion_report_only
 
 logger = logging.getLogger(__name__)
 
-LIMITED_NOTICE_ZH = "关键帧不符，结论受限"
-LIMITED_NOTICE_EN = "Key frames did not pass verification; conclusions are limited."
-
 # Minimum bar after pass 1 / pass 2 (aligned with product expectations for screen mode).
 _MIN_SUMMARY_EN_WORDS = 280
 _MIN_SUMMARY_ZH_CHARS = 360
 _MIN_LIST_ITEMS = 3
+
+# Limited mode: slightly lower prose bar; quality judged by length + lists, not a fixed disclaimer phrase.
+_MIN_SUMMARY_EN_WORDS_LIMITED = 200
+_MIN_SUMMARY_ZH_CHARS_LIMITED = 280
 
 _META_KEY = "__prov3_report_meta__"
 
@@ -29,11 +30,19 @@ def _nonempty_str_list(raw: Any) -> list[str]:
 def _report_is_weak_limited(out: dict[str, Any]) -> bool:
     summary_en = str(out.get("summary") or "").strip()
     summary_zh = str(out.get("summary_zh") or "").strip()
-    if LIMITED_NOTICE_ZH not in summary_zh and LIMITED_NOTICE_EN.lower() not in summary_en.lower():
+    if not summary_en or not summary_zh:
+        return True
+    en_words = len(summary_en.split())
+    zh_chars = len(summary_zh.replace(" ", ""))
+    if en_words < _MIN_SUMMARY_EN_WORDS_LIMITED or zh_chars < _MIN_SUMMARY_ZH_CHARS_LIMITED:
         return True
     issues = _nonempty_str_list(out.get("issues"))
     issues_zh = _nonempty_str_list(out.get("issues_zh"))
-    if len(issues) < 2 or len(issues_zh) < 2:
+    sug = _nonempty_str_list(out.get("suggestions"))
+    sug_zh = _nonempty_str_list(out.get("suggestions_zh"))
+    if len(issues) < _MIN_LIST_ITEMS or len(issues_zh) < _MIN_LIST_ITEMS:
+        return True
+    if len(sug) < _MIN_LIST_ITEMS or len(sug_zh) < _MIN_LIST_ITEMS:
         return True
     return False
 
@@ -82,8 +91,8 @@ def _synthetic_keyframe_evaluations(
     if not isinstance(rows, list):
         return []
     out: list[dict[str, Any]] = []
-    lt_en = " Low-trust context: treat phase timing as approximate." if low_trust else ""
-    lt_zh = " 低信任场景下阶段时间线仅供参考。" if low_trust else ""
+    lt_en = " Phase labels follow the pipeline; read proxy and spacing only." if low_trust else ""
+    lt_zh = " 阶段标签以管道为准，请结合能量代理与时间间隔理解。" if low_trust else ""
     for r in rows:
         if not isinstance(r, dict):
             continue
@@ -267,14 +276,20 @@ def build_prov3_fallback_report(motion_context: dict[str, Any]) -> dict[str, Any
     training_plan = {
         f"day{i}": {
             "focus": suggestions_zh[(i - 1) % 4][:80],
-            "drills": [suggestions_zh[(i - 1) % 4][:120], suggestions_en[(i - 1) % 4][:120]],
+            "drills": [
+                suggestions_zh[(i - 1) % 4][:120],
+                suggestions_zh[i % 4][:120],
+            ],
             "duration": "20–30 min",
         }
         for i in range(1, 8)
     }
     training_plan["day7"] = {
         "focus": "复习与录像对比",
-        "drills": ["对照本次触球/送杆/收杆要点回看录像", "Review impact and follow-through spacing"],
+        "drills": [
+            "对照本次触球/送杆/收杆要点回看录像",
+            "用正面与身后视角各录一杆，对比阶段间隔是否更舒展",
+        ],
         "duration": "20 min",
     }
 
@@ -294,70 +309,27 @@ def build_prov3_fallback_report(motion_context: dict[str, Any]) -> dict[str, Any
 
 
 def build_prov3_limited_fallback(motion_context: dict[str, Any]) -> dict[str, Any]:
-    """Deterministic low-trust report when limited-mode Gemini is weak or unavailable."""
-    swing = motion_context.get("swing_window_s") or [0.0, 0.0]
+    """Motion-based report when limited-mode Gemini is weak; one short caveat then substantive coaching."""
+    fb = build_prov3_fallback_report(motion_context)
+    notice_zh = (
+        "【提示】自动关键帧未达最高置信档；下文根据当前挥杆时间线与能量代理撰写，不臆测杆面与球路。"
+        "建议尽量真机直拍、全身入镜、光线稳定。"
+    )
+    notice_en = (
+        "[Note] Keyframe confidence is below the studio bar. "
+        "The coaching below follows the motion timeline and energy proxies only — no face-angle or ball-flight claims. "
+        "Prefer direct camera capture, full body in frame, stable lighting."
+    )
+    fb["summary_zh"] = notice_zh + "\n\n" + str(fb.get("summary_zh") or "").strip()
+    fb["summary"] = notice_en + "\n\n" + str(fb.get("summary") or "").strip()
+    fb["ai_provider"] = "prov3_limited_fallback"
     try:
-        w0, w1 = float(swing[0]), float(swing[1])
-    except (TypeError, ValueError, IndexError):
-        w0, w1 = 0.0, 0.0
-    fps = float(motion_context.get("fps") or 240.0)
-    summary_en = (
-        f"{LIMITED_NOTICE_EN} This clip was processed in screen / re-capture mode. "
-        f"Automated keyframe verification did not reach the 90-point bar on all core phases, "
-        f"so phase timing in the motion summary (≈{fps:.0f} fps, window {w0:.3f}s–{w1:.3f}s) must be treated as approximate only. "
-        "Do not treat this like a high-confidence studio analysis. "
-        "Prefer re-recording with the camera aimed directly at the golfer, full body in frame, stable exposure, and minimal moiré. "
-        "Until then, keep practice cues general: tempo, balance, and filming hygiene — not precise impact or face-angle claims."
-    )
-    summary_zh = (
-        f"{LIMITED_NOTICE_ZH}。本次为屏幕/翻拍链路，核心关键帧 AI 校验未全部达到 90 分门槛，"
-        f"motion summary（约 {fps:.0f} fps，窗口 {w0:.3f}–{w1:.3f} 秒）仅作参考，不得当作高置信结论。"
-        "建议改用真机直拍：全身入镜、光线稳定、减少摩尔纹与反光后再做正式分析。"
-        "在重拍前，练习重点保持保守：节奏、重心与拍摄方式，避免对触球细节作过度推断。"
-    )
-    issues_en = [
-        "Address: setup cannot be trusted at high confidence — re-film with direct camera capture before fine tuning.",
-        "Impact: screen-capture keyframes failed verification; do not infer strike quality from this report.",
-        "Finish: use balanced finish holds as a general cue only until a trusted capture is available.",
-    ]
-    issues_zh = [
-        "站姿：当前为低信任报告，站位细节不宜过度解读，请改真机直拍后再细调。",
-        "触球：关键帧未通过高信任校验，勿据此推断触球质量。",
-        "收杆：仅作一般性平衡提示，待高信任素材后再深入。",
-    ]
-    sug_en = [
-        "Takeaway: film face-on and down-the-line at native resolution; avoid recording a playing video on a monitor.",
-        "Top: if you must use screen mode, maximize the swing video within the frame and reduce UI overlays.",
-        "Downswing: alternate 5 slow rehearsal swings without ball, then one smooth swing with ball when lighting is stable.",
-    ]
-    sug_zh = [
-        "起杆：尽量正面与身后双视角直拍，避免翻拍屏幕。",
-        "顶点：若必须用屏幕模式，请放大挥杆画面并减少界面干扰。",
-        "下杆：无球慢节奏重复 5 次再击球，保持光线稳定。",
-    ]
-    sub = 48
-    scores = {"grip": sub, "stance": sub, "backswing": sub, "downswing": sub, "follow_through": sub}
-    training_plan = {
-        f"day{i}": {
-            "focus": "低信任期：以拍摄与节奏为主",
-            "drills": [sug_zh[(i - 1) % 3][:100], sug_en[(i - 1) % 3][:100]],
-            "duration": "20 min",
-        }
-        for i in range(1, 8)
-    }
-    return {
-        "total_score": sub,
-        "scores": scores,
-        "issues": issues_en,
-        "issues_zh": issues_zh,
-        "suggestions": sug_en,
-        "suggestions_zh": sug_zh,
-        "summary": summary_en,
-        "summary_zh": summary_zh,
-        "keyframe_evaluations": _synthetic_keyframe_evaluations(motion_context, low_trust=True),
-        "training_plan": training_plan,
-        "ai_provider": "prov3_limited_fallback",
-    }
+        ts = int(fb.get("total_score") or 58)
+    except (TypeError, ValueError):
+        ts = 58
+    fb["total_score"] = int(max(45, min(72, ts - 5)))
+    fb["keyframe_evaluations"] = _synthetic_keyframe_evaluations(motion_context, low_trust=True)
+    return fb
 
 
 async def write_prov3_ai_report(
