@@ -181,11 +181,11 @@ async function tryCachedOrHistoryVideoBlob(analysisId: string): Promise<Blob | n
 }
 
 /**
- * History「重新分析」取视频：
- * - 解析相对 / 错源的 prov3 URL（与展示层一致）
- * - **不再**对同一资源先发 HEAD 再 GET（避免 Modal 上出现「两条 media run + 一条 analyze」）
- * - 若首选时间线是易失效的 worker ``/pro-v3/media/…``，先尝试 IndexedDB / 同源历史视频 API，再尝试远程
- * - 否则保持：远程（analysis → video）→ 本地缓存 → 历史 API
+ * History「重新分析」取视频（供再次 **上传** 走分析；尽量减少 Modal worker 上的多余 GET）：
+ * 1. **先** IndexedDB + ``/api/history/video``（与用户当初上传同源，无 worker media run）
+ * 2. 远程 URL：**原始 ``videoUrl`` 优先于** 派生 ``analysisVideoUrl``（避免先拉 240 时间线再拉原片 → 多次 Modal run）
+ * 3. 同一域内 URL：非 ephemeral 的持久链接优先；易失效的 ``/pro-v3/media/…`` worker 放最后、且仅必要时尝试一次
+ * 4. 不再 HEAD+GET；每个 URL 最多一次 GET，首个成功即返回
  *
  * 参数名与历史页 `queueReanalyzeFromHistory` 一致：`videoUrl` / `analysisVideoUrl`。
  */
@@ -194,11 +194,14 @@ export async function fetchVideoBlobForHistoryReanalyze(
   videoUrl?: string,
   analysisVideoUrl?: string,
 ): Promise<Blob | null> {
+  const localFirst = await tryCachedOrHistoryVideoBlob(analysisId);
+  if (localFirst && localFirst.size > 0) return localFirst;
+
   const rawA = (analysisVideoUrl || "").trim();
   const rawV = (videoUrl || "").trim();
   const remoteCandidates: string[] = [];
   const seen = new Set<string>();
-  for (const raw of [rawA, rawV]) {
+  for (const raw of [rawV, rawA]) {
     if (!raw) continue;
     const u = resolveProv3ProductMediaUrl(raw);
     if (!u || seen.has(u)) continue;
@@ -206,13 +209,11 @@ export async function fetchVideoBlobForHistoryReanalyze(
     remoteCandidates.push(u);
   }
 
-  const firstRemote = remoteCandidates[0] || "";
-  if (firstRemote && isEphemeralProv3WorkerMediaUrl(firstRemote)) {
-    const early = await tryCachedOrHistoryVideoBlob(analysisId);
-    if (early) return early;
-  }
+  const stableFirst = remoteCandidates.filter((u) => !isEphemeralProv3WorkerMediaUrl(u));
+  const ephemeralLast = remoteCandidates.filter((u) => isEphemeralProv3WorkerMediaUrl(u));
+  const orderedRemote = [...stableFirst, ...ephemeralLast];
 
-  for (const u of remoteCandidates) {
+  for (const u of orderedRemote) {
     if (!/^https?:\/\//i.test(u) && !u.startsWith("/")) continue;
     try {
       const sig = abortSignalForMs(REMOTE_VIDEO_FETCH_MS);
@@ -231,5 +232,5 @@ export async function fetchVideoBlobForHistoryReanalyze(
     }
   }
 
-  return tryCachedOrHistoryVideoBlob(analysisId);
+  return null;
 }
