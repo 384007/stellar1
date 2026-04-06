@@ -213,6 +213,10 @@ export function proExpandedToPlusViewModel(r: Record<string, any>): PlusAnalysis
         : undefined,
     /** Preserved for history / PlusResultView Prov3 interactive keyframe branch */
     pipeline: typeof r.pipeline === "string" ? r.pipeline : undefined,
+    keyframes_strip:
+      r.keyframes_strip && typeof r.keyframes_strip === "object" && !Array.isArray(r.keyframes_strip)
+        ? (r.keyframes_strip as PlusAnalysisResult["keyframes_strip"])
+        : undefined,
   };
 }
 
@@ -291,5 +295,7 @@ export function expandStellarProForUi(raw: Record<string, any>): Record<string, 
     routing_execution: raw.routing_execution,
     screen_keyframe_audit: raw.screen_keyframe_audit,
     prov3_debug: raw.prov3_debug,
+    pipeline: raw.pipeline,
+    keyframes_strip: raw.keyframes_strip,
   };
 }

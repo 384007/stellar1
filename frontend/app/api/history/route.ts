@@ -115,6 +115,9 @@ function mapKeyframeForStorage(
     fallback_used: kf.fallback_used,
     source_pose_idx: kf.source_pose_idx,
     source_frame_index: kf.source_frame_index,
+    prov3_event_name: kf.prov3_event_name,
+    analysis_fps: typeof kf.analysis_fps === "number" ? kf.analysis_fps : undefined,
+    keyframe_source: typeof kf.keyframe_source === "string" ? kf.keyframe_source : undefined,
     visual_diff_from_prev: kf.visual_diff_from_prev,
     phase_validation_passed: kf.phase_validation_passed,
     reselected: kf.reselected,
@@ -195,6 +198,14 @@ function buildStorageCompact(result: Record<string, unknown>, stage: CompactStag
       result.phase_keyframes && typeof result.phase_keyframes === "object"
         ? result.phase_keyframes
         : undefined,
+    pipeline: typeof result.pipeline === "string" ? result.pipeline : undefined,
+    keyframes_strip:
+      result.keyframes_strip && typeof result.keyframes_strip === "object"
+        ? result.keyframes_strip
+        : undefined,
+    prov3: result.prov3 && typeof result.prov3 === "object" ? result.prov3 : undefined,
+    _prov3_motion:
+      result._prov3_motion && typeof result._prov3_motion === "object" ? result._prov3_motion : undefined,
     phase_source: result.phase_source,
     phase_validation:
       result.phase_validation && typeof result.phase_validation === "object"

@@ -186,10 +186,13 @@ def _probe_video(path: str) -> tuple[float, int, float]:
 
 
 def _build_ui_keyframes(raw_keyframes: list[dict[str, Any]], video_path: str) -> list[dict[str, Any]]:
-    """Decode JPEG strips from the same timeline as Prov3 (``analysis_video`` recommended).
+    """Decode JPEG strips from the **analysis 240 Hz** MP4 (``prov3.analysis_video``).
 
-    Applies **container display rotation** for UI thumbnails only (Prov3-local helpers above).
-    Does not affect A/B inference or ``frame_index`` semantics.
+    SwingNet ``frame_index`` is a **native frame index** into that file. We seek by index directly;
+    OpenCV ``CAP_PROP_FPS`` on minterpolate/H.264 output is often wrong, so ``time_s * fps`` remapping
+    would desync UI strips from true-240 inference.
+
+    Applies **container display rotation** for UI thumbnails only.
     """
     cap = cv2.VideoCapture(video_path)
     opened = cap.isOpened()
@@ -197,11 +200,17 @@ def _build_ui_keyframes(raw_keyframes: list[dict[str, Any]], video_path: str) ->
     if not opened:
         cap.release()
         logger.warning("[PRO_PROV3] cannot open video for thumbnails: %s", video_path)
-        fps, nframes = 30.0, 1
+        nframes = 1
     else:
-        fps = float(cap.get(cv2.CAP_PROP_FPS) or 0.0) or 30.0
         nframes = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
         nframes = max(nframes, 1)
+        fps_cv = float(cap.get(cv2.CAP_PROP_FPS) or 0.0)
+        if fps_cv > 1.0 and abs(fps_cv - ANALYSIS_FPS) > 5.0:
+            logger.warning(
+                "[PRO_PROV3] analysis clip OpenCV fps=%.2f (expect ~%.0f) — using native frame_index seeks",
+                fps_cv,
+                ANALYSIS_FPS,
+            )
 
     order = {name: i for i, name in enumerate(EVENT_SEQUENCE)}
     rows = sorted(raw_keyframes, key=lambda k: order.get(str(k.get("event_name")), 99))
@@ -212,8 +221,7 @@ def _build_ui_keyframes(raw_keyframes: list[dict[str, Any]], video_path: str) ->
         phase = EVENT_NAME_TO_PHASE.get(ev, "address")
         fi = int(k.get("frame_index") or 0)
         time_s = float(fi) / ANALYSIS_FPS
-        src_idx = int(round(time_s * fps))
-        src_idx = max(0, min(src_idx, nframes - 1))
+        src_idx = max(0, min(fi, nframes - 1))
         frame_bgr = None
         if opened:
             frame_bgr = _prov3_thumb_read_frame_bgr(cap, src_idx, rotation)
@@ -230,6 +238,8 @@ def _build_ui_keyframes(raw_keyframes: list[dict[str, Any]], video_path: str) ->
                 "source_pose_idx": src_idx,
                 "confidence": round(conf, 4),
                 "prov3_event_name": ev,
+                "analysis_fps": int(ANALYSIS_FPS),
+                "keyframe_source": "analysis_240",
             }
         )
     if opened:
@@ -309,8 +319,14 @@ def run_pro_video_analyze_via_prov3(
 
     if cancel_check:
         cancel_check()
-    # Same file Prov3 / SwingNet used (240fps timeline, ffmpeg often normalizes orientation).
-    thumb_src = str(prov3.analysis_video or input_video_path).strip() or input_video_path
+    av_path = str(prov3.analysis_video or "").strip()
+    thumb_ok = bool(av_path and Path(av_path).is_file())
+    if not thumb_ok:
+        logger.error(
+            "[PRO_PROV3] analysis_video missing or not on disk — UI strips cannot be aligned to true-240 analysis",
+        )
+    # Prefer analysis_240fps.mp4 (same file as A/B); last resort cleanup path (indices may mismatch).
+    thumb_src = av_path if thumb_ok else input_video_path
     ui_keyframes = _build_ui_keyframes(raw_kfs, thumb_src)
     avg_c = _avg_confidence(ui_keyframes)
     total_score = round(min(100.0, max(0.0, avg_c * 100.0)), 1)
@@ -368,6 +384,11 @@ def run_pro_video_analyze_via_prov3(
         "final_status": status,
         "trust_level": analysis_trust,
         "pipeline": "prov3",
+        "keyframes_strip": {
+            "timeline": "analysis_240" if thumb_ok else "fallback_source",
+            "analysis_fps": int(prov3.analysis_fps or ANALYSIS_FPS),
+            "thumbnails_from_analysis_video": thumb_ok,
+        },
         "summary": summary,
         "summary_zh": summary_zh,
         "total_score": total_score,

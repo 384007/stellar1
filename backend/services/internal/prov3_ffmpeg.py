@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import shutil
 import signal
 import subprocess
@@ -22,6 +23,154 @@ from pathlib import Path
 from typing import Any
 
 logger = logging.getLogger(__name__)
+
+# ffmpeg -i prints "Duration: HH:MM:SS.xx" for many inputs where ffprobe JSON omits stream/format duration (low-bitrate / odd encodes).
+_DURATION_LINE_RE = re.compile(
+    r"Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)\b",
+    re.IGNORECASE,
+)
+
+
+def _parse_hms_duration_token(val: str) -> float:
+    s = (val or "").strip().replace(",", ".")
+    if not s or s.upper() == "N/A":
+        return 0.0
+    parts = s.split(":")
+    if len(parts) == 3:
+        try:
+            return int(parts[0]) * 3600 + int(parts[1]) * 60 + float(parts[2])
+        except ValueError:
+            return 0.0
+    try:
+        x = float(s)
+        return x if x > 0 else 0.0
+    except ValueError:
+        return 0.0
+
+
+def _duration_from_tags(tags: Any) -> float:
+    if not isinstance(tags, dict):
+        return 0.0
+    best = 0.0
+    for key, raw in tags.items():
+        lk = str(key).lower()
+        if not isinstance(raw, str):
+            continue
+        if "duration" not in lk and lk not in ("length", "media_length", "playback_length"):
+            continue
+        best = max(best, _parse_hms_duration_token(raw))
+    return best
+
+
+def _duration_from_ffmpeg_stderr(text: str) -> float:
+    m = _DURATION_LINE_RE.search(text or "")
+    if not m:
+        return 0.0
+    try:
+        hh, mm, ss = m.group(1), m.group(2), m.group(3)
+        return int(hh) * 3600 + int(mm) * 60 + float(ss)
+    except ValueError:
+        return 0.0
+
+
+def _ffprobe_supplement_duration_from_tags(path: str, pb: str) -> float:
+    cmd = [
+        pb,
+        "-v",
+        "error",
+        "-select_streams",
+        "v:0",
+        "-show_entries",
+        "stream_tags",
+        "-show_entries",
+        "format_tags",
+        "-of",
+        "json",
+        path,
+    ]
+    try:
+        out = subprocess.run(cmd, capture_output=True, text=True, timeout=90, check=False)
+    except subprocess.TimeoutExpired:
+        logger.warning("[prov3][ffprobe] tag probe timeout path=%s", path)
+        return 0.0
+    if out.returncode != 0:
+        return 0.0
+    try:
+        data = json.loads(out.stdout or "{}")
+    except json.JSONDecodeError:
+        return 0.0
+    streams = data.get("streams") or []
+    fmt = data.get("format") or {}
+    d = 0.0
+    if streams and isinstance(streams[0], dict):
+        d = max(d, _duration_from_tags(streams[0].get("tags")))
+    if isinstance(fmt, dict):
+        d = max(d, _duration_from_tags(fmt.get("tags")))
+    if d > 0:
+        logger.info("[prov3][ffprobe] duration from container/stream tags: %.3fs", d)
+    return d
+
+
+def _duration_from_ffmpeg_input_banner(path: str) -> float:
+    try:
+        exe = ffmpeg_bin()
+    except FFmpegNotFoundError:
+        return 0.0
+    try:
+        proc = subprocess.run(
+            [exe, "-hide_banner", "-nostdin", "-i", path],
+            capture_output=True,
+            text=True,
+            timeout=90,
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        logger.warning("[prov3][ffprobe] ffmpeg -i banner probe timeout path=%s", path)
+        return 0.0
+    blob = (proc.stderr or "") + (proc.stdout or "")
+    d = _duration_from_ffmpeg_stderr(blob)
+    if d > 0:
+        logger.info("[prov3][ffprobe] duration from ffmpeg demuxer banner: %.3fs", d)
+    return d
+
+
+def _coalesce_duration_seconds(
+    path: str,
+    pb: str | None,
+    dur_s: float,
+    stream0: dict[str, Any] | None,
+    fmt: dict[str, Any] | None,
+) -> float:
+    """Fill missing/zero duration for low-quality or thin-metadata uploads (enables minterpolate gates)."""
+    if dur_s > 0:
+        return dur_s
+    if stream0:
+        d_tags = _duration_from_tags(stream0.get("tags"))
+        if d_tags > 0:
+            logger.info("[prov3][ffprobe] duration from primary probe stream tags: %.3fs", d_tags)
+            return d_tags
+    if fmt:
+        d_tags = _duration_from_tags(fmt.get("tags"))
+        if d_tags > 0:
+            logger.info("[prov3][ffprobe] duration from primary probe format tags: %.3fs", d_tags)
+            return d_tags
+    if pb:
+        d2 = _ffprobe_supplement_duration_from_tags(path, pb)
+        if d2 > 0:
+            return d2
+    d3 = _duration_from_ffmpeg_input_banner(path)
+    if d3 > 0:
+        return d3
+    try:
+        ocv = ffprobe_video_meta_opencv(path)
+        oc_d = float(ocv.get("duration_s") or 0.0)
+    except Exception as exc:
+        logger.warning("[prov3][ffprobe] OpenCV duration fallback failed: %s", exc)
+        return 0.0
+    if oc_d > 0:
+        logger.info("[prov3][ffprobe] duration from OpenCV frame_count/fps: %.3fs", oc_d)
+        return oc_d
+    return 0.0
 
 
 class FFmpegNotFoundError(RuntimeError):
@@ -143,6 +292,8 @@ def ffprobe_video_meta_opencv(path: str) -> dict[str, Any]:
         dur_s = nb_frames / fps
     if fps <= 0.0:
         fps = 30.0
+    if dur_s <= 0:
+        dur_s = _duration_from_ffmpeg_input_banner(path)
 
     return {
         "width": w,
@@ -168,7 +319,11 @@ def ffprobe_video_meta(path: str) -> dict[str, Any]:
         "-show_entries",
         "stream=width,height,nb_frames,r_frame_rate,avg_frame_rate,duration",
         "-show_entries",
+        "stream_tags",
+        "-show_entries",
         "format=duration",
+        "-show_entries",
+        "format_tags",
         "-of",
         "json",
         path,
@@ -202,7 +357,21 @@ def ffprobe_video_meta(path: str) -> dict[str, Any]:
             return 0.0
 
     fps = _parse_rate(s0.get("r_frame_rate")) or _parse_rate(s0.get("avg_frame_rate"))
-    dur_s = float(s0.get("duration") or fmt.get("duration") or 0.0)
+
+    def _safe_stream_duration(raw: Any) -> float:
+        if raw is None or raw == "":
+            return 0.0
+        s = str(raw).strip()
+        if s.upper() in ("N/A", "NAN"):
+            return 0.0
+        try:
+            x = float(s)
+            return x if x > 0 else 0.0
+        except (ValueError, TypeError):
+            return 0.0
+
+    dur_s = max(_safe_stream_duration(s0.get("duration")), _safe_stream_duration(fmt.get("duration")))
+    dur_s = _coalesce_duration_seconds(path, pb, dur_s, s0, fmt)
     nb = s0.get("nb_frames")
     try:
         nb_frames = int(nb) if nb and str(nb).isdigit() else 0

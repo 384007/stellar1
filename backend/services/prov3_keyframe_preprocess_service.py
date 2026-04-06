@@ -28,7 +28,7 @@ def run_preprocess(
     后端顺序（**先得到清洗后的源时间轴视频，再强制 240Hz 分析时间轴**）：
 
     1. **cleanup_video** — 缩放、轻去噪、H.264；``screen_mode`` 时额外 ``setsar=1``（拍屏常见 SAR 问题）。
-    2. **build_analysis_timeline** — 在清洗产物上生成 **恒定 240fps** 分析用 MP4（有 ``minterpolate`` 则 MCI，否则 ``fps=240``）。
+    2. **build_analysis_timeline** — 在清洗产物上生成 **恒定 240fps** 分析用 MP4（默认始终 ``minterpolate`` / MCI；缺滤镜且未开快轨则报错；快轨为 ``fps=240`` dup）。
     3. **generate_analysis_frames** — 在 240 分析视频上均匀抽帧 → ``analysis_frames`` / 增强局部帧。
 
     之后 A/B（SwingNet）只吃 **第 2 步产出的 240 分析视频** 与第 3 步的帧列表，不再区分「是否拍屏」分支。

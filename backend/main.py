@@ -423,9 +423,9 @@ async def health_check():
     _allow_mci_modal = _env_truthy("STELLAR_PROV3_ALLOW_MINTERPOLATE_ON_MODAL")
     _modal_skip_mci = _explicit_rt == "modal" and not _allow_mci_modal
     try:
-        _mci_max_s = float(os.getenv("STELLAR_PROV3_MINTERPOLATE_MAX_DURATION_S") or "45")
+        _mci_timeout = max(60, int(os.getenv("STELLAR_PROV3_MINTERPOLATE_TIMEOUT_S") or "3600"))
     except ValueError:
-        _mci_max_s = 45.0
+        _mci_timeout = 3600
 
     _ff_ok = False
     _mci = False
@@ -464,7 +464,7 @@ async def health_check():
             "analyze_single_flight": prov3_analyze_single_flight_active(),
             "analyze_single_flight_env": "STELLAR_PROV3_ANALYZE_SINGLE_FLIGHT=0 disables lock (concurrent analyze; OOM risk on Modal).",
             "analyze_in_flight": prov3_analyze_in_flight_count(),
-            "analyze_cancel": "POST /pro-v3/analyze/cancel — cooperative stop for current worker run",
+            "analyze_cancel": "POST /pro-v3/analyze/cancel - cooperative stop for current worker run",
             "video": {
                 "target_analysis_fps": 240,
                 "pipeline": "cleanup -> analysis_240fps_timeline (minterpolate when available) -> frame_enhance",
@@ -476,8 +476,9 @@ async def health_check():
                     "allow_minterpolate_on_modal": _allow_mci_modal,
                     "modal_would_skip_mci": _modal_skip_mci,
                     "env_allows_minterpolate": (not _fast_240) and (not _modal_skip_mci),
-                    "minterpolate_max_duration_s": _mci_max_s,
-                    "note": "Unknown duration or duration > max still uses fps=dup; ffmpeg must expose minterpolate filter.",
+                    "minterpolate_timeout_s": _mci_timeout,
+                    "true_240_always_mci_when_eligible": True,
+                    "note": "No input-duration cap: when eligible, pipeline uses minterpolate or raises if filter missing. Tune STELLAR_PROV3_MINTERPOLATE_TIMEOUT_S for long clips.",
                 },
             },
             "ab_weights": {

@@ -23,7 +23,7 @@ MMAction2 + MMPose + extras: `backend/requirements-modal.txt` (no torch/ultralyt
   Optional volume: `/models/tsn_kinetics400.pth` (and matching config name) overrides baked weights.
 
 ASGI entry: ``main:app``. Pro v3 路由均在 ``/pro-v3`` 下：``POST /pro-v3/analyze``、``GET /pro-v3/media/...``、``POST /pro-v3/keyframes/*``（见 ``routers.prov3_api``）。``STELLAR_MODAL_PRO_V3_ONLY=1`` 时不加载旧 ``/stellar-pro/analyze``。
-``fastapi_app`` 使用 ``cpu=2``、``timeout=3600``。Worker 启动时 **强制** ``STELLAR_PROV3_USE_FAST_240FPS=0``、``STELLAR_PROV3_ALLOW_MINTERPOLATE_ON_MODAL=1``（真 240 / MCI；Modal Secret 中同名变量会被覆盖）。片长仍受 ``STELLAR_PROV3_MINTERPOLATE_MAX_DURATION_S`` 限制（默认 45s）；更长片段走 ``fps=240`` dup。若需 dup 轨须改 ``modal_app.py`` 或业务逻辑。
+``fastapi_app`` 使用 ``cpu=2``、``timeout=3600``。Worker 启动时 **强制** ``STELLAR_PROV3_USE_FAST_240FPS=0``、``STELLAR_PROV3_ALLOW_MINTERPOLATE_ON_MODAL=1``（真 240 / MCI；Modal Secret 中同名变量会被覆盖）。``video_240fps_service`` 对 **所有** 输入在可用时均走 ``minterpolate``（无片长上限）；超长素材可调 ``STELLAR_PROV3_MINTERPOLATE_TIMEOUT_S``（默认 3600s）。若需 dup 轨须设 ``STELLAR_PROV3_USE_FAST_240FPS=1``（需改代码取消 Modal 强制覆盖，或另行部署）。
 """
 from __future__ import annotations
 
@@ -299,7 +299,7 @@ def fastapi_app():
     if "STELLAR_PROV3_ANALYZE_SINGLE_FLIGHT" not in os.environ:
         os.environ["STELLAR_PROV3_ANALYZE_SINGLE_FLIGHT"] = "0"
     # True 240 (MCI): always on for this worker — overrides Modal Secret if those keys were set (dup/sample needs a code change).
-    # Clips longer than STELLAR_PROV3_MINTERPOLATE_MAX_DURATION_S still use fps=dup (see video_240fps_service).
+    # True MCI for all inputs when minterpolate exists (see video_240fps_service); long jobs: STELLAR_PROV3_MINTERPOLATE_TIMEOUT_S.
     os.environ["STELLAR_PROV3_USE_FAST_240FPS"] = "0"
     os.environ["STELLAR_PROV3_ALLOW_MINTERPOLATE_ON_MODAL"] = "1"
     _wire_stellar_model_paths()

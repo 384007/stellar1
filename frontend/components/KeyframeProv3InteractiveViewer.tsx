@@ -104,6 +104,12 @@ export interface KeyframeLike {
 interface Props {
   analysisId: string;
   keyframes: KeyframeLike[];
+  /** 与历史 / API 同步：条图是否来自 analysis_240 文件 */
+  stripMeta?: {
+    timeline?: string;
+    analysis_fps?: number;
+    thumbnails_from_analysis_video?: boolean;
+  };
   activeIndex: number;
   onActiveIndexChange: (i: number) => void;
   lang: "en" | "zh";
@@ -118,6 +124,7 @@ interface Props {
 export default function KeyframeProv3InteractiveViewer({
   analysisId,
   keyframes,
+  stripMeta,
   activeIndex,
   onActiveIndexChange,
   lang,
@@ -690,6 +697,15 @@ export default function KeyframeProv3InteractiveViewer({
             {lang === "zh" ? frame.label_zh : frame.label_en}
           </span>
           <span className="text-[9px] tabular-nums text-white/25">{activeIndex + 1} / {keyframes.length}</span>
+          {stripMeta?.timeline === "analysis_240" && stripMeta.thumbnails_from_analysis_video !== false ? (
+            <span className="max-w-[90%] text-[8px] leading-tight text-emerald-400/75">
+              {lang === "zh" ? "条图来自 240Hz 分析轨（与引擎一致）" : "Strips: 240 Hz analysis timeline (engine-aligned)"}
+            </span>
+          ) : stripMeta?.timeline === "fallback_source" ? (
+            <span className="max-w-[90%] text-[8px] leading-tight text-amber-300/80">
+              {lang === "zh" ? "条图可能未对齐分析轨（缺 analysis 文件）" : "Strips may not match analysis track"}
+            </span>
+          ) : null}
         </div>
       </div>
     </div>
