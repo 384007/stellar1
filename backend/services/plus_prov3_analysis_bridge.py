@@ -128,6 +128,7 @@ def run_plus_prov3_keyframe_bridge(
         work_dir,
         screen_mode=screen_mode,
         cancel_check=cancel_check,
+        plus_fast_b=True,
     )
     dumped = prov3.model_dump(exclude={"analysis_video", "analysis_fps", "source_fps"})
     raw_kfs = [dict(x) for x in (dumped.get("keyframes") or [])]

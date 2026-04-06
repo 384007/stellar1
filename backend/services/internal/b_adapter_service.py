@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from typing import Dict, List, Optional, Sequence
 
 from lib.prov3.keyframes.constants import EVENT_SEQUENCE
@@ -230,6 +231,7 @@ def _refine_core_triplet(
     available_frames: set[int],
     *,
     wide: bool = False,
+    max_triplet_product: int | None = None,
 ) -> List[Dict[str, object]]:
     out = [dict(x) for x in rows]
     top = _event_item(out, "Top")
@@ -256,6 +258,14 @@ def _refine_core_triplet(
         _triplet_product,
         wide,
     )
+    cap = max_triplet_product
+    if cap is not None and _triplet_product > int(cap):
+        logger.warning(
+            "[prov3][B] core_triplet product=%d exceeds max_triplet_product=%s — skip brute-force (return anchors)",
+            _triplet_product,
+            cap,
+        )
+        return out
 
     def _semantic_bonus(t: int, m: int, i: int) -> float:
         # Encourage a real core-event structure instead of uniform spreading.
@@ -322,6 +332,7 @@ def refine_with_b_layer(
     confidence: Optional[Dict[str, float]] = None,
     fail_reasons: Optional[List[str]] = None,
     recovery_pass: bool = False,
+    plus_fast: bool = False,
 ) -> List[Dict[str, object]]:
     """B-path refinement with event-focused local re-targeting.
 
@@ -374,7 +385,15 @@ def refine_with_b_layer(
 
         out.append(cloned)
 
-    out = _refine_core_triplet(out, available_frames, wide=recovery_pass)
+    max_tp: int | None = None
+    if plus_fast:
+        max_tp = int(os.getenv("STELLAR_PROV3_PLUS_B_MAX_TRIPLET", "250000"))
+    out = _refine_core_triplet(
+        out,
+        available_frames,
+        wide=recovery_pass,
+        max_triplet_product=max_tp,
+    )
     out = _refine_finish_after_impact(out, available_frames)
     out = _enforce_event_spacing(out)
     logger.info("[prov3][B] refine pass done recovery=%s", recovery_pass)

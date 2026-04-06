@@ -3,6 +3,7 @@ import logging
 import os
 import shutil
 import tempfile
+import threading
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
@@ -38,8 +39,7 @@ def _stellar_modal_upload_echo(route: str, request: Request) -> None:
 router = APIRouter()
 
 # Wall-clock caps for CPU / IO stages (vision AI caps live in gemini_service).
-_PLUS_POSE_UNIFORM_TIMEOUT_S = 420.0
-_PLUS_PHASE_DETECT_OUTER_S = float(os.getenv("STELLAR_PLUS_PHASE_OUTER_S", "105"))
+_PLUS_POSE_TIMEOUT_S = float(os.getenv("STELLAR_PLUS_POSE_TIMEOUT_S", "420"))
 _PLUS_PROV3_KEYFRAME_OUTER_S = float(os.getenv("STELLAR_PLUS_PROV3_OUTER_S", "600"))
 
 
@@ -165,12 +165,6 @@ async def _timed_plus_stage(name: str, awaitable, timeout_s: float):
     return r
 
 
-def _extract_uniform_16_plus(tmp_path: str):
-    from services.keyframe_service import extract_all_frames_base64_with_indices
-
-    return extract_all_frames_base64_with_indices(tmp_path, 16, 384)
-
-
 def _load_services():
     from services.gemini_service import analyze_swing_plus
     from services.hud_service import generate_hud_data
@@ -292,27 +286,20 @@ async def analyze_plus(
 
         from services.swing_flow_utils import (
             detect_swing_phases,
-            get_phase_keyframes,
-            map_gemini_uniform_indices_to_pose_indices,
             compute_wrist_trajectory,
-            validate_phase_keyframes,
             compute_phase_evaluations_reliable,
             assess_gemini_uniform_map_vs_final_phase_strip,
             build_phase_boundary_flags,
         )
-        from services.plus_pipeline_orchestrator import load_detections_and_tracks, load_phase_segment_bundle
-        from services.phase_segment_service import compact_phase_c_context_for_plus_prompt
         from services.biomech_validation_service import validate_phase_chain_hard
         from services.internal.prov3_ffmpeg import FFmpegNotFoundError
         from services.plus_prov3_analysis_bridge import run_plus_prov3_keyframe_bridge
         from services.api_pack_service import pack_plus_response
-        from services.motion_3d_service import lift_motion_3d
         from services.custom_landmark_training_service import run_research_refine
         from services.handedness_service import detect_handedness
         from services.gemini_service import (
             analyze_plus_visual_observation,
             cap_confidence,
-            detect_phases_from_frames,
             PLUS_AI_TIMEOUT_S,
         )
         from services.pose_service import pose_for_skeleton_render
@@ -323,117 +310,84 @@ async def analyze_plus(
 
         loop = asyncio.get_event_loop()
 
-        # Stage 1: parallel — pose extraction + uniform frame extraction (with exact video indices per thumbnail)
-        pose_stream_future = loop.run_in_executor(_executor, _extract_pose_stream_plus, tmp_path, 45)
-        uniform_future = loop.run_in_executor(_executor, _extract_uniform_16_plus, tmp_path)
-        pose_stream_bundle, (uniform_frames, ai_video_frames_for_gemini) = await _timed_plus_stage(
-            "pose_extraction+uniform_frames",
-            asyncio.gather(pose_stream_future, uniform_future),
-            _PLUS_POSE_UNIFORM_TIMEOUT_S,
+        disconnected = threading.Event()
+
+        async def _watch_plus_client_disconnect() -> None:
+            try:
+                while not disconnected.is_set():
+                    if await request.is_disconnected():
+                        disconnected.set()
+                        return
+                    await asyncio.sleep(0.25)
+            except asyncio.CancelledError:
+                disconnected.set()
+                raise
+
+        def _plus_prov3_cancel_check() -> None:
+            if disconnected.is_set():
+                raise RuntimeError("plus_client_disconnected")
+
+        pose_stream_bundle = await _timed_plus_stage(
+            "pose_extraction",
+            loop.run_in_executor(_executor, _extract_pose_stream_plus, tmp_path, 45),
+            _PLUS_POSE_TIMEOUT_S,
         )
         poses = pose_stream_bundle.get("poses", [])
         pose_quality_bundle = pose_stream_bundle.get("pose_quality_bundle", {})
         pose_stream_meta = pose_stream_bundle
         t1 = time.time()
         logger.info(
-            "[PLUS] pose_uniform summary: wall_since_start=%.1fs poses=%d uniform=%d",
+            "[PLUS] pose_only summary: wall_since_start=%.1fs poses=%d",
             t1 - t0,
             len(poses),
-            len(uniform_frames),
         )
 
         if not poses:
             raise HTTPException(status_code=422, detail="No poses detected. Ensure the golfer is clearly visible.")
-        motion3d_bundle = lift_motion_3d(poses)
-        if not bool(motion3d_bundle.get("enabled")):
-            logger.warning(
-                "[PLUS] Motion3D unavailable status=%s — continuing without 3D lift",
-                motion3d_bundle.get("status"),
-            )
 
-        # Stage 2: Gemini uniform thumbnails = observation-only (NOT authoritative for product keyframes).
-        gemini_phase_task = asyncio.create_task(detect_phases_from_frames(uniform_frames, region="global"))
-        det_bundle, tracks = load_detections_and_tracks(tmp_path, poses)
         logger.info(
             "[ROLE=POSE_BACKEND] active=%s requested=%s",
             str((pose_stream_meta.get("provider_meta") or {}).get("active_backend") or "mediapipe"),
             str((pose_stream_meta.get("provider_meta") or {}).get("requested_backend") or "mediapipe"),
         )
-        logger.info("[ROLE=YOLO11] status=%s enabled=%s detections=%d", str(det_bundle.get("status")), bool(det_bundle.get("enabled")), len(det_bundle.get("detections") or []))
-        if not bool(det_bundle.get("enabled")):
-            plus_degraded_flags.append("DETECTION_BACKEND_OFF")
-            logger.warning(
-                "[PLUS_PIPELINE] YOLO11 unavailable status=%s — continuing 200 pose/kinematic (no_fake_detections)",
-                det_bundle.get("status"),
-            )
-        logger.info(
-            "[ROLE=BYTETRACK] status=%s person=%d club=%d ball=%d",
-            str(tracks.get("status")),
-            len(tracks.get("person_tracks") or []),
-            len(tracks.get("club_tracks") or []),
-            len(tracks.get("ball_tracks") or []),
-        )
-        optional_modules = {
-            "detection_active": bool(det_bundle.get("enabled")),
-            "tracking_active": bool((tracks.get("person_tracks") or tracks.get("club_tracks") or tracks.get("ball_tracks"))),
-            "yolo11_degraded": bool(det_bundle.get("yolo11_degraded")),
-            "yolo11_status": str(det_bundle.get("status") or ""),
+
+        det_bundle = {
+            "enabled": False,
+            "yolo11_degraded": False,
+            "status": "skipped_plus_prov3_only",
+            "detections": [],
+            "provider_meta": {},
         }
-        phase_debug: dict = {}
-        seg_bundle = load_phase_segment_bundle(
-            poses,
-            tracks=tracks,
-            detections=list(det_bundle.get("detections") or []),
-            motion_3d=list(motion3d_bundle.get("motion_3d") or []),
-            video_path=tmp_path,
-        )
-        phase_c_prompt_ctx = compact_phase_c_context_for_plus_prompt(seg_bundle)
-        swing_phases = seg_bundle.get("swing_phases") or detect_swing_phases(poses)
+        tracks = {
+            "status": "skipped_plus_prov3_only",
+            "person_tracks": [],
+            "club_tracks": [],
+            "ball_tracks": [],
+            "provider_meta": {},
+        }
+        motion3d_bundle = {
+            "enabled": False,
+            "motion_3d": [],
+            "provider_meta": {},
+            "status": "skipped_plus_prov3_only",
+        }
+        optional_modules = {
+            "detection_active": False,
+            "tracking_active": False,
+            "yolo11_degraded": False,
+            "yolo11_status": "skipped_plus_prov3_only",
+        }
+        swing_phases = detect_swing_phases(poses)
+        phase_c_prompt_ctx = {
+            "phase_c_version": "1",
+            "temporal_prior_strength": 0.0,
+            "phase_confidence": {},
+            "phase_boundary_segment_count": 0,
+            "action_backend": {"status": "plus_prov3_only", "name": "none"},
+        }
+        phase_debug: dict = {"plus_single_keyframe_authority": "prov3_bridge"}
 
-        gemini_phases = await _timed_plus_stage(
-            "detect_phases_from_frames",
-            gemini_phase_task,
-            _PLUS_PHASE_DETECT_OUTER_S,
-        )
-
-        coarse_pf = dict(seg_bundle.get("phase_keyframes") or {})
-        kinematic_keyframes = coarse_pf or get_phase_keyframes(swing_phases, poses)
-        kinematic_validation = validate_phase_keyframes(kinematic_keyframes, poses, source="kinematic")
-        gemini_mapped = None
-        gemini_phase_source = "kinematic"
-        if gemini_phases:
-            n_poses = len(poses)
-            n_frames = len(uniform_frames)
-            if ai_video_frames_for_gemini and n_frames == len(ai_video_frames_for_gemini):
-                gemini_mapped = map_gemini_uniform_indices_to_pose_indices(
-                    gemini_phases, ai_video_frames_for_gemini, poses
-                )
-            else:
-                logger.warning(
-                    "[PLUS] AI vf list len %d vs uniform_frames %d — proportional Gemini map (degraded)",
-                    len(ai_video_frames_for_gemini or []),
-                    n_frames,
-                )
-                gemini_mapped = {
-                    pid: min(round(fidx / max(n_frames - 1, 1) * (n_poses - 1)), n_poses - 1)
-                    for pid, fidx in gemini_phases.items()
-                }
-            gemini_validation = validate_phase_keyframes(gemini_mapped, poses, source="gemini")
-            phase_debug["gemini_raw"] = gemini_phases
-            phase_debug["gemini_mapped"] = gemini_mapped
-            phase_debug["gemini_validation"] = gemini_validation
-            phase_debug["kinematic_keyframes"] = kinematic_keyframes
-            phase_debug["kinematic_validation"] = kinematic_validation
-            phase_debug["gemini_validation_issues"] = list(gemini_validation.get("issues") or [])
-            phase_debug["gemini_observed_keyframes"] = dict(gemini_mapped or {})
-            gemini_phase_source = "kinematic" if kinematic_validation["passed"] else "kinematic_degraded"
-        else:
-            phase_debug["kinematic_keyframes"] = kinematic_keyframes
-            phase_debug["kinematic_validation"] = kinematic_validation
-            logger.info("[PLUS] Gemini phase detection returned None (observation-only debug)")
-
-        phase_debug["gemini_observation_only"] = True
-
+        _dc_task = asyncio.create_task(_watch_plus_client_disconnect())
         prov3_work = f"{tmp_path}.prov3_work"
         os.makedirs(prov3_work, exist_ok=True)
         try:
@@ -441,16 +395,31 @@ async def analyze_plus(
                 "plus_prov3_keyframe_chain",
                 loop.run_in_executor(
                     _executor,
-                    partial(run_plus_prov3_keyframe_bridge, tmp_path, prov3_work, poses, screen_mode=False),
+                    partial(
+                        run_plus_prov3_keyframe_bridge,
+                        tmp_path,
+                        prov3_work,
+                        poses,
+                        screen_mode=False,
+                        cancel_check=_plus_prov3_cancel_check,
+                    ),
                 ),
                 _PLUS_PROV3_KEYFRAME_OUTER_S,
             )
         except RuntimeError as exc:
-            raise HTTPException(status_code=422, detail=str(exc)) from exc
+            msg = str(exc)
+            if "plus_client_disconnected" in msg or "disconnected" in msg.lower():
+                raise HTTPException(status_code=503, detail=msg) from exc
+            raise HTTPException(status_code=422, detail=msg) from exc
         except FFmpegNotFoundError as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
         finally:
             shutil.rmtree(prov3_work, ignore_errors=True)
+            _dc_task.cancel()
+            try:
+                await _dc_task
+            except asyncio.CancelledError:
+                pass
 
         keyframes = list(bridge_out["plus_keyframes"])
         kf_validation = dict(bridge_out["kf_validation"])
@@ -475,10 +444,6 @@ async def analyze_plus(
             "analysis_id": prov3_pub.get("analysis_id"),
             "low_trust_preview_only": prov3_pub.get("low_trust_preview_only"),
         }
-        phase_debug["gemini_plus_observation_phase_context"] = {
-            "note": "non_authoritative",
-            "phase_source": gemini_phase_source,
-        }
         phase_debug["prov3_motion"] = dict(bridge_out.get("_prov3_motion") or {})
 
         hard_biomech = validate_phase_chain_hard(poses, phase_keyframes)
@@ -493,7 +458,7 @@ async def analyze_plus(
 
         t_kf = time.time()
         logger.info(
-            "[PLUS] prov3_keyframe_bridge wall_since_uniform=%.2fs keyframes=%d gate_pass=%s",
+            "[PLUS] prov3_keyframe_bridge wall_since_pose=%.2fs keyframes=%d gate_pass=%s",
             t_kf - t1,
             len(keyframes),
             bool(kf_validation.get("final_keyframe_gate_pass")),
@@ -857,8 +822,7 @@ async def analyze_plus(
         _kf_debug_rows = _keyframes_snapshot_pre_partial if partial_mode else keyframes
         _phase_debug_map = _phase_keyframes_snapshot_pre_partial if partial_mode else phase_keyframes
         _gemini_obs_payload: dict[str, Any] = {}
-        _gem_obs_issues = list(phase_debug.get("gemini_validation_issues") or [])
-        _gemini_vision_ok = bool(phase_debug.get("gemini_raw"))
+        _gem_obs_issues: list[str] = []
         _obs_images: list[str] = []
         _obs_labels: list[Optional[str]] = []
         _obs_source = "other_actual_frames"
@@ -870,19 +834,13 @@ async def analyze_plus(
             ]
             _obs_labels = [str(k.get("phase") or "") or None for k in official_keyframes[: len(_obs_images)]]
             _obs_source = "display_keyframes" if product_ready else "degraded_display_keyframes"
-        elif uniform_frames:
-            _obs_images = [str(x or "") for x in uniform_frames[:8] if str(x or "").strip()]
-            _obs_labels = [None for _ in _obs_images]
-            _obs_source = "uniform_frames"
         _labels_trusted = bool(final_gate_pass and phase_evaluations_reliable and not partial_mode and product_ready)
-        if _gemini_vision_ok and _obs_images:
+        if _obs_images:
             logger.info(
-                "[PLUS] gemini_visual_observation_invoked=1 source=%s frames=%d phase_labels_trusted=%s "
-                "gemini_observation_only=%s",
+                "[PLUS] gemini_visual_observation_invoked=1 source=%s frames=%d phase_labels_trusted=%s",
                 _obs_source,
                 len(_obs_images),
                 _labels_trusted,
-                bool(phase_debug.get("gemini_observation_only")),
             )
             _gemini_obs_payload = await _timed_plus_stage(
                 "gemini_visual_observation",
@@ -915,13 +873,10 @@ async def analyze_plus(
                 "validation_issues": _gem_obs_issues,
                 "used_as_authoritative_source": False,
             }
-            if not _gemini_vision_ok:
-                _gemini_obs_payload["skip_reason"] = "gemini_phase_vision_missing"
-            elif not _obs_images:
+            if not _obs_images:
                 _gemini_obs_payload["skip_reason"] = "no_visible_frame_b64"
-        if bool(phase_debug.get("gemini_observation_only")):
-            _gemini_obs_payload["observed_phase_keyframes"] = dict(phase_debug.get("gemini_observed_keyframes") or {})
-            _gemini_obs_payload["used_as_authoritative_source"] = False
+        _gemini_obs_payload["observed_phase_keyframes"] = dict(phase_debug.get("gemini_observed_keyframes") or {})
+        _gemini_obs_payload["used_as_authoritative_source"] = False
         logger.info(
             "[PLUS] gemini_visual_observation_packed=1 available=%s source=%s visible_frames=%d",
             bool(_gemini_obs_payload.get("available")),
@@ -1057,7 +1012,7 @@ async def analyze_plus(
                 "detection_provider": det_bundle.get("provider_meta"),
                 "tracking_provider": tracks.get("provider_meta"),
                 "pose3d_provider": motion3d_bundle.get("provider_meta"),
-                "action_provider": seg_bundle.get("action_provider_meta"),
+                "action_provider": {"status": "plus_prov3_only", "provider_name": "none"},
                 "research_provider": research_bundle.get("provider_meta"),
             },
             "video_meta": {

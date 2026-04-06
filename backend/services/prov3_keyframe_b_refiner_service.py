@@ -32,6 +32,7 @@ def run_b_refine(
     keyframes: List[dict],
     confidence: Dict[str, float],
     fail_reasons: List[str],
+    plus_fast: bool = False,
 ) -> RefineResult:
     try:
         refined = refine_with_b_layer(
@@ -44,6 +45,7 @@ def run_b_refine(
             confidence=confidence,
             fail_reasons=fail_reasons,
             recovery_pass=False,
+            plus_fast=plus_fast,
         )
         max_idx = max((int(x.get("frame_index", 0)) for x in analysis_frames), default=-1)
         if max_idx >= 0:
@@ -51,7 +53,11 @@ def run_b_refine(
                 fi = int(row.get("frame_index", 0))
                 row["frame_index"] = max(0, min(fi, max_idx))
         b_status, b_fail_reasons = run_b_gate(refined, fail_reasons)
-        if b_status != "pass" and _recovery_eligible(b_fail_reasons):
+        if (
+            b_status != "pass"
+            and _recovery_eligible(b_fail_reasons)
+            and not plus_fast
+        ):
             refined2 = refine_with_b_layer(
                 refined,
                 enhanced_local_frames,
@@ -62,6 +68,7 @@ def run_b_refine(
                 confidence=confidence,
                 fail_reasons=fail_reasons,
                 recovery_pass=True,
+                plus_fast=False,
             )
             if max_idx >= 0:
                 for row in refined2:

@@ -21,6 +21,7 @@ def run_keyframe_analyze(
     *,
     screen_mode: bool = False,
     cancel_check: Callable[[], None] | None = None,
+    plus_fast_b: bool = False,
 ) -> AnalyzeResponse:
     if cancel_check:
         cancel_check()
@@ -76,6 +77,7 @@ def run_keyframe_analyze(
         keyframes=[item.model_dump() for item in a_result.keyframes],
         confidence=per_event_confidence([item.model_dump() for item in a_result.keyframes]),
         fail_reasons=a_result.fail_reasons,
+        plus_fast=plus_fast_b,
     )
     logger.info(
         "[prov3][B] %s reasons=%s",
