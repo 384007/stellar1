@@ -18,7 +18,8 @@ def cleanup_video(input_video: str, work_dir: str, *, screen_mode: bool = False)
     ``build_analysis_timeline`` 生成。``screen_mode=True`` 时追加 ``setsar=1``，便于拍屏素材。
 
     分辨率默认限制在 ``STELLAR_PROV3_CLEANUP_MAX_W`` × ``STELLAR_PROV3_CLEANUP_MAX_H``（默认 1280×720）
-    边界框内 ``force_original_aspect_ratio=decrease``，竖屏 1080p 会变为 ~405×720，显著减轻后续 minterpolate CPU。
+    边界框内 ``force_original_aspect_ratio=decrease``，再 ``trunc(iw/2)*2`` 保证宽高为偶数（libx264+yuv420p），
+    竖屏 1080p 约 **404×720**，显著减轻后续 minterpolate CPU。
     """
     Path(work_dir).mkdir(parents=True, exist_ok=True)
     cleaned_video = str(Path(work_dir) / "analysis_cleaned.mp4")
@@ -37,8 +38,12 @@ def cleanup_video(input_video: str, work_dir: str, *, screen_mode: bool = False)
         _max_h = max(240, int(os.getenv("STELLAR_PROV3_CLEANUP_MAX_H") or "720"))
     except ValueError:
         _max_h = 720
-    # Fit inside W×H box (landscape caps width; portrait caps height — fixes 1080×1920 staying full-res)
-    vf = f"scale={_max_w}:{_max_h}:force_original_aspect_ratio=decrease,hqdn3d=4:3:6:4.5"
+    # Fit inside W×H box, then even dimensions (405×720 from decrease breaks libx264 + yuv420p)
+    vf = (
+        f"scale={_max_w}:{_max_h}:force_original_aspect_ratio=decrease,"
+        f"scale=trunc(iw/2)*2:trunc(ih/2)*2,"
+        f"hqdn3d=4:3:6:4.5"
+    )
     if screen_mode:
         vf += ",setsar=1"
 
