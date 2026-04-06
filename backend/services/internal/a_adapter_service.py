@@ -38,7 +38,12 @@ def infer_a_candidates(
             PROV3_A_ENGINE_ID,
             swingnet_checkpoint_path(),
         )
-        kfs = run_swingnet_extract(analysis_video, analysis_id=analysis_id)
+        afps = float((preprocess_meta or {}).get("analysis_fps") or 240)
+        kfs = run_swingnet_extract(
+            analysis_video,
+            analysis_id=analysis_id,
+            analysis_fps=afps,
+        )
         if kfs:
             return kfs
         logger.warning("[prov3][A] %s inference failed — returning empty keyframes", PROV3_A_ENGINE_ID)

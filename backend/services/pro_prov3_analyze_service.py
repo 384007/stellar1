@@ -20,6 +20,7 @@ import cv2
 from PIL import Image, ImageDraw
 
 from lib.prov3.keyframes.constants import EVENT_SEQUENCE
+from services.internal.prov3_ffmpeg import ffmpeg_extract_frames_bgr_by_decode_index, ffprobe_video_meta
 from services.prov3_keyframe_orchestrator_service import run_keyframe_analyze
 
 logger = logging.getLogger(__name__)
@@ -186,64 +187,142 @@ def _probe_video(path: str) -> tuple[float, int, float]:
 
 
 def _build_ui_keyframes(raw_keyframes: list[dict[str, Any]], video_path: str) -> list[dict[str, Any]]:
-    """Decode JPEG strips from the **analysis 240 Hz** MP4 (``prov3.analysis_video``).
+    """Decode JPEG strips from the **true 240fps analysis** MP4 (``prov3.analysis_video``).
 
-    SwingNet ``frame_index`` is a **native frame index** into that file. We seek by index directly;
-    OpenCV ``CAP_PROP_FPS`` on minterpolate/H.264 output is often wrong, so ``time_s * fps`` remapping
-    would desync UI strips from true-240 inference.
-
-    Applies **container display rotation** for UI thumbnails only.
+    Keyframes use **decode frame indices** in that file (same contract as SwingNet / ``generate_analysis_frames``).
+    Time ``t ≈ frame_index / analysis_fps`` (240). **Primary path:** ffmpeg ``select=eq(n,…)`` + rawvideo.
+    **Fallback:** linear remap into OpenCV when the container under-reports frame count or ffmpeg fails.
     """
+    meta_pf: dict[str, Any] = {}
+    try:
+        meta_pf = ffprobe_video_meta(video_path)
+    except Exception as exc:
+        logger.warning("[PRO_PROV3] thumb ffprobe meta failed: %s", exc)
+
+    dur_s = float(meta_pf.get("duration_s") or 0.0)
+    nb_probe = int(meta_pf.get("nb_frames") or 0)
+    w_pf = int(meta_pf.get("width") or 0)
+    h_pf = int(meta_pf.get("height") or 0)
+    fps_pf = float(meta_pf.get("fps") or 0.0)
+
     cap = cv2.VideoCapture(video_path)
     opened = cap.isOpened()
-    rotation = int(_prov3_thumb_container_rotation_degrees(video_path)) if opened else 0
     if not opened:
-        cap.release()
-        logger.warning("[PRO_PROV3] cannot open video for thumbnails: %s", video_path)
-        nframes = 1
-    else:
-        nframes = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
-        nframes = max(nframes, 1)
-        fps_cv = float(cap.get(cv2.CAP_PROP_FPS) or 0.0)
-        if fps_cv > 1.0 and abs(fps_cv - ANALYSIS_FPS) > 5.0:
-            logger.warning(
-                "[PRO_PROV3] analysis clip OpenCV fps=%.2f (expect ~%.0f) — using native frame_index seeks",
-                fps_cv,
-                ANALYSIS_FPS,
-            )
+        logger.warning("[PRO_PROV3] OpenCV cannot open video for thumbnails: %s", video_path)
+    rotation = int(_prov3_thumb_container_rotation_degrees(video_path)) if opened else 0
+    n_cv = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0) if opened else 0
+    fps_cv = float(cap.get(cv2.CAP_PROP_FPS) or 0.0) if opened else 0.0
+    w_cv = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH) or 0) if opened else 0
+    h_cv = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0) if opened else 0
+
+    stream_fps = fps_pf if fps_pf > 1e-6 else (fps_cv if fps_cv > 1e-6 else 30.0)
+    nb_eff = nb_probe
+    if nb_eff <= 0 and dur_s > 0 and stream_fps > 0:
+        nb_eff = max(1, int(round(dur_s * stream_fps)))
+    n_decode_max = max(nb_eff, n_cv, 1)
+    max_di = max(n_decode_max - 1, 0)
+    w_meta = w_pf or w_cv
+    h_meta = h_pf or h_cv
+
+    fi_max = max((int(k.get("frame_index") or 0) for k in raw_keyframes), default=0)
+    timeline_n = max(fi_max + 1, 1)
+    if nb_eff > 0:
+        timeline_n = max(timeline_n, nb_eff)
+    if dur_s > 0:
+        timeline_n = max(timeline_n, int(round(dur_s * ANALYSIS_FPS)))
+
+    nframes = max(n_cv, 1) if opened else 1
+    use_remap = bool(opened and timeline_n >= 8 and nframes + 3 < timeline_n)
+    if use_remap:
+        logger.info(
+            "[PRO_PROV3] thumb OpenCV fallback may remap timeline_n=%s -> opencv_frames=%s "
+            "(ffprobe_nb=%s dur_s=%.3f stream_fps=%.2f)",
+            timeline_n,
+            nframes,
+            nb_probe,
+            dur_s,
+            stream_fps,
+        )
 
     order = {name: i for i, name in enumerate(EVENT_SEQUENCE)}
     rows = sorted(raw_keyframes, key=lambda k: order.get(str(k.get("event_name")), 99))
 
-    out: list[dict[str, Any]] = []
+    per_row: list[tuple[dict[str, Any], int]] = []
     for k in rows:
-        ev = str(k.get("event_name") or "")
-        phase = EVENT_NAME_TO_PHASE.get(ev, "address")
         fi = int(k.get("frame_index") or 0)
-        time_s = float(fi) / ANALYSIS_FPS
-        src_idx = max(0, min(fi, nframes - 1))
-        frame_bgr = None
-        if opened:
-            frame_bgr = _prov3_thumb_read_frame_bgr(cap, src_idx, rotation)
-        b64 = _jpeg_b64_bgr(frame_bgr) if frame_bgr is not None else ""
-        conf = float(k.get("confidence") or 0.0)
-        out.append(
-            {
-                "phase": phase,
-                "label_en": EVENT_LABELS_EN.get(ev, ev or phase),
-                "label_zh": EVENT_LABELS_ZH.get(ev, phase),
-                "timestamp": round(time_s, 4),
-                "image_base64": b64,
-                "source_frame_index": src_idx,
-                "source_pose_idx": src_idx,
-                "confidence": round(conf, 4),
-                "prov3_event_name": ev,
-                "analysis_fps": int(ANALYSIS_FPS),
-                "keyframe_source": "analysis_240",
-            }
-        )
-    if opened:
-        cap.release()
+        # True-240 analysis: frame_index is already the demuxer frame number; clamp to probed range.
+        di = max(0, min(fi, max_di))
+        per_row.append((k, di))
+    uniq_decode = sorted({di for _, di in per_row})
+
+    bgr_map: dict[int, Any] = {}
+    ffmpeg_ok = False
+    if uniq_decode and w_meta > 0 and h_meta > 0:
+        try:
+            bgr_map = ffmpeg_extract_frames_bgr_by_decode_index(
+                video_path,
+                uniq_decode,
+                width=w_meta,
+                height=h_meta,
+                timeout_s=300,
+            )
+            ffmpeg_ok = len(bgr_map) == len(uniq_decode)
+            if not ffmpeg_ok:
+                logger.warning(
+                    "[PRO_PROV3] thumb ffmpeg extract incomplete keys=%s expected=%s",
+                    len(bgr_map),
+                    len(uniq_decode),
+                )
+                bgr_map = {}
+        except Exception as exc:
+            logger.warning("[PRO_PROV3] thumb ffmpeg extract failed, OpenCV fallback: %s", exc)
+            bgr_map = {}
+
+    out: list[dict[str, Any]] = []
+    try:
+        for k, decode_idx in per_row:
+            ev = str(k.get("event_name") or "")
+            phase = EVENT_NAME_TO_PHASE.get(ev, "address")
+            fi = int(k.get("frame_index") or 0)
+            time_s = float(fi) / ANALYSIS_FPS
+            frame_bgr = None
+            src_idx = decode_idx
+            if ffmpeg_ok and decode_idx in bgr_map:
+                frame_bgr = _prov3_thumb_rotate_bgr(bgr_map[decode_idx], rotation)
+            elif opened:
+                if use_remap:
+                    denom = max(timeline_n - 1, 1)
+                    src_idx = int(round(fi * (nframes - 1) / denom))
+                else:
+                    src_idx = fi
+                src_idx = max(0, min(src_idx, nframes - 1))
+                frame_bgr = _prov3_thumb_read_frame_bgr(cap, src_idx, rotation)
+            b64 = _jpeg_b64_bgr(frame_bgr) if frame_bgr is not None else ""
+            conf = float(k.get("confidence") or 0.0)
+            out.append(
+                {
+                    "phase": phase,
+                    "label_en": EVENT_LABELS_EN.get(ev, ev or phase),
+                    "label_zh": EVENT_LABELS_ZH.get(ev, phase),
+                    "timestamp": round(time_s, 4),
+                    "image_base64": b64,
+                    "decode_frame_index": decode_idx,
+                    "source_frame_index": src_idx,
+                    "source_pose_idx": src_idx,
+                    "confidence": round(conf, 4),
+                    "prov3_event_name": ev,
+                    "analysis_fps": int(ANALYSIS_FPS),
+                    "keyframe_source": "analysis_240",
+                }
+            )
+    finally:
+        try:
+            cap.release()
+        except Exception:
+            pass
+    n_ffmpeg = sum(1 for _, d in per_row if ffmpeg_ok and d in bgr_map)
+    if per_row:
+        logger.info("[PRO_PROV3] thumb strips: ffmpeg_frames=%s/%s", n_ffmpeg, len(per_row))
     return out
 
 

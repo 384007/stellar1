@@ -22,6 +22,8 @@ import threading
 from pathlib import Path
 from typing import Any
 
+import numpy as np
+
 logger = logging.getLogger(__name__)
 
 # ffmpeg -i prints "Duration: HH:MM:SS.xx" for many inputs where ffprobe JSON omits stream/format duration (low-bitrate / odd encodes).
@@ -425,6 +427,82 @@ def _sigterm_forward(signum: int, frame: Any) -> None:
         return
     signal.signal(signal.SIGTERM, signal.SIG_DFL)
     os.kill(os.getpid(), signum)
+
+
+def ffmpeg_extract_frames_bgr_by_decode_index(
+    video_path: str,
+    sorted_decode_indices: list[int],
+    *,
+    width: int,
+    height: int,
+    timeout_s: int = 300,
+    label: str = "prov3_thumb_extract",
+) -> dict[int, np.ndarray]:
+    """Exact decoded frames: ``select=eq(n,idx)`` in one ffmpeg pass (pixel-accurate vs OpenCV seek).
+
+    Returns ``decode_index -> HxWx3 uint8 BGR`` (decoder output, same basis as ``cv2.VideoCapture`` read).
+    """
+    if not sorted_decode_indices or width <= 0 or height <= 0:
+        return {}
+    uniq_sorted = sorted({int(i) for i in sorted_decode_indices})
+    expr = "+".join(f"eq(n\\,{i})" for i in uniq_sorted)
+    ensure_sigterm_kills_ffmpeg()
+    cmd = [
+        ffmpeg_bin(),
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-i",
+        video_path,
+        "-vf",
+        f"select='{expr}'",
+        "-vsync",
+        "0",
+        "-f",
+        "rawvideo",
+        "-pix_fmt",
+        "bgr24",
+        "pipe:1",
+    ]
+    proc = subprocess.Popen(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    with _ffmpeg_active_lock:
+        _ffmpeg_active.add(proc)
+    try:
+        raw_out, err = proc.communicate(timeout=timeout_s)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        try:
+            raw_out, err = proc.communicate(timeout=60)
+        except Exception:
+            raw_out, err = b"", b""
+        raise RuntimeError(
+            f"{label} timed out after {timeout_s}s: {(err or b'').decode('utf-8', 'replace')[:2000]}"
+        ) from None
+    finally:
+        with _ffmpeg_active_lock:
+            _ffmpeg_active.discard(proc)
+    if proc.returncode != 0:
+        msg = (err or b"").decode("utf-8", "replace").strip()
+        raise RuntimeError(f"{label} failed (exit {proc.returncode}): {msg[:2000]}")
+    frame_bytes = int(width) * int(height) * 3
+    expected = frame_bytes * len(uniq_sorted)
+    if not raw_out or len(raw_out) < expected:
+        raise RuntimeError(
+            f"{label} short read: got {len(raw_out or b'')} bytes, need {expected} "
+            f"({len(uniq_sorted)} frames @ {width}x{height})"
+        )
+    out: dict[int, np.ndarray] = {}
+    for pos, dec_idx in enumerate(uniq_sorted):
+        chunk = raw_out[pos * frame_bytes : (pos + 1) * frame_bytes]
+        if len(chunk) != frame_bytes:
+            raise RuntimeError(f"{label} frame slice size mismatch at decode_index={dec_idx}")
+        arr = np.frombuffer(chunk, dtype=np.uint8).reshape((height, width, 3)).copy()
+        out[int(dec_idx)] = arr
+    return out
 
 
 def ensure_sigterm_kills_ffmpeg() -> None:

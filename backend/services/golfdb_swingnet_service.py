@@ -3,6 +3,10 @@
 - **A-path:** full-sequence SwingNet logits → eight event keyframes (+ top-k).
 - **B-path:** local probability-peak refinement using A-path caches.
 
+**Timeline:** inference runs on ``analysis_240fps.mp4`` (constant **240fps** from ``build_analysis_timeline``).
+``frame_index`` on each keyframe is the **decoded frame number in that analysis file** (0 … N−1), same as
+``generate_analysis_frames`` / UI strips. Wall-clock time ≈ ``frame_index / 240``.
+
 Weights: baked at ``/opt/stellar-weights`` on Modal image build; volume ``/models``; local ``backend/models/``.
 Non-Modal: auto-download from Google Drive on first model load unless ``STELLAR_SWINGNET_AUTO_DOWNLOAD=0``.
 
@@ -238,26 +242,20 @@ def _run_forward(model: EventDetector, batch: torch.Tensor, device: torch.device
         return F.softmax(full, dim=1).numpy()
 
 
-def _source_to_virtual_frame(sf: int, source_fps: float, analysis_fps: float = 240.0) -> int:
-    return int(round(float(sf) * analysis_fps / max(source_fps, 1e-6)))
-
-
-def _virtual_to_row(
-    virtual: int,
-    source_fps: float,
+def _decode_frame_index_to_row(
+    frame_index: int,
     sample_indices: np.ndarray,
     total_frames: int,
 ) -> int:
-    sf = int(round(virtual * max(source_fps, 1e-6) / 240.0))
-    sf = max(0, min(sf, total_frames - 1))
-    return int(np.argmin(np.abs(sample_indices - sf)))
+    """Map a **decode frame index** in the analysis MP4 to the nearest SwingNet sample row."""
+    hi = max(0, int(total_frames) - 1)
+    di = max(0, min(int(frame_index), hi))
+    return int(np.argmin(np.abs(sample_indices.astype(np.float64) - float(di))))
 
 
 def _keyframes_from_probs(
     probs: np.ndarray,
     sample_indices: np.ndarray,
-    source_fps: float,
-    total_frames: int,
 ) -> list[dict[str, Any]]:
     """Eight events: per-class argmax over time, enforce non-decreasing timeline rows."""
     n_rows = int(probs.shape[0])
@@ -276,7 +274,7 @@ def _keyframes_from_probs(
             top_k.append(
                 {
                     "event_name": event_name,
-                    "frame_index": _source_to_virtual_frame(sf, source_fps),
+                    "frame_index": int(sf),
                     "confidence": round(float(probs[int(j), k]), 4),
                 }
             )
@@ -285,7 +283,7 @@ def _keyframes_from_probs(
         keyframes.append(
             {
                 "event_name": event_name,
-                "frame_index": _source_to_virtual_frame(sf_main, source_fps),
+                "frame_index": int(sf_main),
                 "confidence": conf,
                 "top_k_candidates": top_k,
             }
@@ -299,7 +297,11 @@ def run_swingnet_extract(
     analysis_id: str,
     analysis_fps: float = 240.0,
 ) -> list[dict[str, Any]] | None:
-    """Return Pro v3 A-layer keyframe dicts, or None to signal fallback."""
+    """Return Pro v3 A-layer keyframe dicts, or None to signal fallback.
+
+    ``frame_index`` values are **decode indices** in ``video_path`` (the 240fps analysis MP4).
+    ``analysis_fps`` is accepted for API symmetry with preprocess; indices do not depend on OpenCV fps.
+    """
     _ = analysis_fps
     if not swingnet_enabled():
         return None
@@ -316,7 +318,7 @@ def run_swingnet_extract(
             m = min(probs.shape[0], len(sample_indices))
             probs = probs[:m]
             sample_indices = sample_indices[:m]
-        kfs = _keyframes_from_probs(probs, sample_indices, fps, total)
+        kfs = _keyframes_from_probs(probs, sample_indices)
         with _CTX_LOCK:
             _REFINE_CTX[analysis_id] = {
                 "probs": probs,
@@ -360,7 +362,7 @@ def swingnet_b_refine(
             out.append(dict(item))
             continue
         v = int(item.get("frame_index", 0))
-        row = _virtual_to_row(v, fps, sample_indices, total)
+        row = _decode_frame_index_to_row(v, sample_indices, total)
         lo = max(0, row - window)
         hi = min(t - 1, row + window)
         sub = probs[lo : hi + 1, k]
@@ -369,16 +371,16 @@ def swingnet_b_refine(
         sf = int(sample_indices[row_new])
         conf = round(float(probs[row_new, k]), 4)
         cloned = dict(item)
-        cloned["frame_index"] = _source_to_virtual_frame(sf, fps)
+        cloned["frame_index"] = int(sf)
         cloned["confidence"] = conf
         top_k = list(cloned.get("top_k_candidates") or [])
         if top_k:
             for c in top_k:
                 if str(c.get("event_name")) == str(item.get("event_name")):
-                    ri = _virtual_to_row(int(c.get("frame_index", 0)), fps, sample_indices, total)
+                    ri = _decode_frame_index_to_row(int(c.get("frame_index", 0)), sample_indices, total)
                     ri = max(lo, min(hi, ri))
                     sf2 = int(sample_indices[ri])
-                    c["frame_index"] = _source_to_virtual_frame(sf2, fps)
+                    c["frame_index"] = int(sf2)
                     c["confidence"] = round(float(probs[ri, k]), 4)
         cloned["top_k_candidates"] = top_k
         out.append(cloned)
