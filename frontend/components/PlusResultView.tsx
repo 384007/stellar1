@@ -1733,14 +1733,20 @@ export default function PlusResultView({ result, lang, externalVideoSrc, backend
       }
       if (!cancelled) {
         videoSrcLoaded.current = true;
-        setVideoIdbExhausted(true);
+        const fallback = originalVideoDownloadUrl;
+        if (fallback) {
+          setVideoSrc(fallback);
+          setVideoIdbExhausted(false);
+        } else {
+          setVideoIdbExhausted(true);
+        }
       }
     })();
 
     return () => {
       cancelled = true;
     };
-  }, [activeTab, result.analysis_id, externalVideoSrc]);
+  }, [activeTab, result.analysis_id, externalVideoSrc, originalVideoDownloadUrl]);
 
   useEffect(() => {
     return () => {

@@ -24,6 +24,12 @@ import {
 import { normalizedTotalScoreForStorage } from "@/lib/safe-analysis-score";
 import { patchLocalHistoryVideoR2Key } from "@/lib/history-sync-record";
 import { expandStellarProForUi, proExpandedToPlusViewModel } from "@/lib/stellar-pro-result";
+import { resolveProv3ProductMediaUrl } from "@/lib/prov3-media-url";
+
+/** Survives ``router.replace`` remount to /pro/[id] before localStorage / IndexedDB sync. */
+function proSessionResultKey(analysisId: string): string {
+  return `stellar_pro_session_result_v1_${analysisId}`;
+}
 import { pruneLocalStellarHistoryRecords } from "@/lib/pro-history-retention";
 import {
   fetchVideoBlobForHistoryReanalyze,
@@ -219,6 +225,39 @@ export default function ProPageClient({ deepLinkAnalysisId }: { deepLinkAnalysis
       setProgress(25);
       setError("");
       try {
+        let sessionRaw: string | null = null;
+        try {
+          sessionRaw = sessionStorage.getItem(proSessionResultKey(deepId));
+        } catch {
+          sessionRaw = null;
+        }
+        if (sessionRaw) {
+          try {
+            const parsed = JSON.parse(sessionRaw) as Record<string, unknown>;
+            const data = expandStellarProForUi(parsed) as ProAnalysisResult;
+            if (!cancelled && !analysisInFlightRef.current) {
+              setResult(data);
+              setProgress(100);
+              setStage("results");
+              setResultRenderError(null);
+              const d = data as unknown as Record<string, unknown>;
+              const vu = resolveProv3ProductMediaUrl(
+                String(
+                  d.playback_video_url || d.video_url || d.original_video_url || "",
+                ).trim(),
+              );
+              if (vu.startsWith("http")) {
+                setProVideoSrc(vu);
+              } else {
+                setProVideoSrc(null);
+              }
+            }
+            return;
+          } catch (e) {
+            console.warn("[pro] session result restore failed", e);
+          }
+        }
+
         const loaded = await loadProAnalysisById(deepId, token);
         if (cancelled) return;
         if (analysisInFlightRef.current) {
@@ -242,9 +281,11 @@ export default function ProPageClient({ deepLinkAnalysisId }: { deepLinkAnalysis
         if (loaded.videoBlob && loaded.videoBlob.size > 0) {
           setProVideoSrc(URL.createObjectURL(loaded.videoBlob));
         } else {
-          const vu = String(
-            loaded.raw.playback_video_url || loaded.raw.video_url || loaded.raw.original_video_url || "",
-          ).trim();
+          const vu = resolveProv3ProductMediaUrl(
+            String(
+              loaded.raw.playback_video_url || loaded.raw.video_url || loaded.raw.original_video_url || "",
+            ).trim(),
+          );
           if (vu.startsWith("http")) setProVideoSrc(vu);
         }
       } catch {
@@ -600,13 +641,24 @@ export default function ProPageClient({ deepLinkAnalysisId }: { deepLinkAnalysis
       setProAnalyzeLocked(true);
       if (typeof window !== "undefined" && data.analysis_id) {
         try {
-          window.history.replaceState(null, "", `/pro/${encodeURIComponent(data.analysis_id)}`);
-        } catch {
-          /* ignore */
+          sessionStorage.setItem(proSessionResultKey(data.analysis_id), JSON.stringify(data));
+        } catch (e) {
+          console.warn("[pro] session snapshot before /pro/[id] navigation failed", e);
         }
       }
       if (isVideoBlobForOverlay(blob, filename) && blob.size > 0) {
         setProVideoSrc(URL.createObjectURL(blob));
+      }
+      if (typeof window !== "undefined" && data.analysis_id) {
+        try {
+          router.replace(`/pro/${encodeURIComponent(data.analysis_id)}`);
+        } catch {
+          try {
+            window.history.replaceState(null, "", `/pro/${encodeURIComponent(data.analysis_id)}`);
+          } catch {
+            /* ignore */
+          }
+        }
       }
       // 大 payload：先切结果页再写 localStorage / 同步，避免移动端主线程长时间卡在 JSON.stringify 前看不到 UI
       window.setTimeout(() => {
