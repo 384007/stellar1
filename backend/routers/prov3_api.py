@@ -363,6 +363,9 @@ async def _run_pro_analyze_body(
                     rough_impact_time_s=rough_impact_time_s,
                     cancel_check=prov3_check_cancelled,
                 )
+                # enrich_pro_prov3_response may pop _prov3_motion (e.g. low_trust Gemini skip or pass+Gemini).
+                # Snapshot so analysis_timeline copy + media gate always see the true-240 file path.
+                prov3_motion_snapshot = dict(result.get("_prov3_motion") or {})
                 result = await enrich_pro_prov3_response(result, region="global")
                 analysis_id = str(result.get("analysis_id") or "").strip()
                 if not analysis_id:
@@ -386,7 +389,13 @@ async def _run_pro_analyze_body(
                     shutil.copy2(playback_src, playback_dst)
                     playback_video_url = f"{base}{mp}/media/{analysis_id}/{playback_name}"
 
-                analysis_src = Path(str(result.get("_prov3_motion", {}).get("analysis_video") or ""))
+                analysis_src = Path(
+                    str(
+                        prov3_motion_snapshot.get("analysis_video")
+                        or (result.get("_prov3_motion") or {}).get("analysis_video")
+                        or ""
+                    ).strip()
+                )
                 analysis_video_url = ""
                 if analysis_src.exists() and analysis_src.is_file():
                     analysis_name = f"analysis_timeline{analysis_src.suffix or '.mp4'}"

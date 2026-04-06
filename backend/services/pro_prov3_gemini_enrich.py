@@ -115,23 +115,23 @@ async def enrich_pro_prov3_response(
     from services.prov3_analyze_control import prov3_cancel_requested
 
     if not _prov3_gemini_enabled():
-        minimal.pop("_prov3_motion", None)
+        # Keep _prov3_motion — prov3_api copies analysis_video to media after enrich.
         return minimal
 
     if prov3_cancel_requested():
         logger.info("[PRO_PROV3][GEMINI] skip — cancel requested before enrich")
-        minimal.pop("_prov3_motion", None)
         return minimal
 
     if str(minimal.get("final_status") or "").strip().lower() != "pass":
         logger.info("[PRO_PROV3][GEMINI] skip — final_status=%s", minimal.get("final_status"))
-        minimal.pop("_prov3_motion", None)
+        # Do not pop _prov3_motion — API layer needs analysis_video path for media persistence.
         return minimal
 
     block = minimal.pop("_prov3_motion", None) or {}
     av = str(block.get("analysis_video") or "").strip()
     if not av or not Path(av).is_file():
         logger.warning("[PRO_PROV3][GEMINI] skip — no analysis_video at %s", av or "(empty)")
+        minimal["_prov3_motion"] = block
         return minimal
 
     screen_mode = bool(block.get("screen_mode"))
@@ -142,6 +142,7 @@ async def enrich_pro_prov3_response(
     if not cap.isOpened():
         logger.warning("[PRO_PROV3][GEMINI] skip — cannot open analysis video")
         cap.release()
+        minimal["_prov3_motion"] = block
         return minimal
     try:
         fps_v = float(cap.get(cv2.CAP_PROP_FPS) or analysis_fps)
@@ -189,7 +190,7 @@ async def enrich_pro_prov3_response(
 
     if prov3_cancel_requested():
         logger.info("[PRO_PROV3][GEMINI] skip — cancel requested before AI report")
-        minimal.pop("_prov3_motion", None)
+        minimal["_prov3_motion"] = block
         return minimal
 
     try:
@@ -201,6 +202,7 @@ async def enrich_pro_prov3_response(
         meta = pop_prov3_report_meta(rep)
     except Exception as exc:
         logger.exception("[PRO_PROV3][GEMINI] write_prov3_ai_report failed: %s", exc)
+        minimal["_prov3_motion"] = block
         return minimal
 
     if isinstance(rep.get("summary"), str) and rep["summary"].strip():
