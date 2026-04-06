@@ -55,6 +55,30 @@ body::before {
   100% { transform: translateY(-12px); }
 }
 
+/* Prov3 关键帧画笔色板：同锚点叠层淡入（避免仅依赖 tailwind.config 动画注册） */
+@keyframes prov3StrokeColorPopover {
+  0% {
+    opacity: 0;
+    transform: translate(-50%, -50%) scale(0.9);
+  }
+  100% {
+    opacity: 1;
+    transform: translate(-50%, -50%) scale(1);
+  }
+}
+
+.prov3-stroke-color-popover-animate {
+  animation: prov3StrokeColorPopover 0.26s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .prov3-stroke-color-popover-animate {
+    animation: none;
+    opacity: 1;
+    transform: translate(-50%, -50%) scale(1);
+  }
+}
+
 /* Grid overlay */
 body::after {
   content: "";

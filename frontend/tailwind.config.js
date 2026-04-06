@@ -38,8 +38,6 @@ module.exports = {
         "shimmer":       "shimmer 3s linear infinite",
         "float":         "particleFloat 8s ease-in-out infinite alternate",
         "glow-pulse":    "glowPulse 2s ease-in-out infinite",
-        /** Prov3 画笔色板：同锚点叠层淡入 */
-        "color-popover": "colorPopover 0.26s cubic-bezier(0.22, 1, 0.36, 1) both",
       },
       keyframes: {
         ticker: {
@@ -81,10 +79,6 @@ module.exports = {
         glowPulse: {
           "0%, 100%": { filter: "drop-shadow(0 0 6px rgba(245,197,24,0.6))" },
           "50%":      { filter: "drop-shadow(0 0 16px rgba(245,197,24,1))" },
-        },
-        colorPopover: {
-          "0%": { opacity: "0", transform: "translate(-50%, -50%) scale(0.9)" },
-          "100%": { opacity: "1", transform: "translate(-50%, -50%) scale(1)" },
         },
       },
       boxShadow: {

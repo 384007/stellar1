@@ -736,7 +736,7 @@ function StrokeColorPicker({
         <div
           role="listbox"
           aria-label={ariaLabel}
-          className="absolute left-1/2 top-1/2 z-20 flex max-w-[min(calc(100vw-4rem),268px)] animate-color-popover items-center gap-1 overflow-x-auto rounded-2xl border border-white/[0.14] bg-gradient-to-br from-white/[0.12] via-black/45 to-black/[0.62] px-2.5 py-1.5 shadow-[0_14px_44px_rgba(0,0,0,0.55),inset_0_1px_0_rgba(255,255,255,0.1)] ring-1 ring-white/[0.05] backdrop-blur-xl [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+          className="prov3-stroke-color-popover-animate absolute left-1/2 top-1/2 z-20 flex max-w-[min(calc(100vw-4rem),268px)] items-center gap-1 overflow-x-auto rounded-2xl border border-white/[0.14] bg-gradient-to-br from-white/[0.12] via-black/45 to-black/[0.62] px-2.5 py-1.5 shadow-[0_14px_44px_rgba(0,0,0,0.55),inset_0_1px_0_rgba(255,255,255,0.1)] ring-1 ring-white/[0.05] backdrop-blur-xl [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
         >
           {colors.map((c) => (
             <button
