@@ -1002,15 +1002,13 @@ async def _call_vision_ai(
     label: str = "vision",
     *,
     timeout_s: float,
-    qwen_fallback: bool = True,
 ) -> tuple[str, str, Optional[int]]:
-    """Try Gemini first; on failure optionally fall back to Qwen.
+    """Try Gemini first (direct → optional ``GEMINI_PROXY_*``); on failure fall back to Qwen if ``QWEN_API_KEY`` is set.
 
     Returns (response_text, provider, key_slot). key_slot is 1-based index into GEMINI_API_KEY,
     GEMINI_API_KEY_2, … when provider is gemini and developer API; None for Vertex or Qwen.
 
     ``timeout_s`` caps wall-clock time for the whole provider chain (Gemini attempt + optional Qwen).
-    Pro v3 text reports set ``qwen_fallback=False`` so only Gemini + ``GEMINI_PROXY_*`` chain applies.
     """
     async def _inner() -> tuple[str, str, Optional[int]]:
         gemini_err = None
@@ -1030,7 +1028,7 @@ async def _call_vision_ai(
             gemini_err = e
             logger.warning("[ai] gemini_fail label=%s err=%s", label, e)
 
-        if qwen_fallback and _has_qwen():
+        if _has_qwen():
             try:
                 text = await _call_qwen(prompt, images, max_tokens, temperature)
                 logger.info("[ai] vision_ok provider=qwen label=%s (gemini failed first)", label)
@@ -1039,8 +1037,6 @@ async def _call_vision_ai(
             except Exception as e2:
                 logger.warning("[ai] qwen_fail label=%s err=%s", label, e2)
 
-        if not qwen_fallback and gemini_err:
-            raise RuntimeError(f"Gemini failed for {label} (qwen_fallback disabled): {gemini_err}") from gemini_err
         raise RuntimeError(f"All AI providers failed for {label}: {gemini_err}")
 
     try:
@@ -1147,26 +1143,6 @@ async def analyze_prov3_motion_report_only(
     prompt = template.format(
         motion_context=json.dumps(motion_context, indent=2, ensure_ascii=False),
     )
-    # CN Modal without GEMINI_PROXY_*: DashScope is reachable from mainland — no extra proxy env to set.
-    if not _use_vertex() and _prov3_cn_modal_skip_gemini_for_report() and _has_qwen():
-        try:
-            logger.info(
-                "[ai] prov3_report qwen_first label=%s (Modal+CN, no GEMINI_PROXY_*)",
-                call_label,
-            )
-            text = await asyncio.wait_for(
-                _call_qwen(prompt, [], max_tokens, temp),
-                timeout=PRO_AI_TIMEOUT_S,
-            )
-            out = extract_json_from_response(text)
-            out["ai_provider"] = "qwen"
-            return out
-        except Exception as e:
-            logger.warning(
-                "[ai] prov3_report qwen_first failed label=%s err=%s → gemini chain",
-                call_label,
-                e,
-            )
     try:
         text, provider, key_slot = await _call_vision_ai(
             prompt, [], max_tokens, temp, call_label, timeout_s=PRO_AI_TIMEOUT_S,
