@@ -16,6 +16,9 @@ def cleanup_video(input_video: str, work_dir: str, *, screen_mode: bool = False)
 
     输出仍为**源时间轴近似帧率**的清洗片段；**恒定 240fps 分析轨**由后续的
     ``build_analysis_timeline`` 生成。``screen_mode=True`` 时追加 ``setsar=1``，便于拍屏素材。
+
+    分辨率默认限制在 ``STELLAR_PROV3_CLEANUP_MAX_W`` × ``STELLAR_PROV3_CLEANUP_MAX_H``（默认 1280×720）
+    边界框内 ``force_original_aspect_ratio=decrease``，竖屏 1080p 会变为 ~405×720，显著减轻后续 minterpolate CPU。
     """
     Path(work_dir).mkdir(parents=True, exist_ok=True)
     cleaned_video = str(Path(work_dir) / "analysis_cleaned.mp4")
@@ -26,8 +29,16 @@ def cleanup_video(input_video: str, work_dir: str, *, screen_mode: bool = False)
         raise RuntimeError(f"prov3_cleanup: ffprobe failed: {exc}") from exc
 
     src_fps = float(meta.get("fps") or 30.0)
-    # Max width 1280, keep AR; hqdn3d light temporal denoise
-    vf = "scale='min(1280,iw)':-2,hqdn3d=4:3:6:4.5"
+    try:
+        _max_w = max(320, int(os.getenv("STELLAR_PROV3_CLEANUP_MAX_W") or "1280"))
+    except ValueError:
+        _max_w = 1280
+    try:
+        _max_h = max(240, int(os.getenv("STELLAR_PROV3_CLEANUP_MAX_H") or "720"))
+    except ValueError:
+        _max_h = 720
+    # Fit inside W×H box (landscape caps width; portrait caps height — fixes 1080×1920 staying full-res)
+    vf = f"scale={_max_w}:{_max_h}:force_original_aspect_ratio=decrease,hqdn3d=4:3:6:4.5"
     if screen_mode:
         vf += ",setsar=1"
 

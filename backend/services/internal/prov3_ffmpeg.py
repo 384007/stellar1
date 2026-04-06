@@ -448,9 +448,15 @@ def run_ffmpeg(
     *,
     timeout_s: int = 900,
     label: str = "ffmpeg",
+    loglevel: str = "error",
+    stats_period_s: int | None = None,
 ) -> None:
     ensure_sigterm_kills_ffmpeg()
-    cmd = [ffmpeg_bin(), "-hide_banner", "-loglevel", "error", "-y", *args]
+    pre: list[str] = [ffmpeg_bin(), "-hide_banner", "-loglevel", loglevel]
+    if stats_period_s is not None and int(stats_period_s) > 0:
+        pre.extend(["-stats_period", str(int(stats_period_s))])
+    pre.extend(["-y"])
+    cmd = pre + args
     proc = subprocess.Popen(
         cmd,
         stdout=subprocess.PIPE,

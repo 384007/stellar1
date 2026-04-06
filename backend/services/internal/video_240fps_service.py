@@ -40,6 +40,9 @@ def build_analysis_timeline(video_path: str, work_dir: str) -> Dict[str, object]
     raises ``RuntimeError`` instead of silently duping.
 
     Duration is still probed for logging / diagnostics (``ffprobe_video_meta`` fallbacks for thin metadata).
+
+    **Performance:** 1080p vertical + MCI can run **tens of minutes** on 2 vCPU; ffmpeg uses ``info`` + periodic
+    stats so Modal logs show progress once encoding output starts (filter stage may still look quiet).
     """
     Path(work_dir).mkdir(parents=True, exist_ok=True)
     out_path = str(Path(work_dir) / "analysis_240fps.mp4")
@@ -124,6 +127,14 @@ def build_analysis_timeline(video_path: str, work_dir: str) -> Dict[str, object]
             ],
             label="prov3_240fps",
             timeout_s=_MINTERPOLATE_TIMEOUT_S,
+            **(
+                {
+                    "loglevel": "info",
+                    "stats_period_s": 30,
+                }
+                if use_mci
+                else {}
+            ),
         )
     except FFmpegNotFoundError:
         raise
