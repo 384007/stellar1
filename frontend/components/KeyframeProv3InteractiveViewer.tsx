@@ -441,27 +441,16 @@ export default function KeyframeProv3InteractiveViewer({
       fs.lines.length === 0 ? {} : { lines: fs.lines.slice(0, -1) },
     );
 
-  const [downloadBusy, setDownloadBusy] = useState<"video" | "kf" | null>(null);
+  const [keyframeDownloadBusy, setKeyframeDownloadBusy] = useState(false);
 
-  const resolvedVideoDownload = resolveProv3ProductMediaUrl(String(downloadVideoUrl ?? "").trim());
   const keyframeDownloadHref = frame
     ? resolveProv3ProductMediaUrl(String(frame.keyframe_image_url || "").trim()) ||
       (!keyframeDownloadUrlOnly ? keyframeImageDataUrl(frame.image_base64) : null)
     : null;
 
-  const onDownloadVideo = useCallback(async () => {
-    if (!resolvedVideoDownload || downloadBusy) return;
-    setDownloadBusy("video");
-    try {
-      await downloadHrefAsFile(resolvedVideoDownload, `stellar_${analysisId}_video.mp4`, true);
-    } finally {
-      setDownloadBusy(null);
-    }
-  }, [analysisId, downloadBusy, resolvedVideoDownload]);
-
   const onDownloadKeyframe = useCallback(async () => {
-    if (!keyframeDownloadHref || downloadBusy) return;
-    setDownloadBusy("kf");
+    if (!keyframeDownloadHref || keyframeDownloadBusy) return;
+    setKeyframeDownloadBusy(true);
     try {
       const ext = keyframeDownloadHref.startsWith("data:image/png") ? "png" : "jpg";
       await downloadHrefAsFile(
@@ -470,9 +459,9 @@ export default function KeyframeProv3InteractiveViewer({
         true,
       );
     } finally {
-      setDownloadBusy(null);
+      setKeyframeDownloadBusy(false);
     }
-  }, [activeIndex, analysisId, downloadBusy, keyframeDownloadHref]);
+  }, [activeIndex, analysisId, keyframeDownloadBusy, keyframeDownloadHref]);
 
   const t = lang === "zh";
 
@@ -555,37 +544,30 @@ export default function KeyframeProv3InteractiveViewer({
 
         <div className="pointer-events-none absolute inset-0 z-[10]">{overlay}</div>
 
-        {resolvedVideoDownload || keyframeDownloadHref || topRightActions ? (
-          <div className="pointer-events-auto absolute right-2 top-2 z-[16] flex flex-col items-end gap-2">
-            {resolvedVideoDownload || keyframeDownloadHref ? (
-              <div className="flex flex-row flex-wrap justify-end gap-2">
-                {resolvedVideoDownload ? (
-                  <button
-                    type="button"
-                    title={t ? "下载分析视频" : "Download analysis video"}
-                    onClick={() => void onDownloadVideo()}
-                    disabled={downloadBusy !== null}
-                    className="min-h-[36px] min-w-[44px] rounded-full border border-white/[0.14] bg-white/[0.16] px-3.5 text-[13px] font-semibold text-white shadow-[0_2px_12px_rgba(0,0,0,0.35)] backdrop-blur-md active:scale-[0.97] disabled:opacity-40"
-                  >
-                    {downloadBusy === "video" ? (t ? "下载中" : "…") : t ? "视频" : "Video"}
-                  </button>
-                ) : null}
-                {keyframeDownloadHref ? (
-                  <button
-                    type="button"
-                    title={t ? "下载当前关键帧图" : "Download current keyframe image"}
-                    onClick={() => void onDownloadKeyframe()}
-                    disabled={downloadBusy !== null}
-                    className="min-h-[36px] min-w-[44px] rounded-full border border-white/[0.14] bg-white/[0.16] px-3.5 text-[13px] font-semibold text-white shadow-[0_2px_12px_rgba(0,0,0,0.35)] backdrop-blur-md active:scale-[0.97] disabled:opacity-40"
-                  >
-                    {downloadBusy === "kf" ? (t ? "下载中" : "…") : t ? "关键帧" : "Keyframe"}
-                  </button>
-                ) : null}
-              </div>
-            ) : null}
-            {topRightActions ? (
-              <div className="flex flex-col gap-1 opacity-55 transition-opacity hover:opacity-95">{topRightActions}</div>
-            ) : null}
+        {keyframeDownloadHref ? (
+          <div className="pointer-events-auto absolute right-2 top-2 z-[16]">
+            <button
+              type="button"
+              title={t ? "下载当前关键帧图" : "Download current keyframe image"}
+              aria-label={t ? "下载当前关键帧图" : "Download current keyframe image"}
+              onClick={() => void onDownloadKeyframe()}
+              disabled={keyframeDownloadBusy}
+              className="rounded-lg border border-white/[0.08] bg-black/30 p-2 text-white/45 opacity-50 backdrop-blur-sm transition hover:border-white/15 hover:bg-black/45 hover:text-white/85 hover:opacity-95 active:scale-[0.97] disabled:opacity-30"
+            >
+              {keyframeDownloadBusy ? (
+                <span className="flex h-4 w-4 items-center justify-center text-[10px] tabular-nums" aria-hidden>
+                  …
+                </span>
+              ) : (
+                <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5} aria-hidden>
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    d="M3 16.5v2.25A2.25 2.25 0 0 0 5.25 21h13.5A2.25 2.25 0 0 0 21 18.75V16.5M16.5 12 12 16.5m0 0L7.5 12m4.5 4.5V3"
+                  />
+                </svg>
+              )}
+            </button>
           </div>
         ) : null}
 

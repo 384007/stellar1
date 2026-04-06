@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useRef, useEffect, useCallback } from "react";
+import React, { useState, useRef, useEffect, useCallback, useMemo } from "react";
 import ProComparison from "@/components/ProComparison";
 import SimAnimation from "@/components/SimAnimation";
 import Skeleton3DViewer from "@/components/Skeleton3DViewer";
@@ -24,6 +24,7 @@ import {
   type Prov3KeyframeGateState,
 } from "@/lib/prov3-keyframe-media";
 import { resolveProv3ProductMediaUrl } from "@/lib/prov3-media-url";
+import { downloadHrefAsFile } from "@/lib/download-href-as-file";
 
 /* ═══════════════ Types ═══════════════ */
 
@@ -1606,6 +1607,7 @@ export default function PlusResultView({ result, lang, externalVideoSrc, backend
   const [videoSrc, setVideoSrc] = useState<string | null>(externalVideoSrc ?? null);
   const videoSrcLoaded = useRef(!!externalVideoSrc);
   const [videoIdbExhausted, setVideoIdbExhausted] = useState(false);
+  const [originalVideoDownloadBusy, setOriginalVideoDownloadBusy] = useState(false);
   const lastVideoAnalysisIdRef = useRef<string>("");
   const [showPosturePractice, setShowPosturePractice] = useState(false);
   const lowTrustPreviewOnly = isLowTrustPreviewOnly(result);
@@ -1620,6 +1622,37 @@ export default function PlusResultView({ result, lang, externalVideoSrc, backend
   const displayKeyframes = lowTrustPreviewOnly ? previewKeyframes : officialKeyframes;
   const safeActiveKeyframe =
     displayKeyframes.length > 0 ? Math.min(activeKeyframe, displayKeyframes.length - 1) : 0;
+
+  const originalVideoDownloadUrl = useMemo(() => {
+    const raw = String(
+      result.original_video_url ||
+        result.video_url ||
+        result.playback_video_url ||
+        result.analysis_video_url ||
+        "",
+    ).trim();
+    const u = resolveProv3ProductMediaUrl(raw);
+    return u || null;
+  }, [
+    result.original_video_url,
+    result.video_url,
+    result.playback_video_url,
+    result.analysis_video_url,
+  ]);
+
+  const onDownloadOriginalVideo = useCallback(async () => {
+    if (!originalVideoDownloadUrl || originalVideoDownloadBusy) return;
+    setOriginalVideoDownloadBusy(true);
+    try {
+      await downloadHrefAsFile(
+        originalVideoDownloadUrl,
+        `stellar_${String(result.analysis_id || "analysis")}_video.mp4`,
+        true,
+      );
+    } finally {
+      setOriginalVideoDownloadBusy(false);
+    }
+  }, [originalVideoDownloadBusy, originalVideoDownloadUrl, result.analysis_id]);
 
   useEffect(() => {
     if (displayKeyframes.length === 0) {
@@ -2106,7 +2139,31 @@ export default function PlusResultView({ result, lang, externalVideoSrc, backend
 
       {/* ─── Video Analysis Tab ─── */}
       {activeTab === "video" && (
-        <div className="space-y-3">
+        <div className="relative space-y-3">
+          {originalVideoDownloadUrl ? (
+            <button
+              type="button"
+              title={lang === "zh" ? "下载原视频" : "Download original video"}
+              aria-label={lang === "zh" ? "下载原视频" : "Download original video"}
+              onClick={() => void onDownloadOriginalVideo()}
+              disabled={originalVideoDownloadBusy}
+              className="absolute right-1 top-0 z-30 rounded-lg border border-white/[0.08] bg-black/35 p-2 text-white/45 opacity-50 shadow-sm backdrop-blur-sm transition hover:border-white/15 hover:bg-black/50 hover:text-white/85 hover:opacity-95 active:scale-[0.97] disabled:opacity-30"
+            >
+              {originalVideoDownloadBusy ? (
+                <span className="flex h-4 w-4 items-center justify-center text-[10px]" aria-hidden>
+                  …
+                </span>
+              ) : (
+                <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5} aria-hidden>
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    d="M3 16.5v2.25A2.25 2.25 0 0 0 5.25 21h13.5A2.25 2.25 0 0 0 21 18.75V16.5M16.5 12 12 16.5m0 0L7.5 12m4.5 4.5V3"
+                  />
+                </svg>
+              )}
+            </button>
+          ) : null}
           {videoSrc ? (
             <VideoAnalysisOverlay
               videoSrc={videoSrc}
@@ -2244,17 +2301,6 @@ export default function PlusResultView({ result, lang, externalVideoSrc, backend
                   activeIndex={activeKeyframe}
                   onActiveIndexChange={setActiveKeyframe}
                   lang={lang}
-                  downloadVideoUrl={
-                    resolveProv3ProductMediaUrl(
-                      String(
-                        result.playback_video_url ||
-                          result.video_url ||
-                          result.original_video_url ||
-                          result.analysis_video_url ||
-                          "",
-                      ).trim(),
-                    ) || undefined
-                  }
                   keyframeDownloadUrlOnly={prov3Strict}
                   overlay={
                     <div className="pointer-events-none absolute inset-0">
@@ -2274,26 +2320,6 @@ export default function PlusResultView({ result, lang, externalVideoSrc, backend
                       onGuide={() => setShowGuideLines((g) => !g)}
                       lang={lang}
                     />
-                  }
-                  topRightActions={
-                    displayKeyframes[safeActiveKeyframe] &&
-                    plusKeyframeImageUsable(displayKeyframes[safeActiveKeyframe], prov3Strict) ? (
-                      <button
-                        type="button"
-                        onClick={() =>
-                          void saveHighlight(
-                            displayKeyframes[safeActiveKeyframe],
-                            displayKeyframes[safeActiveKeyframe].label_en,
-                            { urlOnly: prov3Strict },
-                          )
-                        }
-                        className="rounded-lg border border-white/[0.08] bg-black/30 p-2 text-white/40 opacity-60 backdrop-blur-sm transition hover:border-white/15 hover:bg-black/45 hover:text-white/80 hover:opacity-95"
-                      >
-                        <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
-                          <path strokeLinecap="round" strokeLinejoin="round" d="M3 16.5v2.25A2.25 2.25 0 0 0 5.25 21h13.5A2.25 2.25 0 0 0 21 18.75V16.5M16.5 12 12 16.5m0 0L7.5 12m4.5 4.5V3" />
-                        </svg>
-                      </button>
-                    ) : null
                   }
                 />
               ) : (
