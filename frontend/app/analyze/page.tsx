@@ -24,6 +24,7 @@ import {
   normalizeProv3UrlListsFromPrecheck,
   PRO_V3_EDGE_PRECHECK_PATH,
   requestProv3AnalyzeCancel,
+  prov3ClientLikelyNeedsCnFriendlyJobWait,
   runProv3AnalyzeMultipart,
   yieldUiBeforeHeavyParse,
 } from "@/lib/pro-v3-api";
@@ -280,6 +281,7 @@ export default function AnalyzePage() {
           modalUrls,
           backendUrls,
           cnNetworkHint: cnPro,
+          unboundedJobPoll: cnPro || prov3ClientLikelyNeedsCnFriendlyJobWait(),
           screenMode,
           modalTimeoutMs: 600_000,
           renderTimeoutMs: 600_000,

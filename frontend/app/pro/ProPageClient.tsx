@@ -14,6 +14,7 @@ import {
   normalizeProv3UrlListsFromPrecheck,
   PRO_V3_EDGE_PRECHECK_PATH,
   requestProv3AnalyzeCancel,
+  prov3ClientLikelyNeedsCnFriendlyJobWait,
   runProv3AnalyzeMultipart,
   yieldUiBeforeHeavyParse,
 } from "@/lib/pro-v3-api";
@@ -601,6 +602,7 @@ export default function ProPageClient({ deepLinkAnalysisId }: { deepLinkAnalysis
           modalUrls: modalUrlsRef.current,
           backendUrls: backendUrlsRef.current,
           cnNetworkHint: cn,
+          unboundedJobPoll: cn || prov3ClientLikelyNeedsCnFriendlyJobWait(),
           screenMode: effectiveScreenMode,
           // Polling-only budget (after job_id). Long Modal runs + margin; upload no longer consumes this window.
           modalTimeoutMs: 600_000,

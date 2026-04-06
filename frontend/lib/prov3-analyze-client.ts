@@ -1,7 +1,6 @@
 /** Same-origin Pro v3 orchestration (upload → one Modal ``/analyze/start`` → R2 job poll). */
-/* Upload: Pages ``/api/history/upload-video`` → R2 binding (no extra R2 S3 secrets). Optional CN-only
- * browser→R2 presigned PUT when ``NEXT_PUBLIC_PROV3_CN_USE_PRESIGNED_UPLOAD=true`` + Pages Secrets + CORS.
- * CN polling: no client wall-clock cap. */
+/* Upload: Pages ``/api/history/upload-video`` → R2 binding. Optional presigned PUT when
+ * ``NEXT_PUBLIC_PROV3_CN_USE_PRESIGNED_UPLOAD=true``. Job poll: no client cap when ``unboundedJobPoll``. */
 const PRO_V3_EDGE_ANALYZE_START = "/api/prov3/analyze/start";
 const PRO_V3_EDGE_ANALYZE_CANCEL = "/api/prov3/analyze/cancel";
 
@@ -33,9 +32,12 @@ export async function requestProv3AnalyzeCancel(
 export type RunProv3AnalyzeOptions = {
   modalUrls: string[];
   backendUrls: string[];
+  /** Precheck / CF — forwarded as ``X-Stellar-Network-Hint: cn`` to Modal only when true. */
   cnNetworkHint: boolean;
+  /** No client poll wall clock (precheck CN **or** ``prov3ClientLikelyNeedsCnFriendlyJobWait()``). */
+  unboundedJobPoll: boolean;
   screenMode: boolean;
-  /** Poll budget after ``job_id`` (upload/start excluded). **Ignored when ``cnNetworkHint``** — CN polls until done/fail/abort. */
+  /** Poll budget after ``job_id`` when ``unboundedJobPoll`` is false. */
   modalTimeoutMs: number;
   renderTimeoutMs: number;
   logPrefix: string;
@@ -69,6 +71,22 @@ export function prov3RenderFallbackEnabled(): boolean {
 /** Opt-in: CN tries presigned PUT to R2 (requires Pages R2_ACCOUNT_ID + keys + bucket CORS). Default off. */
 function prov3CnPresignedUploadEnabled(): boolean {
   return process.env.NEXT_PUBLIC_PROV3_CN_USE_PRESIGNED_UPLOAD === "true";
+}
+
+/**
+ * When CF/precheck misses mainland (VPN etc.), still avoid false client-side job timeouts for zh-CN users.
+ * Does not affect Modal routing — only ``unboundedJobPoll`` / presign try.
+ */
+export function prov3ClientLikelyNeedsCnFriendlyJobWait(): boolean {
+  if (typeof window === "undefined") return false;
+  const lang = (navigator.language || "").toLowerCase();
+  if (lang === "zh-cn" || lang.startsWith("zh-cn-")) return true;
+  try {
+    const tz = Intl.DateTimeFormat().resolvedOptions().timeZone || "";
+    return /shanghai|chongqing|urumqi|harbin|asia\/shanghai|asia\/chongqing|asia\/urumqi/i.test(tz);
+  } catch {
+    return false;
+  }
 }
 
 /** 将 FastAPI `detail` 与常见 404 说明合并为一条用户可读文案。 */
@@ -293,7 +311,7 @@ export async function runProv3AnalyzeMultipart(
     }
 
     // Non-CN: bounded poll. CN: no wall clock (Modal can run arbitrarily long; avoid false "timeout").
-    const pollDeadline = opts.cnNetworkHint ? Number.POSITIVE_INFINITY : Date.now() + opts.modalTimeoutMs;
+    const pollDeadline = opts.unboundedJobPoll ? Number.POSITIVE_INFINITY : Date.now() + opts.modalTimeoutMs;
 
     while (Date.now() < pollDeadline) {
       bumpAbort();
