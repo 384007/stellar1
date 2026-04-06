@@ -3,6 +3,9 @@ import { getAnalysisVideoBlob } from "@/lib/video-store";
 
 export const REANALYZE_FROM_HISTORY_KEY = "stellar_reanalyze_from_history_v1";
 
+/** Max age for a queued history reanalyze payload on `/pro` (requires `?reanalyze=1`). */
+export const REANALYZE_FROM_HISTORY_TTL_MS = 30 * 60 * 1000;
+
 export type ReanalyzeFromHistoryPayload = {
   analysisId: string;
   page: "analyze" | "pro" | "plus" | "shot-lab";
@@ -14,6 +17,8 @@ export type ReanalyzeFromHistoryPayload = {
    * Pro v3：原分析为屏幕模式时保留；再次分析时传给 `screen_mode` 表单字段。
    */
   prov3ScreenMode?: boolean;
+  /** Set when queued; required for `/pro` TTL validation (see `reconcileProPageReanalyzeSession`). */
+  createdAt?: number;
 };
 
 /** 从重新分析 payload 解析是否对屏。 */
@@ -23,7 +28,61 @@ export function reanalyzePayloadProv3ScreenMode(p: ReanalyzeFromHistoryPayload):
 
 export function queueReanalyzeFromHistory(p: ReanalyzeFromHistoryPayload): void {
   if (typeof sessionStorage === "undefined") return;
-  sessionStorage.setItem(REANALYZE_FROM_HISTORY_KEY, JSON.stringify(p));
+  const withMeta: ReanalyzeFromHistoryPayload = { ...p, createdAt: Date.now() };
+  sessionStorage.setItem(REANALYZE_FROM_HISTORY_KEY, JSON.stringify(withMeta));
+}
+
+export function isReanalyzePayloadFresh(
+  p: ReanalyzeFromHistoryPayload,
+  nowMs: number = Date.now(),
+): boolean {
+  const t = p.createdAt;
+  if (typeof t !== "number" || !Number.isFinite(t) || t <= 0) return false;
+  return nowMs - t <= REANALYZE_FROM_HISTORY_TTL_MS;
+}
+
+/**
+ * `/pro` only: avoid firing analyze on plain load from stale sessionStorage.
+ * - Without `?reanalyze=1`: remove a queued `page: "pro"` payload and return null.
+ * - With `?reanalyze=1`: return payload only if present, valid shape, and within TTL; otherwise remove and return null.
+ * Payloads for other pages are left untouched.
+ */
+export function reconcileProPageReanalyzeSession(
+  explicitReanalyzeNav: boolean,
+): ReanalyzeFromHistoryPayload | null {
+  if (typeof sessionStorage === "undefined") return null;
+  const raw = sessionStorage.getItem(REANALYZE_FROM_HISTORY_KEY);
+  if (!raw) return null;
+
+  let p: ReanalyzeFromHistoryPayload;
+  try {
+    p = JSON.parse(raw) as ReanalyzeFromHistoryPayload;
+  } catch {
+    sessionStorage.removeItem(REANALYZE_FROM_HISTORY_KEY);
+    return null;
+  }
+
+  if (!p?.analysisId || !p?.page) {
+    sessionStorage.removeItem(REANALYZE_FROM_HISTORY_KEY);
+    return null;
+  }
+  if (p.page !== "analyze" && p.page !== "pro" && p.page !== "plus" && p.page !== "shot-lab") {
+    sessionStorage.removeItem(REANALYZE_FROM_HISTORY_KEY);
+    return null;
+  }
+  if (p.page !== "pro") return null;
+
+  if (!explicitReanalyzeNav) {
+    sessionStorage.removeItem(REANALYZE_FROM_HISTORY_KEY);
+    return null;
+  }
+  if (!isReanalyzePayloadFresh(p)) {
+    sessionStorage.removeItem(REANALYZE_FROM_HISTORY_KEY);
+    return null;
+  }
+
+  sessionStorage.removeItem(REANALYZE_FROM_HISTORY_KEY);
+  return p;
 }
 
 export function consumeReanalyzeFromHistoryPayload(): ReanalyzeFromHistoryPayload | null {

@@ -26,10 +26,10 @@ import { patchLocalHistoryVideoR2Key } from "@/lib/history-sync-record";
 import { expandStellarProForUi, proExpandedToPlusViewModel } from "@/lib/stellar-pro-result";
 import { pruneLocalStellarHistoryRecords } from "@/lib/pro-history-retention";
 import {
-  consumeReanalyzeFromHistoryPayload,
   fetchVideoBlobForHistoryReanalyze,
   reanalyzeHistoryFilename,
   reanalyzePayloadProv3ScreenMode,
+  reconcileProPageReanalyzeSession,
 } from "@/lib/reanalyze-from-history";
 import { loadProAnalysisById } from "@/lib/load-pro-analysis-by-id";
 
@@ -262,8 +262,30 @@ export default function ProPageClient({ deepLinkAnalysisId }: { deepLinkAnalysis
   }, [deepId, lang]);
 
   useEffect(() => {
-    const p = consumeReanalyzeFromHistoryPayload();
-    if (!p || p.page !== "pro") return;
+    const explicitReanalyzeNav =
+      typeof window !== "undefined" &&
+      new URLSearchParams(window.location.search).get("reanalyze") === "1";
+
+    const stripReanalyzeQuery = () => {
+      if (typeof window === "undefined") return;
+      const u = new URL(window.location.href);
+      if (!u.searchParams.has("reanalyze")) return;
+      u.searchParams.delete("reanalyze");
+      const qs = u.searchParams.toString();
+      window.history.replaceState(null, "", `${u.pathname}${qs ? `?${qs}` : ""}${u.hash}`);
+    };
+
+    // Deep link to a saved analysis: never run history reanalyze; drop stale pro-only queue.
+    if (deepId) {
+      reconcileProPageReanalyzeSession(false);
+      if (explicitReanalyzeNav) stripReanalyzeQuery();
+      return;
+    }
+
+    const p = reconcileProPageReanalyzeSession(explicitReanalyzeNav);
+    if (explicitReanalyzeNav) stripReanalyzeQuery();
+    if (!p) return;
+
     void (async () => {
       try {
         // History queues both URLs; timeline first is implemented inside fetchVideoBlobForHistoryReanalyze.
@@ -288,7 +310,7 @@ export default function ProPageClient({ deepLinkAnalysisId }: { deepLinkAnalysis
       }
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [deepId, lang]);
 
   // Do not revoke proVideoSrc in a [proVideoSrc] effect cleanup: React Strict Mode runs that
   // cleanup while the URL is still needed, breaking the <video> src. Revoke only when replacing

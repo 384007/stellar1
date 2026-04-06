@@ -741,7 +741,9 @@ export default function HistoryPage() {
       analysisVideoUrl: remoteOrPath(analysisVu) ? analysisVu : undefined,
       prov3ScreenMode: prov3ScreenModeFromHistoryRecord(rec),
     });
-    router.push(page === "plus" ? "/plus" : page === "pro" ? "/pro" : "/analyze");
+    router.push(
+      page === "plus" ? "/plus" : page === "pro" ? "/pro?reanalyze=1" : "/analyze",
+    );
   }
 
   async function fetchHistory(token: string) {
