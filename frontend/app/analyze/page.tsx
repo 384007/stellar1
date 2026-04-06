@@ -28,6 +28,10 @@ import {
   yieldUiBeforeHeavyParse,
 } from "@/lib/pro-v3-api";
 import {
+  isProv3ScreenWebmForMp4Upload,
+  prov3ScreenRecordingToMp4File,
+} from "@/lib/prov3-screen-recording-to-mp4";
+import {
   consumeReanalyzeFromHistoryPayload,
   fetchVideoBlobForHistoryReanalyze,
   reanalyzeHistoryFilename,
@@ -539,7 +543,22 @@ export default function AnalyzePage() {
     setDetectedHand(null);
     setHandConfirmed(false);
     setShowHandPopup(false);
-    lastBlobRef.current = { blob, filename };
+
+    let sendBlob: Blob = blob;
+    let sendFilename = filename;
+    if (
+      modeForRun === "pro" &&
+      isProv3ScreenWebmForMp4Upload(blob, filename, prov3ScreenMode, resolveProv3ScreenMode)
+    ) {
+      try {
+        const mp4File = await prov3ScreenRecordingToMp4File(blob);
+        sendBlob = mp4File;
+        sendFilename = mp4File.name;
+      } catch (e) {
+        console.warn("[analyze] screen WebM→MP4 failed, uploading original container", e);
+      }
+    }
+    lastBlobRef.current = { blob: sendBlob, filename: sendFilename };
     const handWasConfirmed = false;
 
     const t0 = Date.now();
@@ -557,7 +576,7 @@ export default function AnalyzePage() {
       });
     }, 800);
 
-    detectClubFromBlob(blob);
+    detectClubFromBlob(sendBlob);
 
     const clubFallbackTimer = setTimeout(() => {
       if (!processingClubRef.current) {
@@ -572,8 +591,8 @@ export default function AnalyzePage() {
 
     try {
       const data = await sendFileForAnalysis(
-        blob,
-        filename,
+        sendBlob,
+        sendFilename,
         prov3ScreenMode,
         modeForRun,
         proAbort?.signal,
@@ -628,9 +647,9 @@ export default function AnalyzePage() {
         })();
       }
 
-      void saveAnalysisVideo(data.analysis_id, blob, filename).catch(() => {});
+      void saveAnalysisVideo(data.analysis_id, sendBlob, sendFilename).catch(() => {});
       try {
-        await saveAnalysisToHistory(data, blob, filename, modeForRun);
+        await saveAnalysisToHistory(data, sendBlob, sendFilename, modeForRun);
       } catch (e) {
         console.warn("[analyze] history save failed:", e);
       }

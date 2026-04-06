@@ -25,6 +25,10 @@ import { normalizedTotalScoreForStorage } from "@/lib/safe-analysis-score";
 import { patchLocalHistoryVideoR2Key } from "@/lib/history-sync-record";
 import { expandStellarProForUi, proExpandedToPlusViewModel } from "@/lib/stellar-pro-result";
 import { resolveProv3ProductMediaUrl } from "@/lib/prov3-media-url";
+import {
+  isProv3ScreenWebmForMp4Upload,
+  prov3ScreenRecordingToMp4File,
+} from "@/lib/prov3-screen-recording-to-mp4";
 
 /** Survives ``router.replace`` remount to /pro/[id] before localStorage / IndexedDB sync. */
 function proSessionResultKey(analysisId: string): string {
@@ -519,6 +523,25 @@ export default function ProPageClient({ deepLinkAnalysisId }: { deepLinkAnalysis
     // Edge-orchestrated Pro v3: same-origin upload + job poll (no long browser→Modal analyze POST).
     setProgress(42);
 
+    const effectiveScreenMode = resolveProv3ScreenMode(filename, prov3ScreenMode);
+    let uploadBlob: Blob = blob;
+    let uploadFilename = filename;
+    if (isProv3ScreenWebmForMp4Upload(blob, filename, prov3ScreenMode, resolveProv3ScreenMode)) {
+      setProWaitSubline(
+        lang === "zh"
+          ? "正在将屏幕录制转为 MP4，随后走与上传文件相同的提交流程…"
+          : "Converting screen recording to MP4, then uploading like a normal file…",
+      );
+      try {
+        const mp4File = await prov3ScreenRecordingToMp4File(blob);
+        uploadBlob = mp4File;
+        uploadFilename = mp4File.name;
+      } catch (e) {
+        console.warn("[pro] screen WebM→MP4 failed, using original container", e);
+      }
+      setProWaitSubline("");
+    }
+
     const proAbort = new AbortController();
     proAnalyzeAbortRef.current = proAbort;
 
@@ -530,11 +553,11 @@ export default function ProPageClient({ deepLinkAnalysisId }: { deepLinkAnalysis
       let raw: Record<string, unknown>;
       try {
         const cn = cnNetworkHintRef.current;
-        const out = await runProv3AnalyzeMultipart(blob, filename, authHeaders, {
+        const out = await runProv3AnalyzeMultipart(uploadBlob, uploadFilename, authHeaders, {
           modalUrls: modalUrlsRef.current,
           backendUrls: backendUrlsRef.current,
           cnNetworkHint: cn,
-          screenMode: resolveProv3ScreenMode(filename, prov3ScreenMode),
+          screenMode: effectiveScreenMode,
           modalTimeoutMs: cn ? 90_000 : 360_000,
           renderTimeoutMs: 360_000,
           logPrefix: "[pro]",
@@ -653,8 +676,8 @@ export default function ProPageClient({ deepLinkAnalysisId }: { deepLinkAnalysis
           console.warn("[pro] session snapshot before /pro/[id] navigation failed", e);
         }
       }
-      if (isVideoBlobForOverlay(blob, filename) && blob.size > 0) {
-        setProVideoSrc(URL.createObjectURL(blob));
+      if (isVideoBlobForOverlay(uploadBlob, uploadFilename) && uploadBlob.size > 0) {
+        setProVideoSrc(URL.createObjectURL(uploadBlob));
       }
       if (typeof window !== "undefined" && data.analysis_id) {
         try {
@@ -674,8 +697,8 @@ export default function ProPageClient({ deepLinkAnalysisId }: { deepLinkAnalysis
         } catch (e) {
           console.warn("[pro] deferred local history:", e);
         }
-        void saveAnalysisVideo(data.analysis_id, blob, filename).catch(() => {});
-        void saveAnalysisToHistory(data, blob, filename).catch((e) => {
+        void saveAnalysisVideo(data.analysis_id, uploadBlob, uploadFilename).catch(() => {});
+        void saveAnalysisToHistory(data, uploadBlob, uploadFilename).catch((e) => {
           console.warn("[pro] history save failed:", e);
         });
       }, 0);

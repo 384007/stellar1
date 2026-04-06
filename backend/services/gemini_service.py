@@ -830,6 +830,16 @@ You are given MOTION_CONTEXT for fixed 8 phases at 240fps:
 Address, Takeaway, Backswing, Top, Downswing, Impact, Follow-through, Finish.
 Treat these phases and their order/timing as ground truth.
 
+TRUTH FIRST (non-negotiable):
+- Say only what MOTION_CONTEXT supports. If proxies, swing_window_s, or phase spacing suggest there is NO credible golf swing (e.g. near-zero dense_motion_proxy everywhere, collapsed window, nonsensical timing), say so clearly in summary/summary_zh and in keyframe_evaluations — do NOT fabricate tour-level swing coaching.
+- If prov3_screen_pipeline, low_trust_preview_only, or prov3_fail_reasons indicate screen/recapture or untrusted phases, state honestly that quality/alignment may be poor (blur, moiré, untrusted labels) when inferring from metadata.
+- You have NO pixels: never claim you "saw" the golfer/club/ball; infer from numbers only. If uncertain, say so in both languages.
+
+PER-KEYFRAME OUTPUT (mandatory):
+- Include "keyframe_evaluations": an array with EXACTLY one object per row in MOTION_CONTEXT.keyframes, in THE SAME ORDER as that array.
+- Each object: {{"phase": "<same phase string as row>", "score": <0-100>, "action_assessment_en": "1-4 sentences", "action_assessment_zh": "1-4句"}}
+- Assess that phase using timestamp_s, frame_index, dense_motion_proxy vs neighbors and swing_window_s. If signal is insufficient, use a low score and say "insufficient motion signal" / "数据不足以判断" in both languages.
+
 Coaching style requirements:
 1) Write like a real PGA coach: specific, technical, direct, no marketing language or vague filler ("整体不错", "需要多练习" alone is NOT acceptable).
 2) Be factual: do NOT invent invisible visual details (clubface, ball flight, exact spine angle). Infer only from timing, spacing, and dense_motion_proxy trends in MOTION_CONTEXT.
@@ -866,6 +876,9 @@ Return ONLY valid JSON:
   "suggestions_zh": ["阶段：可执行练习或口令", "...", "..."],
   "summary": "450-700 words English coaching report",
   "summary_zh": "500-900字中文教练报告",
+  "keyframe_evaluations": [
+    {{"phase": "address", "score": 0, "action_assessment_en": "...", "action_assessment_zh": "..."}}
+  ],
   "training_plan": {{
     "day1": {{"focus": "topic (Chinese)", "drills": ["drill1", "drill2"], "duration": "30 min"}},
     "day2": {{"focus": "...", "drills": ["...", "..."], "duration": "30 min"}},
@@ -878,6 +891,7 @@ Return ONLY valid JSON:
 }}
 
 training_plan MUST include day1 through day7; focus can be Chinese; drills concrete and short.
+keyframe_evaluations length MUST equal len(MOTION_CONTEXT.keyframes); order MUST match that array.
 """
 
 PROV3_REPORT_PROMPT_PASS2 = """PASS 2 — Your previous output was REJECTED for being too thin, empty, or non-phase-specific.
@@ -890,24 +904,31 @@ STRICT OUTPUT RULES:
 3) If Impact timing looks tight vs the downswing burst, write "**Impact**: ..." explicitly. Same for **Follow-through** and **Finish** when post-impact spacing or exit proxy is weak.
 4) summary: **500-750 English words**, multiple paragraphs, phase-ordered narrative (Address → … → Finish), honest hedging only as a phrase — not as a substitute for content.
 5) summary_zh: **600-950 汉字**，多段落，阶段清晰；禁止仅用两三句概括。
+6) keyframe_evaluations: same rules as pass-1 formal prompt — one object per MOTION_CONTEXT.keyframes row, same order; honest scores and bilingual action text from metadata only.
 
 Do not claim you lack information because there are no pictures — the numeric phase timeline is sufficient.
 
 MOTION_CONTEXT (JSON):
 {motion_context}
 
-Return ONLY the same JSON schema as before (total_score, scores, issues, issues_zh, suggestions, suggestions_zh, summary, summary_zh, training_plan day1-day7).
+Return ONLY the same JSON schema as before (total_score, scores, issues, issues_zh, suggestions, suggestions_zh, summary, summary_zh, keyframe_evaluations, training_plan day1-day7).
 """
 
 PROV3_REPORT_LIMITED_PROMPT = """LIMITED TRUST REPORT — Stellar Pro v3 (screen / keyframe verification failed).
 
-The player's video was captured from a SCREEN or re-recorded source. After two automated keyframe selection rounds, at least one CORE keyframe still scored below 90 in AI verification.
+The player's video may be from a SCREEN, re-recorded source, or keyframe verification did not reach the high-trust bar.
 
 Hard rules:
 1) State clearly that keyframe alignment did NOT pass the high-trust gate. Use exact phrase in Chinese: "关键帧不符，结论受限" and in English: "Key frames did not pass verification; conclusions are limited."
 2) Do NOT write a confident, tour-level definitive report. Hedge every technical claim. Do NOT invent ball flight, clubface aim, or precise angles.
-3) You MAY still give safe, general practice guidance and filming tips (better lighting, full-screen video, direct camera capture next time).
-4) MOTION_CONTEXT JSON is the only numeric source — same phase names as formal mode, but you must repeatedly remind the reader that phase images were not trusted.
+3) You MAY still give safe practice guidance and filming tips (lighting, full-screen swing video, direct camera capture).
+4) MOTION_CONTEXT JSON is the only numeric source — same phase names as formal mode; remind the reader often that phase timing/labels are not fully trusted.
+5) TRUTH FIRST: If motion data shows no credible swing, say so. If capture/trust flags suggest poor quality, say blur/moiré/untrusted timeline honestly — do not pretend the clip is studio-grade.
+
+PER-KEYFRAME (mandatory, same as formal mode):
+- "keyframe_evaluations": EXACTLY one object per row in MOTION_CONTEXT.keyframes, SAME ORDER.
+- Each: {{"phase": "<same as row>", "score": <0-100 conservative>, "action_assessment_en": "1-4 sentences with uncertainty hedges", "action_assessment_zh": "1-4句，标注不确定性"}}
+- Every phase gets a score and text — even when hedging heavily.
 
 MOTION_CONTEXT (JSON):
 {motion_context}
@@ -920,12 +941,14 @@ Return ONLY valid JSON with the SAME schema as formal Pro v3 reports:
   "issues_zh": ["阶段：...", "..."],
   "suggestions": ["Phase: ...", "..."],
   "suggestions_zh": ["阶段：...", "..."],
-  "summary": "200-400 words English; must mention limited trust / keyframe failure",
-  "summary_zh": "300-600 汉字；必须包含「关键帧不符，结论受限」",
+  "summary": "280-520 words English; must mention limited trust / keyframe failure; say what the data does or does not support",
+  "summary_zh": "400-750 汉字；必须包含「关键帧不符，结论受限」；如实写数据能支撑什么、不能支撑什么",
+  "keyframe_evaluations": [{{"phase": "address", "score": 0, "action_assessment_en": "...", "action_assessment_zh": "..."}}],
   "training_plan": {{ "day1": {{"focus": "...", "drills": ["..."], "duration": "30 min"}}, ... day7 }}
 }}
 
 Minimum 3 items each for issues, issues_zh, suggestions, suggestions_zh. training_plan day1-day7 required.
+keyframe_evaluations length MUST equal len(MOTION_CONTEXT.keyframes).
 """
 
 IMAGE_ONLY_PROMPT = """You are an expert PGA-level golf coach and biomechanics analyst.

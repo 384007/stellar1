@@ -1,3 +1,5 @@
+const path = require("path");
+
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   images: {
@@ -24,6 +26,7 @@ const nextConfig = {
   },
   webpack: (config) => {
     config.resolve.alias["@mediapipe/tasks-vision"] = false;
+    config.resolve.alias["@ffmpeg/util"] = path.join(__dirname, "lib/shims/ffmpeg-util.ts");
     return config;
   },
 };

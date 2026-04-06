@@ -13,10 +13,54 @@ from typing import Any
 
 import cv2
 
-from services.prov3_text_report_service import pop_prov3_report_meta, write_prov3_ai_report
+from services.prov3_text_report_service import (
+    _synthetic_keyframe_evaluations,
+    pop_prov3_report_meta,
+    write_prov3_ai_report,
+)
 from services.prov3_report_motion import DenseFrame, dense_scan_swing_region, find_swing_window_seconds
 
 logger = logging.getLogger(__name__)
+
+
+def _merge_keyframe_ai_into_strips(minimal: dict[str, Any], evals: list[Any]) -> None:
+    """Attach Gemini per-phase scores/text onto keyframe row dicts (by phase)."""
+    if not isinstance(evals, list) or not evals:
+        return
+    by_phase: dict[str, dict[str, Any]] = {}
+    for e in evals:
+        if not isinstance(e, dict):
+            continue
+        ph = str(e.get("phase") or "").strip().lower()
+        if ph:
+            by_phase[ph] = e
+
+    def _apply(rows: list[Any]) -> None:
+        if not isinstance(rows, list):
+            return
+        for k in rows:
+            if not isinstance(k, dict):
+                continue
+            ph = str(k.get("phase") or "").strip().lower()
+            ev = by_phase.get(ph)
+            if not ev:
+                continue
+            try:
+                sc = ev.get("score")
+                if sc is not None:
+                    k["ai_phase_score"] = float(sc)
+            except (TypeError, ValueError):
+                pass
+            en = ev.get("action_assessment_en")
+            zh = ev.get("action_assessment_zh")
+            if isinstance(en, str) and en.strip():
+                k["ai_action_assessment_en"] = en.strip()
+            if isinstance(zh, str) and zh.strip():
+                k["ai_action_assessment_zh"] = zh.strip()
+
+    _apply(list(minimal.get("official_phase_keyframes") or []))
+    _apply(list(minimal.get("preview_keyframes") or []))
+    _apply(list(minimal.get("keyframes") or []))
 
 
 def _nearest_dense_motion(dense: list[DenseFrame], frame_index: int) -> float:
@@ -122,11 +166,6 @@ async def enrich_pro_prov3_response(
         logger.info("[PRO_PROV3][GEMINI] skip — cancel requested before enrich")
         return minimal
 
-    if str(minimal.get("final_status") or "").strip().lower() != "pass":
-        logger.info("[PRO_PROV3][GEMINI] skip — final_status=%s", minimal.get("final_status"))
-        # Do not pop _prov3_motion — API layer needs analysis_video path for media persistence.
-        return minimal
-
     block = minimal.pop("_prov3_motion", None) or {}
     av = str(block.get("analysis_video") or "").strip()
     if not av or not Path(av).is_file():
@@ -174,10 +213,18 @@ async def enrich_pro_prov3_response(
         logger.warning("[PRO_PROV3][GEMINI] dense scan failed: %s", exc)
         dense = []
 
-    kf_motion = _keyframes_for_motion(list(minimal.get("keyframes") or []), analysis_fps)
+    kf_rows = list(minimal.get("official_phase_keyframes") or [])
+    if not kf_rows:
+        kf_rows = list(minimal.get("preview_keyframes") or [])
+    if not kf_rows:
+        kf_rows = list(minimal.get("keyframes") or [])
+    kf_motion = _keyframes_for_motion(kf_rows, analysis_fps)
     extras: dict[str, Any] = {
         "prov3_analysis_trust": minimal.get("analysis_trust"),
         "prov3_fail_reasons": list(minimal.get("retry_reasons") or [])[:12],
+        "prov3_screen_pipeline": bool(minimal.get("prov3_screen_pipeline")),
+        "prov3_final_status": str(minimal.get("final_status") or ""),
+        "low_trust_preview_only": bool(minimal.get("low_trust_preview_only")),
     }
     motion_context = _build_motion_context_local(
         fps=fps_v,
@@ -209,6 +256,13 @@ async def enrich_pro_prov3_response(
         minimal["summary"] = rep["summary"].strip()
     if isinstance(rep.get("summary_zh"), str) and rep["summary_zh"].strip():
         minimal["summary_zh"] = rep["summary_zh"].strip()
+
+    ke = rep.get("keyframe_evaluations")
+    if not isinstance(ke, list) or not ke:
+        lim_ctx = str(minimal.get("report_mode") or "").strip().lower() == "limited"
+        ke = _synthetic_keyframe_evaluations(motion_context, low_trust=lim_ctx)
+    if isinstance(ke, list) and ke:
+        _merge_keyframe_ai_into_strips(minimal, ke)
 
     for key in ("issues", "issues_zh", "suggestions", "suggestions_zh"):
         val = rep.get(key)

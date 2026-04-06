@@ -72,6 +72,43 @@ def _kf_by_phase(motion_context: dict[str, Any]) -> dict[str, dict[str, Any]]:
     return by
 
 
+def _synthetic_keyframe_evaluations(
+    motion_context: dict[str, Any],
+    *,
+    low_trust: bool = False,
+) -> list[dict[str, Any]]:
+    """Ordered per-row scores/text when Gemini is unavailable (metadata only)."""
+    rows = motion_context.get("keyframes") or []
+    if not isinstance(rows, list):
+        return []
+    out: list[dict[str, Any]] = []
+    lt_en = " Low-trust context: treat phase timing as approximate." if low_trust else ""
+    lt_zh = " 低信任场景下阶段时间线仅供参考。" if low_trust else ""
+    for r in rows:
+        if not isinstance(r, dict):
+            continue
+        ph = str(r.get("phase") or "").strip()
+        if not ph:
+            continue
+        try:
+            proxy = float(r.get("dense_motion_proxy") or 0.0)
+        except (TypeError, ValueError):
+            proxy = 0.0
+        out.append(
+            {
+                "phase": ph,
+                "score": int(max(35, min(78, 48 + min(20, proxy * 12)))),
+                "action_assessment_en": (
+                    f"Metadata-only fallback: dense_motion_proxy≈{proxy:.4f} at this phase; no vision.{lt_en}"
+                ),
+                "action_assessment_zh": (
+                    f"本地 metadata 兜底：该阶段 dense_motion_proxy 约 {proxy:.4f}，无画面。{lt_zh}"
+                ),
+            }
+        )
+    return out
+
+
 def build_prov3_fallback_report(motion_context: dict[str, Any]) -> dict[str, Any]:
     """Deterministic coaching-shaped report when AI fails or returns thin output."""
     by = _kf_by_phase(motion_context)
@@ -250,6 +287,7 @@ def build_prov3_fallback_report(motion_context: dict[str, Any]) -> dict[str, Any
         "suggestions_zh": suggestions_zh[:6],
         "summary": summary_en,
         "summary_zh": summary_zh,
+        "keyframe_evaluations": _synthetic_keyframe_evaluations(motion_context, low_trust=False),
         "training_plan": training_plan,
         "ai_provider": "prov3_fallback",
     }
@@ -316,6 +354,7 @@ def build_prov3_limited_fallback(motion_context: dict[str, Any]) -> dict[str, An
         "suggestions_zh": sug_zh,
         "summary": summary_en,
         "summary_zh": summary_zh,
+        "keyframe_evaluations": _synthetic_keyframe_evaluations(motion_context, low_trust=True),
         "training_plan": training_plan,
         "ai_provider": "prov3_limited_fallback",
     }
@@ -352,7 +391,7 @@ async def write_prov3_ai_report(
             motion_context,
             region=region,
             use_strong_prompt=False,
-            max_tokens=8192,
+            max_tokens=12288,
             call_label=lim_lbl,
             report_mode="limited",
         )
@@ -382,7 +421,7 @@ async def write_prov3_ai_report(
         motion_context,
         region=region,
         use_strong_prompt=False,
-        max_tokens=10240,
+        max_tokens=12288,
         call_label=p1_lbl,
         report_mode="formal",
     )

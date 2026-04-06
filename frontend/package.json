@@ -20,6 +20,8 @@
     "pages:deploy:debug": "WRANGLER_LOG=debug wrangler pages deploy .vercel/output/static --commit-dirty=true"
   },
   "dependencies": {
+    "@ffmpeg/ffmpeg": "^0.12.10",
+    "@ffmpeg/util": "^0.12.1",
     "@mediapipe/tasks-vision": "^0.10.33",
     "jose": "^5.9.6",
     "jsonwebtoken": "^9.0.2",

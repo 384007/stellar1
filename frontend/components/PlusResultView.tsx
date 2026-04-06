@@ -1223,6 +1223,39 @@ function FullSwingView({ result, lang, prov3Strict, prov3KfGate }: FullSwingView
               {lang === "zh" ? PROV3_PHASE_NAMING.stripHint.zh : PROV3_PHASE_NAMING.stripHint.en}
             </p>
           ) : null}
+          {(() => {
+            const kf = currentKf as
+              | {
+                  ai_phase_score?: unknown;
+                  ai_action_assessment_en?: unknown;
+                  ai_action_assessment_zh?: unknown;
+                }
+              | undefined;
+            const score =
+              typeof kf?.ai_phase_score === "number" && Number.isFinite(kf.ai_phase_score)
+                ? kf.ai_phase_score
+                : null;
+            const text =
+              lang === "zh"
+                ? typeof kf?.ai_action_assessment_zh === "string"
+                  ? kf.ai_action_assessment_zh.trim()
+                  : ""
+                : typeof kf?.ai_action_assessment_en === "string"
+                  ? kf.ai_action_assessment_en.trim()
+                  : "";
+            if (score == null && !text) return null;
+            return (
+              <div className="mt-2 rounded-lg border border-white/10 bg-white/[0.03] px-2 py-1.5 text-left">
+                <p className="mb-0.5 text-[9px] font-semibold text-brand-purple/90">
+                  {lang === "zh" ? "AI 本阶段评价" : "AI phase assessment"}
+                  {score != null ? (
+                    <span className="ml-2 font-mono text-white/55">{Math.round(score)}</span>
+                  ) : null}
+                </p>
+                {text ? <p className="text-[10px] leading-snug text-white/65">{text}</p> : null}
+              </div>
+            );
+          })()}
         </div>
       </div>
 
