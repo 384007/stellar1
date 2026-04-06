@@ -20,15 +20,13 @@ import cv2
 from PIL import Image, ImageDraw
 
 from lib.prov3.keyframes.constants import EVENT_SEQUENCE
-from lib.prov3.keyframes.decode_spacing import spread_keyframes_min_decode_gap
 from services.internal.prov3_ffmpeg import ffmpeg_extract_frames_bgr_by_decode_index, ffprobe_video_meta
 from services.internal.frame_enhance_service import persist_final_keyframe_images
 from services.prov3_keyframe_orchestrator_service import run_keyframe_analyze
 
 logger = logging.getLogger(__name__)
 
-# ── Prov3 **UI 条图**：旋转元数据、ffmpeg 抽帧、以及条图前对 ``frame_index`` 的最小帧距修正
-#    （避免 low trust 时 8 帧挤在几十毫秒内导致缩略图看起来一样）。
+# ── Prov3 **UI 条图**：旋转元数据、ffmpeg 按解码序号抽帧；post-A/B 不再改写 A/B 的 ``frame_index``。
 
 _PROV3_THUMB_FFPROBE_OK: Optional[bool] = None
 _PROV3_THUMB_FFPROBE_WARNED = False
@@ -419,23 +417,7 @@ def run_pro_video_analyze_via_prov3(
     if not thumb_ok:
         raise RuntimeError("analysis_video_missing: true240 analysis video is required")
 
-    if thumb_ok and len(raw_kfs) == 8:
-        try:
-            meta_sp = ffprobe_video_meta(av_path)
-            nb_sp = int(meta_sp.get("nb_frames") or 0)
-            dur_sp = float(meta_sp.get("duration_s") or 0.0)
-            fps_sp = float(meta_sp.get("fps") or ANALYSIS_FPS)
-            if nb_sp <= 0 and dur_sp > 0 and fps_sp > 0:
-                nb_sp = max(int(round(dur_sp * fps_sp)), 8)
-            nb_sp = max(nb_sp, 1)
-            raw_kfs, did_spread = spread_keyframes_min_decode_gap(list(raw_kfs), nb_sp)
-            if did_spread:
-                logger.info(
-                    "[PRO_PROV3] strip keyframe spread applied nb_frames=%s (B-layer snap / low trust)",
-                    nb_sp,
-                )
-        except Exception as exc:
-            logger.warning("[PRO_PROV3] strip keyframe spread skipped: %s", exc)
+    # Debug / strict contract: do not call ``spread_keyframes_min_decode_gap`` — A/B indices flow unchanged.
 
     persisted_kfs = persist_final_keyframe_images(av_path, raw_kfs, str(work / "keyframe_images"))
     event_to_phase = {v: k for k, v in EVENT_NAME_TO_PHASE.items()}
@@ -460,6 +442,7 @@ def run_pro_video_analyze_via_prov3(
     status = str(dumped.get("status") or "low_trust")
     fail_reasons = list(dumped.get("fail_reasons") or [])
 
+    # Semantic gate: validation only — never reorder or rewrite keyframe rows or indices.
     semantic_ok, semantic_fails = _semantic_acceptance_gate(ui_keyframes)
     logger.info(
         "[PRO_PROV3][semantic_gate] ok=%s fails=%s",
@@ -507,9 +490,10 @@ def run_pro_video_analyze_via_prov3(
     low_trust_preview_only = status != "pass" or analysis_trust == "low_trust"
     if low_trust_preview_only and "low_trust_preview_only" not in fail_reasons:
         fail_reasons = [*fail_reasons, "low_trust_preview_only"]
-    official_phase_keyframes = [] if low_trust_preview_only else list(ui_keyframes)
     preview_keyframes = list(ui_keyframes)
-    display_keyframes = preview_keyframes if low_trust_preview_only else official_phase_keyframes
+    official_phase_keyframes = [] if low_trust_preview_only else list(ui_keyframes)
+    # Top-level ``keyframes`` = official strip only (never alias preview when low trust).
+    product_keyframes = list(official_phase_keyframes)
     issues = fail_reasons[:3] if fail_reasons else []
     issues_zh = fail_reasons[:3] if fail_reasons else []
 
@@ -534,7 +518,7 @@ def run_pro_video_analyze_via_prov3(
         "summary": summary,
         "summary_zh": summary_zh,
         "total_score": total_score,
-        "keyframes": display_keyframes,
+        "keyframes": product_keyframes,
         "official_phase_keyframes": official_phase_keyframes,
         "preview_keyframes": preview_keyframes,
         "contact_sheet_url": sheet_path or "",

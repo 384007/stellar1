@@ -74,12 +74,14 @@ function plusKeyframesMissingImages(parsed: ParsedResult): boolean {
     String(parsed.analysis_trust ?? parsed.trust_level ?? "") === "low_trust" ||
     parsed.low_trust_preview_only === true;
   const kfs = lowTrust
-    ? (Array.isArray(parsed.preview_keyframes) && parsed.preview_keyframes.length > 0
-        ? parsed.preview_keyframes
-        : parsed.keyframes)
-    : (Array.isArray(parsed.official_phase_keyframes) && parsed.official_phase_keyframes.length > 0
-        ? parsed.official_phase_keyframes
-        : parsed.keyframes);
+    ? Array.isArray(parsed.preview_keyframes) && parsed.preview_keyframes.length > 0
+      ? parsed.preview_keyframes
+      : []
+    : Array.isArray(parsed.official_phase_keyframes) && parsed.official_phase_keyframes.length > 0
+      ? parsed.official_phase_keyframes
+      : Array.isArray(parsed.keyframes)
+        ? parsed.keyframes
+        : [];
   if (!Array.isArray(kfs) || kfs.length === 0) return true;
   const withImg = kfs.filter((k) => {
     const b = (k as { image_base64?: string }).image_base64;
@@ -942,12 +944,15 @@ export default function HistoryPage() {
       const keyframes = Array.isArray(r.keyframes) ? r.keyframes : [];
       const official = Array.isArray(r.official_phase_keyframes) ? r.official_phase_keyframes : [];
       const preview = Array.isArray(r.preview_keyframes) ? r.preview_keyframes : [];
-      if (lowTrust) {
-        if (preview.length > 0) r.keyframes = preview;
-      } else if (official.length > 0) {
-        r.keyframes = official;
-      } else if (keyframes.length === 0 && preview.length > 0) {
-        r.keyframes = preview;
+      if (!lowTrust) {
+        if (official.length > 0) {
+          r.keyframes = official;
+        }
+      } else {
+        if (preview.length === 0 && keyframes.length > 0) {
+          r.preview_keyframes = keyframes;
+        }
+        r.keyframes = [];
       }
       normalizeProv3MediaInRaw(r);
       return r as ParsedResult;

@@ -298,6 +298,14 @@ function keyframeForPhase(
   );
 }
 
+/** Pose / overlay alignment: official A/B strip only — never ``preview_keyframes``. */
+function officialKeyframeStripForPose(result: PlusAnalysisResult): PlusAnalysisResult["keyframes"] | undefined {
+  if (Array.isArray(result.official_phase_keyframes) && result.official_phase_keyframes.length > 0) {
+    return result.official_phase_keyframes;
+  }
+  return result.keyframes;
+}
+
 function isLowTrustPreviewOnly(result: PlusAnalysisResult): boolean {
   if (result.low_trust_preview_only) return true;
   if (String(result.final_status || "") && String(result.final_status) !== "pass") return true;
@@ -395,7 +403,7 @@ function poseForPhase(
   if (!poses?.length) return null;
 
   // 0. Prefer pose_snapshot embedded in the keyframe (guaranteed same moment as JPEG)
-  const kf = keyframeForPhase(result.keyframes, phaseId);
+  const kf = keyframeForPhase(officialKeyframeStripForPose(result), phaseId);
   if (kf?.pose_snapshot) {
     const snap = kf.pose_snapshot;
     const syntheticPose = _snapshotToPoseFrame(snap, kf.timestamp, kf.width, kf.height);
@@ -1052,11 +1060,8 @@ function FullSwingView({ result, lang, prov3Strict, prov3KfGate }: FullSwingView
   const officialKeyframes =
     Array.isArray(result.official_phase_keyframes) && result.official_phase_keyframes.length > 0
       ? result.official_phase_keyframes
-      : result.keyframes;
-  const previewKeyframes =
-    Array.isArray(result.preview_keyframes) && result.preview_keyframes.length > 0
-      ? result.preview_keyframes
-      : result.keyframes;
+      : [];
+  const previewKeyframes = Array.isArray(result.preview_keyframes) ? result.preview_keyframes : [];
   const displayKeyframes = lowTrustPreviewOnly ? previewKeyframes : officialKeyframes;
 
   const phaseKey = SWING_PHASES[activePhase];
@@ -1614,11 +1619,8 @@ export default function PlusResultView({ result, lang, externalVideoSrc, backend
   const officialKeyframes =
     Array.isArray(result.official_phase_keyframes) && result.official_phase_keyframes.length > 0
       ? result.official_phase_keyframes
-      : result.keyframes;
-  const previewKeyframes =
-    Array.isArray(result.preview_keyframes) && result.preview_keyframes.length > 0
-      ? result.preview_keyframes
-      : result.keyframes;
+      : [];
+  const previewKeyframes = Array.isArray(result.preview_keyframes) ? result.preview_keyframes : [];
   const displayKeyframes = lowTrustPreviewOnly ? previewKeyframes : officialKeyframes;
   const safeActiveKeyframe =
     displayKeyframes.length > 0 ? Math.min(activeKeyframe, displayKeyframes.length - 1) : 0;

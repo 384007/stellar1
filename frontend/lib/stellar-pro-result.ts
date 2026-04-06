@@ -112,9 +112,6 @@ export function proExpandedToPlusViewModel(r: Record<string, any>): PlusAnalysis
     status_en: "Note",
   }));
 
-  const keyframes = Array.isArray(r.keyframes)
-    ? r.keyframes.filter((k: unknown) => k != null && typeof k === "object" && !Array.isArray(k))
-    : [];
   const official = Array.isArray(r.official_phase_keyframes)
     ? r.official_phase_keyframes.filter((k: unknown) => k != null && typeof k === "object" && !Array.isArray(k))
     : [];
@@ -122,11 +119,12 @@ export function proExpandedToPlusViewModel(r: Record<string, any>): PlusAnalysis
     ? r.preview_keyframes.filter((k: unknown) => k != null && typeof k === "object" && !Array.isArray(k))
     : [];
   const isLowTrust =
-    String(r.final_status ?? "") !== "pass" || String(r.analysis_trust ?? r.trust_level ?? "") === "low_trust";
+    String(r.final_status ?? "") !== "pass" ||
+    String(r.analysis_trust ?? r.trust_level ?? "") === "low_trust" ||
+    r.low_trust_preview_only === true;
   const stripKfB64 = String(r.pipeline ?? "") === "prov3";
-  const displayKeyframesRaw = isLowTrust
-    ? (preview.length ? preview : keyframes)
-    : (official.length ? official : keyframes);
+  // Official product strip: A/B-approved frames only — never substitute ``preview_keyframes`` or legacy ``keyframes``.
+  const displayKeyframesRaw = isLowTrust ? [] : official.length ? official : [];
   type NormalizedKf = {
     phase: string;
     label_en: string;
@@ -202,7 +200,7 @@ export function proExpandedToPlusViewModel(r: Record<string, any>): PlusAnalysis
   };
 
   const scoresRaw = r.scores && typeof r.scores === "object" ? (r.scores as Record<string, number>) : null;
-  const pk = isLowTrust ? undefined : mergePhaseKeyframeMaps(r.phase_keyframes, normalizedDisplay);
+  const pk = isLowTrust ? undefined : mergePhaseKeyframeMaps(r.phase_keyframes, normalizedOfficial);
 
   return {
     analysis_id: String(r.analysis_id ?? ""),
@@ -347,7 +345,9 @@ export function expandStellarProForUi(raw: Record<string, any>): Record<string, 
     pose_frames: Array.isArray(raw.pose_frames) ? raw.pose_frames : [],
     phase_keyframes: mergePhaseKeyframeMaps(
       raw.phase_keyframes,
-      Array.isArray(raw.keyframes) ? raw.keyframes : [],
+      Array.isArray(raw.official_phase_keyframes) && raw.official_phase_keyframes.length > 0
+        ? raw.official_phase_keyframes
+        : [],
     ),
     video_meta: raw.video_meta ?? {},
     contact_sheet_url: raw.contact_sheet_url ?? null,

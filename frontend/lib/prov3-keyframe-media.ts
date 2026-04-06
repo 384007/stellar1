@@ -67,9 +67,9 @@ export function prov3DisplayKeyframeRows(r: Prov3ResultLike): Prov3KeyframeRowLi
     : [];
   const preview = Array.isArray(r.preview_keyframes) ? (r.preview_keyframes as Prov3KeyframeRowLike[]) : [];
   if (lowTrust) {
-    return preview.length ? preview : keyframes;
+    return preview.length ? preview : [];
   }
-  return official.length ? official : keyframes;
+  return official.length ? official : [];
 }
 
 export function isValidProv3KeyframeImageUrl(url: string): boolean {
