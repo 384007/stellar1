@@ -10,6 +10,8 @@ interface AnalysisWaitingProps {
   prov3ScreenMode?: boolean;
   /** Pro：请求后端协作取消并中止客户端等待。 */
   onCancel?: () => void | Promise<void>;
+  /** Pro：第二行说明（上传 / 轮询 / 重连提示）。 */
+  statusSubline?: string;
 }
 
 type TechPoint = {
@@ -251,6 +253,7 @@ export default function AnalysisWaiting({
   mode,
   prov3ScreenMode,
   onCancel,
+  statusSubline,
 }: AnalysisWaitingProps) {
   const screenModeBanner = prov3ScreenMode;
   const [currentTip, setCurrentTip] = useState(0);
@@ -387,6 +390,11 @@ export default function AnalysisWaiting({
         <div className="mb-2 rounded-full border border-brand-gold/30 bg-brand-gold/10 px-3 py-1 text-[10px] font-semibold tracking-wide text-brand-gold">
           {lang === "zh" ? "屏幕模式 · AI 路由与关键帧校验" : "Screen mode · AI routing & keyframe review"}
         </div>
+      ) : null}
+      {mode === "pro" && statusSubline ? (
+        <p className="mb-1 max-w-sm px-2 text-center text-[11px] leading-snug text-amber-200/85">
+          {statusSubline}
+        </p>
       ) : null}
       <p className="mb-1 text-xs text-white/40">{stageText}</p>
       {onCancel && mode === "pro" ? (

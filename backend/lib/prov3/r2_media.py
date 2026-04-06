@@ -13,14 +13,19 @@ Env (reuse bucket creds from ``.env.example``):
 
 from __future__ import annotations
 
+import json
 import logging
 import mimetypes
 import os
 import re
 from pathlib import Path
+
+from botocore.exceptions import ClientError
+
 logger = logging.getLogger(__name__)
 
 _R2_KEY_PREFIX = "prov3-media"
+PROV3_ASYNC_JOB_PREFIX = "prov3-async-jobs"
 
 
 def prov3_r2_media_fully_configured() -> bool:
@@ -130,3 +135,65 @@ def r2_head_object_exists(key: str) -> bool:
         return True
     except Exception:
         return False
+
+
+def prov3_async_job_status_key(job_id: str) -> str:
+    jid = _safe_segment(job_id)
+    if not jid:
+        raise ValueError("invalid job_id")
+    return f"{PROV3_ASYNC_JOB_PREFIX}/{jid}/status.json"
+
+
+def prov3_async_job_result_key(job_id: str) -> str:
+    jid = _safe_segment(job_id)
+    if not jid:
+        raise ValueError("invalid job_id")
+    return f"{PROV3_ASYNC_JOB_PREFIX}/{jid}/result.json"
+
+
+def r2_put_json_object(key: str, data: dict) -> None:
+    if not prov3_r2_media_fully_configured():
+        raise RuntimeError("R2 not configured")
+    bucket = (os.getenv("R2_BUCKET") or "").strip()
+    client = _s3_client()
+    body = json.dumps(data, ensure_ascii=False, default=str).encode("utf-8")
+    client.put_object(
+        Bucket=bucket,
+        Key=key,
+        Body=body,
+        ContentType="application/json; charset=utf-8",
+        CacheControl="no-store",
+    )
+
+
+def r2_get_json_object_if_exists(key: str) -> dict | None:
+    if not prov3_r2_media_fully_configured():
+        return None
+    bucket = (os.getenv("R2_BUCKET") or "").strip()
+    client = _s3_client()
+    try:
+        r = client.get_object(Bucket=bucket, Key=key)
+        raw = r["Body"].read()
+        return json.loads(raw.decode("utf-8"))
+    except ClientError as exc:
+        code = (exc.response.get("Error") or {}).get("Code") or ""
+        if code in ("404", "NoSuchKey", "NotFound"):
+            return None
+        raise
+    except json.JSONDecodeError:
+        return None
+
+
+def r2_download_object_to_path(key: str, dest: Path) -> None:
+    if not prov3_r2_media_fully_configured():
+        raise RuntimeError("R2 not configured")
+    bucket = (os.getenv("R2_BUCKET") or "").strip()
+    client = _s3_client()
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        client.download_file(bucket, key, str(dest))
+    except ClientError as exc:
+        code = (exc.response.get("Error") or {}).get("Code") or ""
+        if code in ("404", "NoSuchKey", "NotFound"):
+            raise FileNotFoundError(f"R2 object not found: {key}") from exc
+        raise

@@ -21,7 +21,6 @@ import { expandStellarProForUi } from "@/lib/stellar-pro-result";
 import { pruneLocalStellarHistoryRecords } from "@/lib/pro-history-retention";
 import {
   DEFAULT_PROV3_MODAL_URL,
-  formatProAnalyzeHttpError,
   normalizeProv3UrlListsFromPrecheck,
   PRO_V3_EDGE_PRECHECK_PATH,
   requestProv3AnalyzeCancel,
@@ -239,14 +238,13 @@ export default function AnalyzePage() {
     }
 
     if (isPro) {
-      // Pro mode: precheck (Edge) → always try Modal first (all regions, including CN).
-      // Render runs only when NEXT_PUBLIC_PROV3_RENDER_FALLBACK=true; cnNetworkHint never reorders hosts.
-      // Never proxy through the CF Worker — its 30 s wall-clock limit kills long analyses.
+      // Pro mode: precheck (Edge) → same-origin upload + ``/api/prov3/analyze/start`` → poll job from R2
+      // (no long browser→Modal ``POST /pro-v3/analyze``; Modal runs the job in the background).
       const token = localStorage.getItem("stellar_token");
       const authHeaders: Record<string, string> = {};
       if (token && token.includes(".")) authHeaders["Authorization"] = `Bearer ${token}`;
 
-      // ① Precheck — Modal + Render URL lists; try order is Modal → Render (Render opt-in via env, same for CN)
+      // ① Precheck — Modal URL list + network hint (orchestration still uses Edge proxies)
       const defaultBackend =
         process.env.NEXT_PUBLIC_BACKEND_URL || "https://stellar1-backend.onrender.com";
       let proNetworkHint = "";
@@ -270,7 +268,7 @@ export default function AnalyzePage() {
       const mb = (file.size / 1024 / 1024).toFixed(1);
       const cnPro = proNetworkHint === "cn";
       const screenMode = resolveProv3ScreenMode(filename, prov3ScreenMode);
-      const { response: res, route: proServedBy } = await runProv3AnalyzeMultipart(
+      const { raw: rawPro, route: proServedBy } = await runProv3AnalyzeMultipart(
         file as Blob,
         filename,
         authHeaders,
@@ -279,7 +277,6 @@ export default function AnalyzePage() {
           backendUrls,
           cnNetworkHint: cnPro,
           screenMode,
-          // Match /pro: Pro v3 on Modal often exceeds 2–3 minutes (SwingNet + dense + Gemini).
           modalTimeoutMs: cnPro ? 90_000 : 360_000,
           renderTimeoutMs: 360_000,
           logPrefix: `[stellar-pro] ${mb}MB`,
@@ -288,24 +285,8 @@ export default function AnalyzePage() {
         },
       );
 
-      const runtimeHeader = res.headers.get("x-stellar-runtime") || "unknown";
-      console.log(`[stellar-pro] Pro response: ${res.status} (served_by=${proServedBy}, runtime=${runtimeHeader})`);
-      if (!res.ok) {
-        let detail = `HTTP ${res.status}`;
-        try {
-          const j = await res.json();
-          detail = typeof j?.detail === "string" ? j.detail : detail;
-        } catch { /* ignore */ }
-        throw new Error(formatProAnalyzeHttpError(res.status, detail));
-      }
+      console.log(`[stellar-pro] Pro job completed (route=${proServedBy})`);
       await yieldUiBeforeHeavyParse();
-      const rawText = await res.text();
-      let rawPro: Record<string, unknown>;
-      try {
-        rawPro = JSON.parse(rawText) as Record<string, unknown>;
-      } catch {
-        throw new Error("Pro 分析返回数据无法解析，请重试");
-      }
       return expandStellarProForUi(rawPro) as AnalysisResult;
     }
 

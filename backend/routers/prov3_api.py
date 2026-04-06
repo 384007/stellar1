@@ -18,13 +18,18 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, RedirectResponse
+from pydantic import BaseModel, Field
 
 from lib.prov3.keyframes.types import ExtractRequest, RefineRequest
 from lib.prov3.r2_media import (
+    prov3_async_job_result_key,
+    prov3_async_job_status_key,
     prov3_r2_media_fully_configured,
     prov3_r2_object_key,
     prov3_r2_public_url_for_key,
+    r2_download_object_to_path,
     r2_head_object_exists,
+    r2_put_json_object,
     upload_prov3_media_directory_to_r2_and_verify,
 )
 from routers.auth import get_current_user
@@ -158,6 +163,140 @@ def _pro_analyze_ingress_echo(route: str, request: Request) -> None:
         f"host={host!r} runtime={runtime} modal_host={int(modal_host)} modal_env={int(modal_env)}"
     )
     logger.info("%s", msg)
+
+
+class Prov3AnalyzeStartBody(BaseModel):
+    """Start a background Pro v3 analyze from a video already stored in R2 (same-origin upload)."""
+
+    source_r2_key: str = Field(..., min_length=6, max_length=512)
+    screen_mode: bool = False
+    rough_impact_time_s: Optional[float] = None
+
+
+def _validate_user_video_r2_key(source_r2_key: str, user_id: str) -> str:
+    k = (source_r2_key or "").strip().lstrip("/")
+    if not k or ".." in k:
+        raise HTTPException(status_code=400, detail="Invalid source_r2_key")
+    uid = user_id.strip()
+    if not uid:
+        raise HTTPException(status_code=401, detail="Invalid token")
+    prefix = f"videos/{uid}/"
+    if not k.startswith(prefix):
+        raise HTTPException(status_code=403, detail="Video key does not belong to this account")
+    rest = k[len(prefix) :]
+    if not rest or "/" in rest:
+        raise HTTPException(status_code=400, detail="Invalid source_r2_key shape")
+    return k
+
+
+async def _prov3_write_async_job_status(job_id: str, payload: dict) -> None:
+    key = prov3_async_job_status_key(job_id)
+    await asyncio.to_thread(r2_put_json_object, key, payload)
+
+
+async def _prov3_analyze_async_worker(
+    job_id: str,
+    source_r2_key: str,
+    screen_mode: bool,
+    rough_impact_time_s: Optional[float],
+    api_base_url: str,
+    media_prefix: str,
+    lock_acquired: bool,
+    user_id: str,
+) -> None:
+    """Runs after ``/analyze/start`` returns; updates R2 job records; releases Modal single-flight lock."""
+    try:
+        await _prov3_write_async_job_status(
+            job_id,
+            {
+                "status": "running",
+                "job_id": job_id,
+                "user_id": user_id,
+            },
+        )
+        suffix = Path(source_r2_key).suffix or ".mp4"
+        with tempfile.TemporaryDirectory(prefix="stellar_pro_async_dl_") as dl_tmp:
+            dl_path = Path(dl_tmp) / f"input{suffix}"
+            try:
+                await asyncio.to_thread(r2_download_object_to_path, source_r2_key, dl_path)
+            except FileNotFoundError as exc:
+                await _prov3_write_async_job_status(
+                    job_id,
+                    {
+                        "status": "failed",
+                        "job_id": job_id,
+                        "user_id": user_id,
+                        "detail": str(exc) or "Video missing in R2",
+                    },
+                )
+                return
+            body_bytes = dl_path.read_bytes()
+        if not body_bytes:
+            await _prov3_write_async_job_status(
+                job_id,
+                {
+                    "status": "failed",
+                    "job_id": job_id,
+                    "user_id": user_id,
+                    "detail": "Downloaded video is empty",
+                },
+            )
+            return
+
+        fname = Path(source_r2_key).name or f"upload{suffix}"
+        result = await _run_pro_analyze_body(
+            api_base_url,
+            body_bytes,
+            fname,
+            rough_impact_time_s,
+            screen_mode,
+            media_prefix,
+        )
+        rkey = prov3_async_job_result_key(job_id)
+        await asyncio.to_thread(r2_put_json_object, rkey, {"result": result})
+        aid = str(result.get("analysis_id") or "")
+        await _prov3_write_async_job_status(
+            job_id,
+            {
+                "status": "completed",
+                "job_id": job_id,
+                "user_id": user_id,
+                "analysis_id": aid,
+            },
+        )
+        logger.info("[PRO_PROV3][ASYNC] job_id=%s analysis_id=%s completed", job_id, aid)
+    except HTTPException as exc:
+        det = exc.detail
+        detail_for_failed = det if isinstance(det, str) else str(det)
+        await _prov3_write_async_job_status(
+            job_id,
+            {
+                "status": "failed",
+                "job_id": job_id,
+                "user_id": user_id,
+                "detail": detail_for_failed,
+                "http_status": int(exc.status_code),
+            },
+        )
+        logger.warning("[PRO_PROV3][ASYNC] job_id=%s HTTPException %s", job_id, exc.status_code)
+    except Exception as exc:
+        await _prov3_write_async_job_status(
+            job_id,
+            {
+                "status": "failed",
+                "job_id": job_id,
+                "user_id": user_id,
+                "detail": str(exc)[:2000],
+            },
+        )
+        logger.exception("[PRO_PROV3][ASYNC] job_id=%s failed: %s", job_id, exc)
+    finally:
+        if lock_acquired:
+            try:
+                _MODAL_PRO_ANALYZE_LOCK.release()
+                logger.info("[PRO_PROV3][ASYNC] job_id=%s lock released", job_id)
+            except RuntimeError:
+                pass
 
 
 def _safe_analysis_media_dir(analysis_id: str) -> Path:
@@ -370,9 +509,11 @@ async def _run_pro_analyze(
             ) from None
         logger.info("[PRO_PROV3][LOCK] rid=%s acquired", rid)
         try:
+            body_bytes = await file.read()
             return await _run_pro_analyze_body(
-                request,
-                file,
+                str(request.base_url).rstrip("/"),
+                body_bytes,
+                file.filename or "video.mp4",
                 rough_impact_time_s,
                 screen_mode,
                 media_prefix,
@@ -381,9 +522,11 @@ async def _run_pro_analyze(
             _MODAL_PRO_ANALYZE_LOCK.release()
             logger.info("[PRO_PROV3][LOCK] rid=%s released", rid)
 
+    body_bytes = await file.read()
     return await _run_pro_analyze_body(
-        request,
-        file,
+        str(request.base_url).rstrip("/"),
+        body_bytes,
+        file.filename or "video.mp4",
         rough_impact_time_s,
         screen_mode,
         media_prefix,
@@ -391,14 +534,16 @@ async def _run_pro_analyze(
 
 
 async def _run_pro_analyze_body(
-    request: Request,
-    file: UploadFile,
+    api_base_url: str,
+    body: bytes,
+    original_filename: str,
     rough_impact_time_s: Optional[float],
     screen_mode: bool,
     media_prefix: str,
 ) -> dict:
-    suffix = Path(file.filename or "video.mp4").suffix or ".mp4"
+    suffix = Path(original_filename or "video.mp4").suffix or ".mp4"
     mp = media_prefix.rstrip("/")
+    base = api_base_url.rstrip("/")
 
     prov3_begin_analyze()
     try:
@@ -415,7 +560,6 @@ async def _run_pro_analyze_body(
             input_path = str(Path(tmpdir) / f"input{suffix}")
             work_dir = os.path.join(tmpdir, "work")
             os.makedirs(work_dir, exist_ok=True)
-            body = await file.read()
             if not body:
                 raise HTTPException(status_code=400, detail="Empty file")
             with open(input_path, "wb") as f:
@@ -439,8 +583,6 @@ async def _run_pro_analyze_body(
                     raise RuntimeError("pro_analyze failed: missing analysis_id")
                 media_dir = _safe_analysis_media_dir(analysis_id)
                 media_dir.mkdir(parents=True, exist_ok=True)
-
-                base = str(request.base_url).rstrip("/")
 
                 original_name = f"original{suffix}"
                 original_path = media_dir / original_name
@@ -566,20 +708,99 @@ async def _run_pro_analyze_body(
                     raise HTTPException(status_code=422, detail="分析已取消") from exc
                 logger.warning(
                     "[PRO_PROV3][API] analyze RuntimeError (422) file=%s: %s",
-                    file.filename,
+                    original_filename,
                     exc,
                 )
                 raise HTTPException(status_code=422, detail=str(exc)) from exc
             except Exception as exc:
                 logger.exception(
                     "[PRO_PROV3][API] analyze failed (500) file=%s suffix=%s: %s",
-                    file.filename,
+                    original_filename,
                     suffix,
                     exc,
                 )
                 raise HTTPException(status_code=500, detail=f"pro_analyze failed: {exc}") from exc
     finally:
         prov3_finish_analyze()
+
+
+@router_pro_v3.post("/analyze/start")
+async def pro_v3_analyze_start(
+    request: Request,
+    body: Prov3AnalyzeStartBody,
+    current_user: Optional[dict] = Depends(get_current_user),
+):
+    """Queue a full Pro v3 analyze from R2 (``videos/{user_id}/…``); returns ``job_id`` immediately.
+
+    Poll job status via the same-origin app route that reads R2 (``/api/prov3/analyze/job/…``).
+    One in-flight analyze per Modal worker when single-flight is enabled (same lock as sync ``/analyze``).
+    """
+    if not current_user or not current_user.get("is_pro"):
+        raise HTTPException(status_code=403, detail="Pro membership required")
+    user_id = str(current_user.get("user_id") or "").strip()
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Invalid token")
+
+    _pro_analyze_ingress_echo("PRO_PROV3_ASYNC_START", request)
+    rid = (request.headers.get("x-request-id") or "").strip() or secrets.token_hex(4)
+    logger.info(
+        "[PRO_PROV3][ASYNC][API] rid=%s path=%s screen_mode=%s",
+        rid,
+        request.url.path,
+        "true" if body.screen_mode else "false",
+    )
+
+    if not prov3_r2_media_fully_configured():
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "Async Pro analyze requires R2 for job status. Configure R2 credentials, "
+                "or use synchronous POST /pro-v3/analyze for local testing."
+            ),
+        )
+
+    key = _validate_user_video_r2_key(body.source_r2_key, user_id)
+    if not await asyncio.to_thread(r2_head_object_exists, key):
+        raise HTTPException(
+            status_code=404,
+            detail="Uploaded video not found in storage; upload again via the app and retry.",
+        )
+
+    lock_acquired = False
+    if prov3_analyze_single_flight_active():
+        try:
+            await asyncio.wait_for(_MODAL_PRO_ANALYZE_LOCK.acquire(), timeout=0)
+            lock_acquired = True
+        except asyncio.TimeoutError:
+            logger.warning("[PRO_PROV3][ASYNC][LOCK] rid=%s reject 409", rid)
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "当前已有视频在分析中，请稍后再试。"
+                    "若您只提交了一次，可能是上一次分析仍在后台处理，请等待几分钟后在历史记录中查看。"
+                ),
+            ) from None
+        logger.info("[PRO_PROV3][ASYNC][LOCK] rid=%s acquired", rid)
+
+    job_id = secrets.token_urlsafe(16)
+    api_base = str(request.base_url).rstrip("/")
+    await _prov3_write_async_job_status(
+        job_id,
+        {"status": "accepted", "job_id": job_id, "user_id": user_id},
+    )
+    asyncio.create_task(
+        _prov3_analyze_async_worker(
+            job_id,
+            key,
+            body.screen_mode,
+            body.rough_impact_time_s,
+            api_base,
+            "/pro-v3",
+            lock_acquired,
+            user_id,
+        )
+    )
+    return {"job_id": job_id, "status": "accepted"}
 
 
 @router_pro_v3.post("/analyze")

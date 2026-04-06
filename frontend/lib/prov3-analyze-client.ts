@@ -1,26 +1,21 @@
-import { makeFormData } from "@/lib/fetch-retry";
-import { buildProV3AnalyzeRequestUrl, normalizeProHttpApiBase } from "@/lib/prov3-endpoints";
-
-/** Modal/Render base URL used for the in-flight ``POST /pro-v3/analyze`` (for cancel). */
-let _prov3ActiveAnalyzeBase: string | null = null;
+/** Same-origin Pro v3 orchestration (upload → one Modal ``/analyze/start`` → R2 job poll). */
+const PRO_V3_EDGE_ANALYZE_START = "/api/prov3/analyze/start";
+const PRO_V3_EDGE_ANALYZE_CANCEL = "/api/prov3/analyze/cancel";
 
 export function clearProv3ActiveAnalyzeBase(): void {
-  _prov3ActiveAnalyzeBase = null;
+  /* legacy no-op: cancel is always same-origin */
 }
 
-/** Ask the worker to cooperatively stop the current Pro analyze (same process as the active POST). */
+/**
+ * Ask Modal (via same-origin proxy) to cooperatively stop the current Pro analyze worker.
+ */
 export async function requestProv3AnalyzeCancel(
   authHeaders: Record<string, string>,
 ): Promise<{ ok: boolean }> {
-  const raw = _prov3ActiveAnalyzeBase;
-  if (!raw) return { ok: false };
-  const base = normalizeProHttpApiBase(raw);
-  if (!base) return { ok: false };
-  const url = `${base.replace(/\/+$/, "")}/pro-v3/analyze/cancel`;
   try {
     const ac = new AbortController();
     const timer = setTimeout(() => ac.abort(), 12_000);
-    const r = await fetch(url, {
+    const r = await fetch(PRO_V3_EDGE_ANALYZE_CANCEL, {
       method: "POST",
       headers: { ...authHeaders },
       signal: ac.signal,
@@ -37,19 +32,20 @@ export type RunProv3AnalyzeOptions = {
   backendUrls: string[];
   cnNetworkHint: boolean;
   screenMode: boolean;
-  /** Modal wall-clock timeout for the full analyze POST (must cover long Pro v3 runs). */
+  /** Wall-clock budget for the whole job (upload + start + polling until result). */
   modalTimeoutMs: number;
   renderTimeoutMs: number;
   logPrefix: string;
-  /** Abort stops the client fetch; pair with ``requestProv3AnalyzeCancel`` so the worker stops too. */
   abortSignal?: AbortSignal;
-  /** Shown when ``abortSignal`` fires (user clicked Stop). */
   userCancelledMessage?: string;
+  /** UI hint: uploading → starting → polling → reconnecting (GET poll only; never a second analyze POST). */
+  onJobPhase?: (phase: "uploading" | "starting" | "polling" | "reconnecting") => void;
 };
 
 export type Prov3AnalyzeResult = {
-  response: Response;
-  route: "modal" | "render";
+  /** Full product JSON (same shape as legacy sync ``POST /pro-v3/analyze``). */
+  raw: Record<string, unknown>;
+  route: "edge-job";
 };
 
 /** Lets the browser paint (e.g. progress 96%) before synchronous JSON parse on the main thread. */
@@ -60,18 +56,18 @@ export function yieldUiBeforeHeavyParse(): Promise<void> {
 }
 
 /**
- * Reads `NEXT_PUBLIC_PROV3_RENDER_FALLBACK`. Pro v3 multipart analyze no longer performs a Render
- * fallback POST (single Modal POST only); this remains for any other callers that check the flag.
+ * Reads `NEXT_PUBLIC_PROV3_RENDER_FALLBACK`. The edge-job path does not use Render fallback;
+ * kept for callers that branch on this flag elsewhere.
  */
 export function prov3RenderFallbackEnabled(): boolean {
   return process.env.NEXT_PUBLIC_PROV3_RENDER_FALLBACK === "true";
 }
 
-/** 将 FastAPI `detail` 与常见 404（错误 Modal 基址、未部署路由）说明合并为一条用户可读文案。 */
+/** 将 FastAPI `detail` 与常见 404 说明合并为一条用户可读文案。 */
 export function formatProAnalyzeHttpError(status: number, detail: string): string {
   const d = (detail || "").trim() || `HTTP ${status}`;
   if (status === 404) {
-    return `Pro分析失败 [404]: ${d}。请确认 MODAL_BACKEND_URL 为 Modal 根地址（不要带 /pro-v3），且已部署含 POST /pro-v3/analyze 的镜像。`;
+    return `Pro分析失败 [404]: ${d}。请确认已部署含 Pro v3 异步分析的 Modal 镜像，且 R2 已配置。`;
   }
   if (status === 422 && (d.includes("取消") || /cancel/i.test(d))) {
     return d;
@@ -79,105 +75,17 @@ export function formatProAnalyzeHttpError(status: number, detail: string): strin
   return `Pro分析失败 [${status}]: ${d}`;
 }
 
-function makeProv3FormData(blob: Blob, filename: string, screenMode: boolean): FormData {
-  const fd = makeFormData(blob, filename);
-  fd.append("screen_mode", screenMode ? "true" : "false");
-  return fd;
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-/** One in-flight Pro multipart analyze per tab (avoids duplicate POST → Modal 409). */
+/** One in-flight Pro analyze orchestration per tab (avoids duplicate Modal job → 409). */
 let _prov3AnalyzeClientBusy = false;
 
 /**
- * Single POST to the first valid Modal base URL — no same-host HTTP retries, no connection retries,
- * no failover to other Modal hosts, no Render fallback (keyframe / Pro v3 debug auditing).
- */
-async function tryProv3ModalHosts(
-  blob: Blob,
-  filename: string,
-  screenMode: boolean,
-  headers: Record<string, string>,
-  modalUrls: string[],
-  modalTimeoutMs: number,
-  logPrefix: string,
-  abortSignal: AbortSignal | undefined,
-  userCancelledMessage: string | undefined,
-): Promise<Prov3AnalyzeResult | null> {
-  let mUrlRaw: string | null = null;
-  let mUrl: string | null = null;
-  for (const raw of modalUrls) {
-    const n = normalizeProHttpApiBase(raw);
-    if (n) {
-      mUrlRaw = raw;
-      mUrl = n;
-      break;
-    }
-  }
-  if (!mUrl || !mUrlRaw) {
-    return null;
-  }
-
-  const analyzeUrl = buildProV3AnalyzeRequestUrl(mUrl);
-  console.log(
-    `${logPrefix} Pro v3 analyze: exactly one POST /pro-v3/analyze (no client retries) → ${analyzeUrl}`,
-  );
-
-  const ctrl = new AbortController();
-  const t = setTimeout(() => ctrl.abort(), modalTimeoutMs);
-  const onUserAbort = () => {
-    clearTimeout(t);
-    ctrl.abort();
-  };
-  if (abortSignal) {
-    if (abortSignal.aborted) {
-      clearTimeout(t);
-      throw new Error(userCancelledMessage || "分析已停止");
-    }
-    abortSignal.addEventListener("abort", onUserAbort);
-  }
-
-  try {
-    _prov3ActiveAnalyzeBase = mUrlRaw;
-    const mRes = await fetch(analyzeUrl, {
-      method: "POST",
-      headers,
-      body: makeProv3FormData(blob, filename, screenMode),
-      signal: ctrl.signal,
-    });
-    clearTimeout(t);
-    if (!mRes.ok) {
-      console.warn(
-        `${logPrefix} Pro v3 analyze: single POST completed with HTTP ${mRes.status} (no automatic retry)`,
-      );
-    }
-    return { response: mRes, route: "modal" };
-  } catch (e) {
-    clearTimeout(t);
-    const isAbort = e instanceof DOMException && e.name === "AbortError";
-    const msg = e instanceof Error ? e.message : String(e);
-    if (isAbort) {
-      if (abortSignal?.aborted) {
-        throw new Error(userCancelledMessage || "分析已停止");
-      }
-      throw new Error(
-        "分析等待超时：请勿重复提交。可稍后从历史查看是否已完成，或缩短视频后重试。（客户端已禁用自动重试，便于对照单次请求。）",
-      );
-    }
-    console.error(`${logPrefix} Pro v3 analyze: single POST failed (network/throw): ${msg}`);
-    throw new Error(
-      `Pro 分析请求失败（已禁用自动重试）：${msg}。请检查网络与 Modal 地址，查看上方日志中的 POST URL。`,
-    );
-  } finally {
-    if (abortSignal) {
-      abortSignal.removeEventListener("abort", onUserAbort);
-    }
-  }
-}
-
-/**
- * Pro v3 routing (debug-audit mode):
- * **One user action → one POST** to the first valid Modal URL. No Render fallback.
- * `cnNetworkHint` still adds `X-Stellar-Network-Hint: cn` for that single request.
+ * Pro v3 product path: same-origin upload to R2 → **one** short ``POST /pro-v3/analyze/start`` on Modal
+ * (via Edge proxy) → poll same-origin ``GET /api/prov3/analyze/job/:id`` (reads R2).
+ * No long browser→Modal analyze connection; no automatic duplicate analyze POST retries (GET poll may retry on network blur).
  */
 export async function runProv3AnalyzeMultipart(
   blob: Blob,
@@ -192,35 +100,150 @@ export async function runProv3AnalyzeMultipart(
   }
   _prov3AnalyzeClientBusy = true;
   try {
-  const modalUrls = opts.modalUrls.map((u) => u.replace(/\/+$/, "")).filter(Boolean);
-  const headers: Record<string, string> = {
-    ...authHeaders,
-    ...(opts.cnNetworkHint ? { "X-Stellar-Network-Hint": "cn" } : {}),
-  };
-  const abortSignal = opts.abortSignal;
-  const userCancelledMessage = opts.userCancelledMessage;
+    const abortSignal = opts.abortSignal;
+    const userCancelledMessage = opts.userCancelledMessage;
+    const deadline = Date.now() + opts.modalTimeoutMs;
+    const pollIntervalMs = 2500;
 
-  const fromModal = await tryProv3ModalHosts(
-    blob,
-    filename,
-    opts.screenMode,
-    headers,
-    modalUrls,
-    opts.modalTimeoutMs,
-    opts.logPrefix,
-    abortSignal,
-    userCancelledMessage,
-  );
-  if (fromModal) return fromModal;
+    const bumpAbort = () => {
+      if (abortSignal?.aborted) {
+        throw new Error(userCancelledMessage || "分析已停止");
+      }
+    };
 
-  if (modalUrls.length === 0) {
-    throw new Error("Pro 分析失败：未配置 Modal 地址（检查 precheck / MODAL_BACKEND_URL）");
-  }
-  throw new Error(
-    "Pro 分析失败：没有可用的 Modal 基址（请检查 MODAL_BACKEND_URL 是否为有效 URL，不要带 /pro-v3）。",
-  );
+    opts.onJobPhase?.("uploading");
+    bumpAbort();
+    const uploadId = crypto.randomUUID();
+    const upForm = new FormData();
+    upForm.append("analysis_id", uploadId);
+    upForm.append("file", blob, filename);
+    const upRes = await fetch("/api/history/upload-video", {
+      method: "POST",
+      headers: { ...authHeaders },
+      body: upForm,
+      signal: abortSignal,
+    });
+    if (!upRes.ok) {
+      let detail = `HTTP ${upRes.status}`;
+      try {
+        const j = (await upRes.json()) as { detail?: string };
+        if (typeof j.detail === "string") detail = j.detail;
+      } catch {
+        /* ignore */
+      }
+      throw new Error(
+        upRes.status === 401 || upRes.status === 403
+          ? detail
+          : `视频上传失败：${detail}`,
+      );
+    }
+    const upJson = (await upRes.json()) as { video_r2_key?: string };
+    const videoR2Key = String(upJson.video_r2_key || "").trim();
+    if (!videoR2Key) {
+      throw new Error("视频上传成功但未返回存储键，请重试。");
+    }
+
+    opts.onJobPhase?.("starting");
+    bumpAbort();
+    console.info(`${opts.logPrefix} [PROV3_EDGE_JOB] one analyze/start after R2 upload`, {
+      uploadId,
+      video_r2_key: videoR2Key,
+    });
+
+    const startHeaders: Record<string, string> = {
+      ...authHeaders,
+      "Content-Type": "application/json",
+      ...(opts.cnNetworkHint ? { "X-Stellar-Network-Hint": "cn" } : {}),
+    };
+    const startRes = await fetch(PRO_V3_EDGE_ANALYZE_START, {
+      method: "POST",
+      headers: startHeaders,
+      body: JSON.stringify({
+        source_r2_key: videoR2Key,
+        screen_mode: opts.screenMode,
+      }),
+      signal: abortSignal,
+    });
+    if (!startRes.ok) {
+      let detail = `HTTP ${startRes.status}`;
+      try {
+        const j = (await startRes.json()) as { detail?: unknown };
+        if (typeof j.detail === "string") detail = j.detail;
+        else if (Array.isArray(j.detail)) detail = JSON.stringify(j.detail);
+      } catch {
+        /* ignore */
+      }
+      throw new Error(formatProAnalyzeHttpError(startRes.status, detail));
+    }
+    const startJson = (await startRes.json()) as { job_id?: string };
+    const jobId = String(startJson.job_id || "").trim();
+    if (!jobId) {
+      throw new Error("分析任务未返回 job_id，请重试或联系支持。");
+    }
+
+    while (Date.now() < deadline) {
+      bumpAbort();
+      opts.onJobPhase?.("polling");
+      let pollRes: Response;
+      try {
+        pollRes = await fetch(`/api/prov3/analyze/job/${encodeURIComponent(jobId)}`, {
+          headers: { ...authHeaders },
+          signal: abortSignal,
+        });
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        console.warn(`${opts.logPrefix} [PROV3_EDGE_JOB] poll network error (will retry GET only):`, msg);
+        opts.onJobPhase?.("reconnecting");
+        await sleep(3000);
+        continue;
+      }
+
+      if (pollRes.status === 401 || pollRes.status === 403) {
+        let detail = `HTTP ${pollRes.status}`;
+        try {
+          const j = (await pollRes.json()) as { detail?: string };
+          if (typeof j.detail === "string") detail = j.detail;
+        } catch {
+          /* ignore */
+        }
+        throw new Error(detail);
+      }
+
+      if (!pollRes.ok) {
+        await sleep(pollIntervalMs);
+        continue;
+      }
+
+      const j = (await pollRes.json()) as {
+        status?: string;
+        result?: Record<string, unknown> | null;
+        detail?: string;
+        job_id?: string;
+      };
+      const st = String(j.status || "");
+      if (st === "completed") {
+        if (j.result && typeof j.result === "object") {
+          return { raw: j.result, route: "edge-job" };
+        }
+        throw new Error(
+          "分析已完成但结果暂不可用。请稍后打开「历史记录」查看是否已同步；若仍没有，请重新分析。",
+        );
+      }
+      if (st === "failed") {
+        throw new Error(
+          typeof j.detail === "string" && j.detail.trim()
+            ? j.detail
+            : "Pro 分析失败",
+        );
+      }
+
+      await sleep(pollIntervalMs);
+    }
+
+    throw new Error(
+      "等待分析结果超时。服务端可能仍在处理，请稍后到「历史记录」查看；请勿重复点击上传以免占用队列。",
+    );
   } finally {
     _prov3AnalyzeClientBusy = false;
-    clearProv3ActiveAnalyzeBase();
   }
 }

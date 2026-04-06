@@ -11,7 +11,6 @@ import type { PoseSnapshot } from "@/components/KeyframeStrip";
 import { saveAnalysisVideo } from "@/lib/video-store";
 import {
   DEFAULT_PROV3_MODAL_URL,
-  formatProAnalyzeHttpError,
   normalizeProv3UrlListsFromPrecheck,
   PRO_V3_EDGE_PRECHECK_PATH,
   requestProv3AnalyzeCancel,
@@ -129,6 +128,8 @@ export default function ProPageClient({ deepLinkAnalysisId }: { deepLinkAnalysis
   const [screenRecTime, setScreenRecTime] = useState(0);
   /** Shown on AnalysisWaiting while Pro v3 runs with `screen_mode=true`. */
   const [processingProScreenMode, setProcessingProScreenMode] = useState(false);
+  /** Extra line under Pro waiting UI (upload / job / reconnecting hints). */
+  const [proWaitSubline, setProWaitSubline] = useState("");
 
   const screenStreamRef = useRef<MediaStream | null>(null);
   const screenRecRef = useRef<MediaRecorder | null>(null);
@@ -147,7 +148,7 @@ export default function ProPageClient({ deepLinkAnalysisId }: { deepLinkAnalysis
   const analysisInFlightRef = useRef(false);
   const proAnalyzeAbortRef = useRef<AbortController | null>(null);
   const deepLinkStartedForRef = useRef<string | null>(null);
-  /** 本页仅允许完成一次 Pro（POST /pro-v3/analyze）；用户主动「停止」不计入，可重试；刷新页面后重置。 */
+  /** 本页仅允许完成一次 Pro（单次分析任务）；用户主动「停止」不计入，可重试；刷新页面后重置。 */
   const [proAnalyzeLocked, setProAnalyzeLocked] = useState(false);
 
   const stopProAnalysis = useCallback(async () => {
@@ -436,6 +437,7 @@ export default function ProPageClient({ deepLinkAnalysisId }: { deepLinkAnalysis
     prov3ScreenOpenDiagnosisTabRef.current = resolveProv3ScreenMode(filename, prov3ScreenMode);
     setProcessingProScreenMode(resolveProv3ScreenMode(filename, prov3ScreenMode));
     setStage("processing");
+    setProWaitSubline("");
     setResult(null);
     setResultRenderError(null);
     setError("");
@@ -444,7 +446,7 @@ export default function ProPageClient({ deepLinkAnalysisId }: { deepLinkAnalysis
       if (prev) try { URL.revokeObjectURL(prev); } catch { /* */ }
       return null;
     });
-    // Single POST /pro-v3/analyze: stay at a modest % until the request returns (no fake crawl to ~99%).
+    // Edge-orchestrated Pro v3: same-origin upload + job poll (no long browser→Modal analyze POST).
     setProgress(42);
 
     const proAbort = new AbortController();
@@ -455,7 +457,7 @@ export default function ProPageClient({ deepLinkAnalysisId }: { deepLinkAnalysis
       const authHeaders: Record<string, string> = {};
       if (token && token.includes(".")) authHeaders["Authorization"] = `Bearer ${token}`;
 
-      let res: Response;
+      let raw: Record<string, unknown>;
       try {
         const cn = cnNetworkHintRef.current;
         const out = await runProv3AnalyzeMultipart(blob, filename, authHeaders, {
@@ -468,12 +470,36 @@ export default function ProPageClient({ deepLinkAnalysisId }: { deepLinkAnalysis
           logPrefix: "[pro]",
           abortSignal: proAbort.signal,
           userCancelledMessage: lang === "zh" ? "分析已停止" : "Analysis stopped",
+          onJobPhase: (phase) => {
+            if (phase === "reconnecting") {
+              setProWaitSubline(
+                lang === "zh"
+                  ? "网络不稳定，正在重新连接并查询进度… 分析可能仍在云端进行，也可稍后在「历史记录」查看。"
+                  : "Reconnecting to check progress… The server may still be running; try History if this persists.",
+              );
+            } else if (phase === "polling") {
+              setProWaitSubline(
+                lang === "zh"
+                  ? "分析在云端进行中，请保持页面…"
+                  : "Server-side analysis in progress; keep this page open…",
+              );
+            } else if (phase === "uploading") {
+              setProWaitSubline(
+                lang === "zh" ? "正在上传视频到安全存储…" : "Uploading video to secure storage…",
+              );
+            } else {
+              setProWaitSubline(
+                lang === "zh" ? "正在提交分析任务（单次）…" : "Submitting analysis job (single request)…",
+              );
+            }
+          },
         });
-        res = out.response;
+        raw = out.raw;
       } catch (e) {
         const msg = e instanceof Error ? e.message : "";
         if (msg === "分析已停止" || msg === "Analysis stopped") {
           setError("");
+          setProWaitSubline("");
           setProcessingProScreenMode(false);
           setStage("upload");
           return;
@@ -486,37 +512,18 @@ export default function ProPageClient({ deepLinkAnalysisId }: { deepLinkAnalysis
               ? "分析失败"
               : "Analysis failed",
         );
+        setProWaitSubline("");
         setProcessingProScreenMode(false);
         setStage("upload");
         return;
       }
 
-      if (!res.ok) {
-        let detail = "Pro analysis failed";
-        try {
-          const errData = await res.json();
-          detail = typeof errData?.detail === "string" ? errData.detail : detail;
-        } catch { /* ignore */ }
-        throw new Error(formatProAnalyzeHttpError(res.status, detail));
-      }
-
-      console.info("[pro] received 200 from /pro-v3/analyze");
+      console.info("[pro] Pro v3 edge-job completed");
       setProgress(96);
+      setProWaitSubline("");
       setStage("rendering");
       await yieldUiBeforeHeavyParse();
-      const rawText = await res.text();
-      console.info("[pro] rawText length:", rawText.length);
-      let raw: Record<string, unknown>;
-      try {
-        raw = JSON.parse(rawText) as Record<string, unknown>;
-      } catch (parseErr) {
-        console.error("[pro] response JSON parse failed:", parseErr);
-        throw new Error(
-          lang === "zh"
-            ? "分析结果数据异常，请重试"
-            : "Invalid analysis response. Please try again.",
-        );
-      }
+      console.info("[pro] result payload keys:", Object.keys(raw).length);
       let data: ProAnalysisResult;
       try {
         data = expandStellarProForUi(raw) as ProAnalysisResult;
@@ -593,6 +600,7 @@ export default function ProPageClient({ deepLinkAnalysisId }: { deepLinkAnalysis
       }, 0);
     } catch (err: unknown) {
       setProcessingProScreenMode(false);
+      setProWaitSubline("");
       const msg = err instanceof Error ? err.message : "";
       if (
         msg === "分析已停止" ||
@@ -604,8 +612,8 @@ export default function ProPageClient({ deepLinkAnalysisId }: { deepLinkAnalysis
         setProAnalyzeLocked(true);
         setError(err instanceof Error ? err.message : "Analysis failed");
       }
-        setStage("upload");
-      }
+      setStage("upload");
+    }
     } finally {
       analysisInFlightRef.current = false;
       proAnalyzeAbortRef.current = null;
@@ -923,6 +931,7 @@ export default function ProPageClient({ deepLinkAnalysisId }: { deepLinkAnalysis
             lang={lang}
             mode="pro"
             prov3ScreenMode={processingProScreenMode}
+            statusSubline={proWaitSubline}
             onCancel={stopProAnalysis}
           />
         )}
