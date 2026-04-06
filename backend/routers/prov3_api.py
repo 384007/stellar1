@@ -448,6 +448,18 @@ def _prov3_validate_product_media_or_raise(result: dict, media_dir: Path) -> Non
     _prov3_strip_keyframe_b64(list(result.get("preview_keyframes") or []))
 
 
+def _frontend_prov3_keyframe_strip_field(result: dict) -> str:
+    """Match ``PlusResultView`` / ``isLowTrustPreviewOnly``: which array drives the diagnosis strip."""
+    if result.get("low_trust_preview_only"):
+        return "preview_keyframes"
+    fs = str(result.get("final_status") or "")
+    if fs and fs != "pass":
+        return "preview_keyframes"
+    if str(result.get("analysis_trust") or "") == "low_trust":
+        return "preview_keyframes"
+    return "official_phase_keyframes"
+
+
 def _log_prov3_frontend_media_playbook(result: dict, *, analysis_id: str, context: str) -> None:
     """Log why Cloudflare/Next 「分析结果页」 may show no video or keyframes — for Modal ops debugging.
 
@@ -474,6 +486,14 @@ def _log_prov3_frontend_media_playbook(result: dict, *, analysis_id: str, contex
         )
         return n, with_u
 
+    def _first_keyframe_url_in_rows(rows: list) -> str:
+        for r in rows:
+            if isinstance(r, dict):
+                u = str(r.get("keyframe_image_url") or "").strip()
+                if u:
+                    return u
+        return ""
+
     pv = str(result.get("playback_video_url") or "")
     av = str(result.get("analysis_video_url") or "")
     vu = str(result.get("video_url") or "")
@@ -485,19 +505,31 @@ def _log_prov3_frontend_media_playbook(result: dict, *, analysis_id: str, contex
     p_n, p_u = _count_rows_with_url("preview_keyframes")
     k_n, k_u = _count_rows_with_url("keyframes")
 
+    strip_field = _frontend_prov3_keyframe_strip_field(result)
+    ui_rows = list(result.get(strip_field) or [])
+    ui_n = len(ui_rows)
+    ui_with_url = sum(
+        1 for r in ui_rows if isinstance(r, dict) and str(r.get("keyframe_image_url") or "").strip()
+    )
+    sample_u = _first_keyframe_url_in_rows(ui_rows)
+    sample_fn = Path(sample_u.split("?")[0]).name if sample_u else ""
+
     lines = [
         f"[PRO_PROV3][UI_PLAYBOOK] analysis_id={analysis_id} context={context}",
         "  若设置(Cloudflare)分析页无视频/关键帧图，优先核对本单 JSON 是否满足前端契约:",
         "  (1) 视频: playback_video_url / video_url / analysis_video_url 须为浏览器可请求的绝对 URL(生产多为 https+R2)；",
-        "  (2) 关键帧: 展示行需含 keyframe_image_url(时间线 JPG)；高信任看 official_phase_keyframes，低信任看 preview_keyframes；",
-        "  (3) 路由 /pro/[id] 会先用 session 再 IndexedDB；仅含本机路径或非 http 时易空白。",
+        "  (2) 关键帧图: 每条展示行须含 keyframe_image_url(时间线 JPG 的 https)；",
+        "  (3) 低信任/非 pass: 前端条图只读 preview_keyframes，不读 official_phase_keyframes（official 可为空，属正常）。",
+        "  (4) 路由 /pro/[id] 会先用 session 再 IndexedDB；JSON 缺 https 时易空白。",
         f"  本单: final_status={fs!r} low_trust_preview_only={lo!r} trust={trust!r}",
-        f"  行数 official={o_n}(url={o_u}) preview={p_n}(url={p_u}) keyframes={k_n}(url={k_u})",
+        f"  条图数据源(与 Next 一致): {strip_field} rows={ui_n} with_keyframe_image_url={ui_with_url}",
+        f"  条图首张: filename={sample_fn!r} url_kind={_url_kind(sample_u)}" if sample_u else "  条图首张: (无 keyframe_image_url — 前端不会出图)",
+        f"  全量行数 official={o_n}(url={o_u}) preview={p_n}(url={p_u}) keyframes={k_n}(url={k_u})",
         f"  video_url[{_url_kind(vu)} len={len(vu)}]",
         f"  playback[{_url_kind(pv)} len={len(pv)}]",
         f"  analysis_video[{_url_kind(av)} len={len(av)}]",
         "  排查: STELLAR_PROV3_R2_PUBLIC_BASE / R2 上传、Edge 回写、前端 NEXT_PUBLIC_MODAL_BACKEND_URL；"
-        "若 kind=path_only/non_http 则前端无法直接播放。",
+        "若 kind=path_only/non_http 则前端无法直接播放/出图。",
         "  提示: original/playback 常为 iPhone .mov，Chrome 等可能无法解码；前端应优先用 analysis_video_url(时间线 .mp4) 作页内播放。",
     ]
     logger.info("\n".join(lines))
