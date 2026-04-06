@@ -263,6 +263,7 @@ async def _prov3_analyze_async_worker(
             screen_mode,
             media_prefix,
             cn_network_hint=cn_network_hint,
+            prov3_async_job_id_for_logs=job_id,
         )
         rkey = prov3_async_job_result_key(job_id)
         await asyncio.to_thread(r2_put_json_object, rkey, {"result": result})
@@ -461,23 +462,119 @@ def _frontend_prov3_keyframe_strip_field(result: dict) -> str:
     return "official_phase_keyframes"
 
 
-def _log_prov3_frontend_media_playbook(result: dict, *, analysis_id: str, context: str) -> None:
+def _prov3_url_kind(u: str) -> str:
+    s = (u or "").strip()
+    if not s:
+        return "empty"
+    if s.startswith("https://"):
+        return "https"
+    if s.startswith("http://"):
+        return "http"
+    if s.startswith("/"):
+        return "path_only"
+    return "non_http"
+
+
+def _log_prov3_ui_display_blockers(
+    result: dict,
+    *,
+    analysis_id: str,
+    context: str,
+    job_id: Optional[str] = None,
+) -> None:
+    """Modal 日志一行可 grep：Next 分析页可能无视频/无关键帧图的明确原因（非浏览器网络问题）。"""
+    blockers: list[str] = []
+    hints: list[str] = []
+
+    av = str(result.get("analysis_video_url") or "").strip()
+    pv = str(result.get("playback_video_url") or "").strip()
+    vu = str(result.get("video_url") or "").strip()
+    av_k = _prov3_url_kind(av)
+
+    if not av:
+        blockers.append("missing_analysis_video_url")
+        hints.append("前端优先用 analysis_video_url(H264 时间线);缺失易黑屏")
+    elif av_k != "https":
+        blockers.append(f"analysis_video_url_not_https(kind={av_k})")
+        hints.append("非 https 或异常串可能被浏览器拦截")
+    if av.startswith("/prov3-media/") or av.startswith("/pro-v3/media/"):
+        blockers.append("analysis_video_url_path_only")
+        hints.append("路径型 URL:CF Pages 需 NEXT_PUBLIC_STELLAR_PROV3_R2_PUBLIC_BASE 或后端写完整 R2 https")
+
+    strip_field = _frontend_prov3_keyframe_strip_field(result)
+    ui_rows = [r for r in list(result.get(strip_field) or []) if isinstance(r, dict)]
+    ui_n = len(ui_rows)
+    ui_with = sum(1 for r in ui_rows if str(r.get("keyframe_image_url") or "").strip())
+
+    top_k = len([r for r in list(result.get("keyframes") or []) if isinstance(r, dict)])
+    off_n = len([r for r in list(result.get("official_phase_keyframes") or []) if isinstance(r, dict)])
+    prev_n = len([r for r in list(result.get("preview_keyframes") or []) if isinstance(r, dict)])
+
+    if ui_n == 0:
+        blockers.append(f"ui_strip_empty(strip_field={strip_field})")
+        blockers.append(f"counts_keyframes={top_k}_official={off_n}_preview={prev_n}")
+        hints.append("低信任时条图只读 preview_keyframes;缺 final_status 误判已在前端修,若仍空检查 JSON 数组")
+    elif ui_with == 0:
+        blockers.append("ui_strip_rows_have_no_keyframe_image_url")
+    elif ui_with < ui_n:
+        blockers.append(f"ui_strip_partial_keyframe_urls({ui_with}/{ui_n})")
+
+    sample_kf_url = ""
+    for r in ui_rows:
+        sample_kf_url = str(r.get("keyframe_image_url") or "").strip()
+        if sample_kf_url:
+            break
+    if sample_kf_url:
+        kk = _prov3_url_kind(sample_kf_url)
+        if kk != "https":
+            blockers.append(f"sample_keyframe_image_url_kind={kk}")
+        if sample_kf_url.startswith("/prov3-media/") or sample_kf_url.startswith("/pro-v3/media/"):
+            blockers.append("keyframe_image_url_path_only")
+            hints.append("关键帧图为路径型时同 analysis_video_path_only")
+
+    jid = (job_id or "").strip()
+    extra = f" job_id={jid}" if jid else ""
+    fs = str(result.get("final_status") or "")
+    trust = str(result.get("analysis_trust") or result.get("trust_level") or "")
+    if blockers:
+        logger.warning(
+            "[PRO_PROV3][UI_DISPLAY_RISK] analysis_id=%s context=%s%s strip_field=%s final_status=%r trust=%r "
+            "blockers=%s hints=%s note=JSON_ok时仍可能因用户网络拦截R2/Modal域名导致<img>/<video>失败",
+            analysis_id,
+            context,
+            extra,
+            strip_field,
+            fs,
+            trust,
+            ";".join(blockers),
+            " | ".join(hints) if hints else "-",
+        )
+    else:
+        logger.info(
+            "[PRO_PROV3][UI_DISPLAY_OK] analysis_id=%s context=%s%s strip_field=%s strip_rows=%d "
+            "analysis_video_url_kind=%s playback_kind=%s",
+            analysis_id,
+            context,
+            extra,
+            strip_field,
+            ui_n,
+            av_k,
+            _prov3_url_kind(pv or vu),
+        )
+
+
+def _log_prov3_frontend_media_playbook(
+    result: dict,
+    *,
+    analysis_id: str,
+    context: str,
+    job_id: Optional[str] = None,
+) -> None:
     """Log why Cloudflare/Next 「分析结果页」 may show no video or keyframes — for Modal ops debugging.
 
     Typical causes: non-https video strings, missing ``keyframe_image_url`` on rows, low-trust empty official strip,
     or browser cannot fetch Modal/R2 URLs (CORS / wrong ``NEXT_PUBLIC_MODAL_BACKEND_URL`` / expired worker URLs).
     """
-    def _url_kind(u: str) -> str:
-        s = (u or "").strip()
-        if not s:
-            return "empty"
-        if s.startswith("https://"):
-            return "https"
-        if s.startswith("http://"):
-            return "http"
-        if s.startswith("/"):
-            return "path_only"
-        return "non_http"
 
     def _count_rows_with_url(key: str) -> tuple[int, int]:
         rows = list(result.get(key) or [])
@@ -524,16 +621,20 @@ def _log_prov3_frontend_media_playbook(result: dict, *, analysis_id: str, contex
         "  (4) 路由 /pro/[id] 会先用 session 再 IndexedDB；JSON 缺 https 时易空白。",
         f"  本单: final_status={fs!r} low_trust_preview_only={lo!r} trust={trust!r}",
         f"  条图数据源(与 Next 一致): {strip_field} rows={ui_n} with_keyframe_image_url={ui_with_url}",
-        f"  条图首张: filename={sample_fn!r} url_kind={_url_kind(sample_u)}" if sample_u else "  条图首张: (无 keyframe_image_url — 前端不会出图)",
+        f"  条图首张: filename={sample_fn!r} url_kind={_prov3_url_kind(sample_u)}"
+        if sample_u
+        else "  条图首张: (无 keyframe_image_url — 前端不会出图)",
         f"  全量行数 official={o_n}(url={o_u}) preview={p_n}(url={p_u}) keyframes={k_n}(url={k_u})",
-        f"  video_url[{_url_kind(vu)} len={len(vu)}]",
-        f"  playback[{_url_kind(pv)} len={len(pv)}]",
-        f"  analysis_video[{_url_kind(av)} len={len(av)}]",
+        f"  video_url[{_prov3_url_kind(vu)} len={len(vu)}]",
+        f"  playback[{_prov3_url_kind(pv)} len={len(pv)}]",
+        f"  analysis_video[{_prov3_url_kind(av)} len={len(av)}]",
         "  排查: STELLAR_PROV3_R2_PUBLIC_BASE / R2 上传、Edge 回写、前端 NEXT_PUBLIC_MODAL_BACKEND_URL；"
         "若 kind=path_only/non_http 则前端无法直接播放/出图。",
         "  提示: original/playback 常为 iPhone .mov，Chrome 等可能无法解码；前端应优先用 analysis_video_url(时间线 .mp4) 作页内播放。",
+        "  Modal 单行摘要(可 grep): [PRO_PROV3][UI_DISPLAY_RISK] 或 [PRO_PROV3][UI_DISPLAY_OK] — 紧随本段下方一条。",
     ]
     logger.info("\n".join(lines))
+    _log_prov3_ui_display_blockers(result, analysis_id=analysis_id, context=context, job_id=job_id)
 
 
 async def _pro_media_file_handler(analysis_id: str, filename: str) -> FileResponse | RedirectResponse:
@@ -652,6 +753,7 @@ async def _run_pro_analyze_body(
     media_prefix: str,
     *,
     cn_network_hint: bool = False,
+    prov3_async_job_id_for_logs: Optional[str] = None,
 ) -> dict:
     suffix = Path(original_filename or "video.mp4").suffix or ".mp4"
     mp = media_prefix.rstrip("/")
@@ -821,6 +923,7 @@ async def _run_pro_analyze_body(
                     result,
                     analysis_id=analysis_id,
                     context="pro_v3_analyze_body_ok",
+                    job_id=prov3_async_job_id_for_logs,
                 )
                 return result
             except FFmpegNotFoundError as exc:
