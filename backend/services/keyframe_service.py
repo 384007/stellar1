@@ -4517,6 +4517,11 @@ def extract_keyframes_smart(
     """
     Pose-aware keyframe extraction with reliable frame reading.
 
+    **Non-authoritative for Plus formal product output:** ``POST /plus`` uses the
+    Prov3 true-240 keyframe chain (``plus_prov3_analysis_bridge``) as the sole
+    authority for product keyframes and formal scoring gates. This legacy smart
+    extractor remains for compatibility and other routes that still call it.
+
     For each of the 8 swing phases, reads the exact video frame identified by
     swing phase detection.  Uses sequential-read approach to avoid codec
     seeking inaccuracy (CAP_PROP_POS_FRAMES can miss by several frames on

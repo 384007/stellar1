@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import os
+import shutil
 import tempfile
 import time
 import uuid
@@ -39,10 +40,7 @@ router = APIRouter()
 # Wall-clock caps for CPU / IO stages (vision AI caps live in gemini_service).
 _PLUS_POSE_UNIFORM_TIMEOUT_S = 420.0
 _PLUS_PHASE_DETECT_OUTER_S = float(os.getenv("STELLAR_PLUS_PHASE_OUTER_S", "105"))
-_PLUS_KEYFRAME_SMART_TIMEOUT_S = 300.0
-_PLUS_ENSURE_ORDERED_TIMEOUT_S = 300.0
-_PLUS_AI_VISION_STRIP_TIMEOUT_S = 180.0
-_PLUS_SEMANTIC_REPORT_TIMEOUT_S = 120.0
+_PLUS_PROV3_KEYFRAME_OUTER_S = float(os.getenv("STELLAR_PLUS_PROV3_OUTER_S", "600"))
 
 
 def _plus_keyframe_pack_block_reasons(
@@ -165,56 +163,6 @@ async def _timed_plus_stage(name: str, awaitable, timeout_s: float):
         ) from None
     logger.info("[PLUS] stage=%s wall_s=%.2f", name, time.perf_counter() - t0)
     return r
-
-
-def _authoritative_chain_check(poses: list[dict], phase_map: dict[str, int]) -> tuple[bool, list[str]]:
-    """Early semantic + spacing checks for authoritative phase chain."""
-    reasons: list[str] = []
-    order = ["address", "takeaway", "backswing", "top", "downswing", "impact", "follow_through", "finish"]
-    if not poses or len(phase_map or {}) < 8:
-        return False, ["AUTHORITATIVE_CHAIN_INCOMPLETE"]
-    idx = []
-    prev = -1
-    for p in order:
-        v = int(phase_map.get(p, -1))
-        idx.append(v)
-        if v <= prev:
-            reasons.append("NON_MONOTONIC_PHASE_ORDER")
-        prev = v
-    n = len(poses)
-    top_i = idx[3]
-    imp_i = idx[5]
-    fol_i = idx[6]
-    if not (0 <= top_i < n and 0 <= imp_i < n and 0 <= fol_i < n):
-        reasons.append("OUT_OF_RANGE_PHASE_INDEX")
-        return False, reasons
-    min_gap = max(2, n // 30)
-    if (imp_i - top_i) < min_gap:
-        reasons.append("TOP_TO_IMPACT_GAP_TOO_SMALL")
-    if (fol_i - imp_i) < min_gap:
-        reasons.append("IMPACT_TO_FOLLOW_GAP_TOO_SMALL")
-    try:
-        from services.swing_flow_utils import (
-            _build_view_agnostic_kinematics,
-            detect_phase_events_agnostic,
-            validate_impact_semantic_at_index,
-            validate_top_semantic_at_index,
-        )
-        kin = _build_view_agnostic_kinematics(poses)
-        if kin is None:
-            reasons.append("KINEMATICS_UNAVAILABLE")
-        else:
-            top_ok, _ = validate_top_semantic_at_index(top_i, kin)
-            ev = detect_phase_events_agnostic(poses)
-            exc = int(ev.get("excursion_apex_idx", max(1, n // 4)))
-            imp_ok, _ = validate_impact_semantic_at_index(imp_i, top_i, exc, kin)
-            if not top_ok:
-                reasons.append("TOP_SEMANTIC_FAIL")
-            if not imp_ok:
-                reasons.append("IMPACT_SEMANTIC_FAIL")
-    except Exception:
-        reasons.append("CHAIN_SEMANTIC_CHECK_EXCEPTION")
-    return len(reasons) == 0, reasons
 
 
 def _extract_uniform_16_plus(tmp_path: str):
@@ -342,32 +290,21 @@ async def analyze_plus(
             (os.getenv("STELLAR_RUNTIME") or "unknown"),
         )
 
-        from services.keyframe_service import (
-            extract_keyframes_smart,
-            extract_keyframes_ordered_fallback,
-            ensure_keyframes_ordered_for_ai,
-            build_ai_vision_images_from_phase_keyframes,
-            enforce_phase_windows,
-            apply_semantic_oriented_keyframe_recovery,
-            build_semantic_oriented_phase_map,
-        )
         from services.swing_flow_utils import (
             detect_swing_phases,
             get_phase_keyframes,
             map_gemini_uniform_indices_to_pose_indices,
             compute_wrist_trajectory,
             validate_phase_keyframes,
-            respace_phase_keyframes,
-            build_semantic_phase_report,
             compute_phase_evaluations_reliable,
             assess_gemini_uniform_map_vs_final_phase_strip,
             build_phase_boundary_flags,
         )
         from services.plus_pipeline_orchestrator import load_detections_and_tracks, load_phase_segment_bundle
         from services.phase_segment_service import compact_phase_c_context_for_plus_prompt
-        from services.phase_chain_solver_service import solve_post_impact_phase_chain
-        from services.phase_chain_solver_service import solve_full_phase_chain
         from services.biomech_validation_service import validate_phase_chain_hard
+        from services.internal.prov3_ffmpeg import FFmpegNotFoundError
+        from services.plus_prov3_analysis_bridge import run_plus_prov3_keyframe_bridge
         from services.api_pack_service import pack_plus_response
         from services.motion_3d_service import lift_motion_3d
         from services.custom_landmark_training_service import run_research_refine
@@ -414,8 +351,7 @@ async def analyze_plus(
                 motion3d_bundle.get("status"),
             )
 
-        # Stage 2: Gemini phase detection (network-bound) in parallel with kinematic detection (CPU).
-        # NOTE: this route intentionally keeps Gemini+kinematic validation/fallback behavior.
+        # Stage 2: Gemini uniform thumbnails = observation-only (NOT authoritative for product keyframes).
         gemini_phase_task = asyncio.create_task(detect_phases_from_frames(uniform_frames, region="global"))
         det_bundle, tracks = load_detections_and_tracks(tmp_path, poses)
         logger.info(
@@ -443,7 +379,7 @@ async def analyze_plus(
             "yolo11_degraded": bool(det_bundle.get("yolo11_degraded")),
             "yolo11_status": str(det_bundle.get("status") or ""),
         }
-        phase_debug = {}
+        phase_debug: dict = {}
         seg_bundle = load_phase_segment_bundle(
             poses,
             tracks=tracks,
@@ -453,91 +389,21 @@ async def analyze_plus(
         )
         phase_c_prompt_ctx = compact_phase_c_context_for_plus_prompt(seg_bundle)
         swing_phases = seg_bundle.get("swing_phases") or detect_swing_phases(poses)
-        seg_phase_keyframes = dict(seg_bundle.get("phase_keyframes") or {})
-        phase_windows = dict(seg_bundle.get("phase_windows") or {})
-        chain_bundle_full = solve_full_phase_chain(
-            poses=poses,
-            coarse_phase_keyframes=seg_phase_keyframes,
-            phase_windows=phase_windows,
-            detections=list(det_bundle.get("detections") or []),
-            tracks=tracks,
-            motion_3d=list(motion3d_bundle.get("motion_3d") or []),
-        )
-        if bool(chain_bundle_full.get("ok")):
-            _chain_pf = dict(chain_bundle_full.get("phase_keyframes") or seg_phase_keyframes)
-        else:
-            plus_degraded_flags.append("CHAIN_SOLVER_FAIL")
-            logger.warning(
-                "[STELLAR_PLUS_PIPELINE] CHAIN_SOLVER degraded error=%s — using coarse keyframes (200 not_422)",
-                chain_bundle_full.get("error"),
-            )
-            _chain_pf = dict(seg_phase_keyframes)
-        phase_debug["multi_backend_chain_evidence"] = dict(chain_bundle_full.get("evidence") or {})
-        if not bool(chain_bundle_full.get("ok")):
-            phase_debug["chain_solver_degraded"] = {
-                "error": chain_bundle_full.get("error"),
-                "reasons": chain_bundle_full.get("reasons"),
-            }
-        logger.info("[ROLE=CHAIN_SOLVER] coarse=%s selected=%s ok=%s", seg_phase_keyframes, chain_bundle_full.get("phase_keyframes"), bool(chain_bundle_full.get("ok")))
-        seg_phase_keyframes = enforce_phase_windows(_chain_pf, phase_windows)
-        _auth_ok, _auth_reasons = _authoritative_chain_check(poses, seg_phase_keyframes)
-        phase_debug["authoritative_phase_chain"] = {
-            "ok": bool(_auth_ok),
-            "reasons": list(_auth_reasons),
-            "phase_keyframes": dict(seg_phase_keyframes),
-        }
-        if _auth_ok:
-            logger.info(
-                "[PLUS] authoritative_phase_chain_selected source=chain_solver top=%s impact=%s follow=%s",
-                int(seg_phase_keyframes.get("top", -1)),
-                int(seg_phase_keyframes.get("impact", -1)),
-                int(seg_phase_keyframes.get("follow_through", -1)),
-            )
-        else:
-            plus_degraded_flags.append("AUTHORITATIVE_CHAIN_REJECTED")
-            logger.warning("[PLUS] authoritative_phase_chain_rejected reasons=%s", list(_auth_reasons))
-            _sem_early = build_semantic_oriented_phase_map(poses, dict(seg_phase_keyframes), fps=30.0)
-            _sem_map_early = dict(_sem_early.get("phase_keyframes") or {})
-            if _sem_early.get("ok") and len(_sem_map_early) == 8:
-                _sem_ok2, _sem_reasons2 = _authoritative_chain_check(poses, _sem_map_early)
-                if _sem_ok2:
-                    seg_phase_keyframes = _sem_map_early
-                    phase_debug["authoritative_phase_chain"] = {
-                        "ok": True,
-                        "reasons": [],
-                        "phase_keyframes": dict(seg_phase_keyframes),
-                        "source": "semantic_solver_early",
-                    }
-                    logger.info(
-                        "[PLUS] authoritative_phase_chain_selected source=semantic_solver_early top=%s impact=%s follow=%s",
-                        int(seg_phase_keyframes.get("top", -1)),
-                        int(seg_phase_keyframes.get("impact", -1)),
-                        int(seg_phase_keyframes.get("follow_through", -1)),
-                    )
-                else:
-                    logger.warning(
-                        "[PLUS] authoritative_phase_chain_rejected reasons=%s",
-                        list(_sem_reasons2),
-                    )
+
         gemini_phases = await _timed_plus_stage(
             "detect_phases_from_frames",
             gemini_phase_task,
             _PLUS_PHASE_DETECT_OUTER_S,
         )
 
-        # ── Phase validation gate: don't blindly trust Gemini ──
-        phase_source = "kinematic"  # default
-        phase_validation = None
-
-        # Always compute kinematic fallback
-        kinematic_keyframes = seg_phase_keyframes or get_phase_keyframes(swing_phases, poses)
+        coarse_pf = dict(seg_bundle.get("phase_keyframes") or {})
+        kinematic_keyframes = coarse_pf or get_phase_keyframes(swing_phases, poses)
         kinematic_validation = validate_phase_keyframes(kinematic_keyframes, poses, source="kinematic")
-
+        gemini_mapped = None
+        gemini_phase_source = "kinematic"
         if gemini_phases:
             n_poses = len(poses)
             n_frames = len(uniform_frames)
-            # Gemini indices refer to uniform thumbnails = fixed video frames (linspace).
-            # Poses use step sampling — map by real frame number, not pose-array proportion.
             if ai_video_frames_for_gemini and n_frames == len(ai_video_frames_for_gemini):
                 gemini_mapped = map_gemini_uniform_indices_to_pose_indices(
                     gemini_phases, ai_video_frames_for_gemini, poses
@@ -553,421 +419,68 @@ async def analyze_plus(
                     for pid, fidx in gemini_phases.items()
                 }
             gemini_validation = validate_phase_keyframes(gemini_mapped, poses, source="gemini")
-
             phase_debug["gemini_raw"] = gemini_phases
             phase_debug["gemini_mapped"] = gemini_mapped
             phase_debug["gemini_validation"] = gemini_validation
             phase_debug["kinematic_keyframes"] = kinematic_keyframes
             phase_debug["kinematic_validation"] = kinematic_validation
-
-            # Gemini is observation-only; authoritative phase source comes from backend validators.
-            phase_debug["gemini_observation_only"] = True
             phase_debug["gemini_validation_issues"] = list(gemini_validation.get("issues") or [])
             phase_debug["gemini_observed_keyframes"] = dict(gemini_mapped or {})
-            if bool(gemini_validation.get("passed")):
-                logger.info(
-                    "[PLUS] Gemini phase detection PASSED validation but kept as observation-only: %s",
-                    gemini_mapped,
-                )
-            else:
-                logger.warning(
-                    "[PLUS] Gemini phase detection FAILED validation (issues=%s), kept as observation-only",
-                    gemini_validation.get("issues"),
-                )
-            if kinematic_validation["passed"]:
-                phase_keyframes = kinematic_keyframes
-                phase_source = "kinematic"
-                phase_validation = kinematic_validation
-            else:
-                phase_keyframes = kinematic_keyframes
-                phase_source = "kinematic_degraded"
-                phase_validation = kinematic_validation
-                logger.warning("[PLUS] Kinematic validation failed (Gemini observation does not override backend source)")
+            gemini_phase_source = "kinematic" if kinematic_validation["passed"] else "kinematic_degraded"
         else:
-            phase_keyframes = kinematic_keyframes
-            phase_source = "kinematic"
-            phase_validation = kinematic_validation
             phase_debug["kinematic_keyframes"] = kinematic_keyframes
             phase_debug["kinematic_validation"] = kinematic_validation
-            logger.info("[PLUS] Gemini phase detection returned None, using kinematic fallback")
+            logger.info("[PLUS] Gemini phase detection returned None (observation-only debug)")
 
-        # Spread clustered phase indices (HAR: address..top all pose 4–7) before extraction
-        need_respace = phase_source == "kinematic_degraded" or (
-            phase_validation is not None and not phase_validation.get("spacing_ok", True)
-        )
-        if need_respace:
-            _src_before_respace = phase_source
-            phase_keyframes = respace_phase_keyframes(dict(phase_keyframes), len(poses))
-            phase_debug["phase_keyframes_respaced"] = True
-            phase_debug["phase_keyframes_after_respace"] = dict(phase_keyframes)
-            phase_validation = validate_phase_keyframes(phase_keyframes, poses, source=phase_source)
-            phase_debug["phase_validation_after_respace"] = phase_validation
-            if phase_validation.get("passed"):
-                if _src_before_respace == "kinematic_degraded":
-                    phase_source = "kinematic_respaced"
+        phase_debug["gemini_observation_only"] = True
 
-        # ── Smart keyframes: images extracted at actual phase moments ──
-        _auth_phase_pre_extract = dict(phase_keyframes)
-        _auth_chain_ok = bool((phase_debug.get("authoritative_phase_chain") or {}).get("ok"))
-        phase_keyframes_snapshot = dict(phase_keyframes)
-        phase_debug["keyframe_authoritative_handoff"] = {
-            "pre_extract_phase_map": dict(_auth_phase_pre_extract),
-            "authoritative_backend_ok": bool(_auth_chain_ok),
-        }
-        keyframes_result = await _timed_plus_stage(
-            "extract_keyframes_smart",
-            loop.run_in_executor(
-                _executor,
-                extract_keyframes_smart, tmp_path, poses, swing_phases, phase_keyframes, 320,
-            ),
-            _PLUS_KEYFRAME_SMART_TIMEOUT_S,
-        )
-        # extract_keyframes_smart now returns (keyframes, kf_validation_summary)
-        if isinstance(keyframes_result, tuple):
-            keyframes, kf_validation = keyframes_result
-        else:
-            keyframes = keyframes_result
-            kf_validation = {"total_keyframes": len(keyframes), "near_duplicates": 0, "time_too_close": 0, "all_passed": True, "details": []}
-
-        _phase_order_trace = [
-            "address", "takeaway", "backswing", "top", "downswing", "impact", "follow_through", "finish",
-        ]
-        _ap_chain_dbg = phase_debug.get("authoritative_phase_chain") or {}
-        _ap_map_dbg = dict(_ap_chain_dbg.get("phase_keyframes") or {})
-        plus_extract_spi = [int(k.get("source_pose_idx", -1)) for k in keyframes]
-        logger.info(
-            "[PLUS] keyframe_pipeline authoritative_selected_map=%s extracted_source_pose_idx=%s authoritative_ok=%s",
-            {p: int(_ap_map_dbg.get(p, -1)) for p in _phase_order_trace} if _ap_map_dbg else {},
-            plus_extract_spi,
-            bool(_ap_chain_dbg.get("ok")),
-        )
-
-        keyframes, kf_validation, phase_keyframes, _final_kf_src = await _timed_plus_stage(
-            "ensure_keyframes_ordered_for_ai",
-            loop.run_in_executor(
-                _executor,
-                lambda snap=phase_keyframes_snapshot, kf=keyframes, kv=kf_validation, pk=phase_keyframes, tr=tracks: ensure_keyframes_ordered_for_ai(
-                    tmp_path,
-                    poses,
-                    swing_phases,
-                    snap,
-                    kf,
-                    kv,
-                    pk,
-                    320,
-                    authoritative_pre_extract_phase_map=dict(_auth_phase_pre_extract),
-                    authoritative_chain_backend_ok=bool(_auth_chain_ok),
-                    tracks=tr,
-                ),
-            ),
-            _PLUS_ENSURE_ORDERED_TIMEOUT_S,
-        )
-        # Additional repair rounds: keep trying server-side repair before declaring degraded.
-        _repair_fingerprint = None
-        _repair_had_material_change = False
-        for _repair_round in range(2):
-            if bool(kf_validation.get("final_keyframe_gate_pass", False)):
-                break
-            _old_spi = [int(k.get("source_pose_idx", -1)) for k in keyframes]
-            _old_sfi = [int(k.get("source_frame_index", k.get("frame_index", -1))) for k in keyframes]
-            _cur_fingerprint = (
-                str(kf_validation.get("final_keyframe_source") or ""),
-                tuple(((kf_validation.get("final_keyframe_validation") or {}).get("strict_contract_fail_reasons") or [])),
-                bool(kf_validation.get("final_keyframe_order_ok")),
-                bool(kf_validation.get("final_keyframe_time_order_ok")),
-            )
-            _repair_fingerprint = _cur_fingerprint
-            phase_keyframes_snapshot = dict(phase_keyframes)
-            keyframes, kf_validation, phase_keyframes, _final_kf_src = await _timed_plus_stage(
-                f"ensure_keyframes_ordered_for_ai.repair_round_{_repair_round + 1}",
+        prov3_work = f"{tmp_path}.prov3_work"
+        os.makedirs(prov3_work, exist_ok=True)
+        try:
+            bridge_out = await _timed_plus_stage(
+                "plus_prov3_keyframe_chain",
                 loop.run_in_executor(
                     _executor,
-                    lambda snap=phase_keyframes_snapshot, kf=keyframes, kv=kf_validation, pk=phase_keyframes, tr=tracks: ensure_keyframes_ordered_for_ai(
-                        tmp_path,
-                        poses,
-                        swing_phases,
-                        snap,
-                        kf,
-                        kv,
-                        pk,
-                        320,
-                        authoritative_pre_extract_phase_map=dict(_auth_phase_pre_extract),
-                        authoritative_chain_backend_ok=bool(_auth_chain_ok),
-                        tracks=tr,
-                    ),
+                    partial(run_plus_prov3_keyframe_bridge, tmp_path, prov3_work, poses, screen_mode=False),
                 ),
-                _PLUS_ENSURE_ORDERED_TIMEOUT_S,
+                _PLUS_PROV3_KEYFRAME_OUTER_S,
             )
-            _new_spi = [int(k.get("source_pose_idx", -1)) for k in keyframes]
-            _new_sfi = [int(k.get("source_frame_index", k.get("frame_index", -1))) for k in keyframes]
-            _changed_phase_ids = []
-            for _i, _pid in enumerate(["address", "takeaway", "backswing", "top", "downswing", "impact", "follow_through", "finish"]):
-                if _i < len(_old_spi) and _i < len(_new_spi) and (
-                    _old_spi[_i] != _new_spi[_i] or _old_sfi[_i] != _new_sfi[_i]
-                ):
-                    _changed_phase_ids.append(_pid)
-            logger.info(
-                "[PLUS] repair_round=%d changed_phase_ids=%s old_spi=%s new_spi=%s old_sfi=%s new_sfi=%s",
-                _repair_round + 1,
-                _changed_phase_ids,
-                _old_spi,
-                _new_spi,
-                _old_sfi,
-                _new_sfi,
-            )
-            if _changed_phase_ids:
-                _repair_had_material_change = True
-        if (not bool(kf_validation.get("final_keyframe_gate_pass", False))) and (not _repair_had_material_change):
-            logger.warning(
-                "[PLUS] repair rounds ended without material keyframe change; trying semantic-oriented recovery before any uniform fallback"
-            )
-            _prev_fv = dict(kf_validation.get("final_keyframe_validation") or {})
+        except RuntimeError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except FFmpegNotFoundError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        finally:
+            shutil.rmtree(prov3_work, ignore_errors=True)
 
-            def _run_semantic_recovery():
-                return apply_semantic_oriented_keyframe_recovery(
-                    tmp_path,
-                    poses,
-                    keyframes,
-                    kf_validation,
-                    phase_keyframes,
-                    320,
-                    prev_fv_keys=_prev_fv,
-                )
+        keyframes = list(bridge_out["plus_keyframes"])
+        kf_validation = dict(bridge_out["kf_validation"])
+        phase_keyframes = dict(bridge_out["phase_keyframes_pose"])
+        sem_report = dict(bridge_out["sem_report"])
+        phase_validation = dict(bridge_out["phase_validation_soft"])
+        phase_source = str(bridge_out["phase_source"])
+        ai_frames = list(bridge_out["ai_vision_base64_list"])
+        pv_pass = bool(sem_report.get("phase_validation_passed"))
+        phase_validation_for_cap = {**phase_validation, "passed": pv_pass}
 
-            keyframes, kf_validation, phase_keyframes, _sem_recovered = await _timed_plus_stage(
-                "apply_semantic_oriented_keyframe_recovery.pre_uniform",
-                loop.run_in_executor(_executor, _run_semantic_recovery),
-                _PLUS_ENSURE_ORDERED_TIMEOUT_S,
-            )
-            _pod = kf_validation.get("phase_oriented_semantic_debug") or {}
-            logger.info(
-                "[PLUS] keyframe_recovery_trace phase_reselect_strategy=%s final_phase_semantic_pass=%s "
-                "source_pose_idx_list=%s min_gap_frames=%s top_semantic_score=%s impact_semantic_score=%s "
-                "finish_semantic_score=%s final_phase_semantic_fail_reasons=%s duplicate_pairs=%s "
-                "semantic_recovery_gate_pass=%s",
-                _pod.get("phase_reselect_strategy"),
-                _pod.get("final_phase_semantic_pass"),
-                _pod.get("source_pose_idx_list"),
-                _pod.get("min_gap_frames"),
-                _pod.get("top_semantic_score"),
-                _pod.get("impact_semantic_score"),
-                _pod.get("finish_semantic_score"),
-                _pod.get("final_phase_semantic_fail_reasons"),
-                _pod.get("duplicate_pairs"),
-                bool(kf_validation.get("final_keyframe_gate_pass", False)),
-            )
-            if not bool(kf_validation.get("final_keyframe_gate_pass", False)):
-                logger.warning(
-                    "[PLUS] semantic-oriented recovery did not pass strict gate; applying uniform temporal fallback (last resort)"
-                )
-                _snap_u = dict(phase_keyframes_snapshot)
-                keyframes, kf_validation, phase_keyframes, _final_kf_src = await _timed_plus_stage(
-                    "ensure_keyframes_ordered_for_ai.force_fallback_uniform",
-                    loop.run_in_executor(
-                        _executor,
-                        lambda snap=_snap_u, kf=keyframes, kv=kf_validation, pk=phase_keyframes, tr=tracks: ensure_keyframes_ordered_for_ai(
-                            tmp_path,
-                            poses,
-                            swing_phases,
-                            snap,
-                            kf,
-                            kv,
-                            pk,
-                            320,
-                            force_uniform_temporal_fallback=True,
-                            authoritative_pre_extract_phase_map=dict(_auth_phase_pre_extract),
-                            authoritative_chain_backend_ok=bool(_auth_chain_ok),
-                            tracks=tr,
-                        ),
-                    ),
-                    _PLUS_ENSURE_ORDERED_TIMEOUT_S,
-                )
-            _spi_after_u = [int(k.get("source_pose_idx", -1)) for k in keyframes]
-            logger.info(
-                "[PLUS] fallback_rebuild_material_change=%s final_spi=%s final_source=%s gate_pass=%s",
-                bool(kf_validation.get("fallback_rebuild_material_change")),
-                _spi_after_u,
-                str(kf_validation.get("final_keyframe_source") or ""),
-                bool(kf_validation.get("final_keyframe_gate_pass", False)),
-            )
-        if bool(kf_validation.get("reselected_top")) or bool(kf_validation.get("reselected_impact")):
-            phase_validation = validate_phase_keyframes(
-                phase_keyframes, poses, source=f"{phase_source}_reselected",
-            )
-        chain_bundle = solve_post_impact_phase_chain(poses, phase_keyframes, tracks=tracks)
-        if chain_bundle.get("material_change"):
-            from services.keyframe_service import (
-                validate_final_keyframes_for_ai,
-                _rebind_keyframes_from_rebuilt_map,
-                keyframe_repair_score,
-            )
-            from services.video_utils import get_video_rotation as _get_vid_rot_plus
+        prov3_pub = dict(bridge_out.get("prov3") or {})
+        phase_debug["plus_prov3_bridge"] = prov3_pub
+        phase_debug["authoritative_phase_chain"] = {
+            "ok": bool(kf_validation.get("final_keyframe_gate_pass")),
+            "reasons": [],
+            "phase_keyframes": dict(phase_keyframes),
+            "source": "prov3_true240",
+        }
+        phase_debug["keyframe_authoritative_handoff"] = {
+            "source": "prov3_true240",
+            "analysis_id": prov3_pub.get("analysis_id"),
+            "low_trust_preview_only": prov3_pub.get("low_trust_preview_only"),
+        }
+        phase_debug["gemini_plus_observation_phase_context"] = {
+            "note": "non_authoritative",
+            "phase_source": gemini_phase_source,
+        }
+        phase_debug["prov3_motion"] = dict(bridge_out.get("_prov3_motion") or {})
 
-            candidate_pf = dict(chain_bundle.get("phase_keyframes") or phase_keyframes)
-            import cv2 as _cv2_pi
-
-            _cap_pi = _cv2_pi.VideoCapture(tmp_path)
-            _fps_pi = float(_cap_pi.get(_cv2_pi.CAP_PROP_FPS) or 30.0)
-            _prior_gate = dict(kf_validation.get("final_keyframe_validation") or {})
-            try:
-                reb_kf, reb_det = _rebind_keyframes_from_rebuilt_map(
-                    _cap_pi,
-                    _get_vid_rot_plus(tmp_path),
-                    _fps_pi,
-                    poses,
-                    candidate_pf,
-                    320,
-                )
-            finally:
-                _cap_pi.release()
-            if len(reb_kf) == 8:
-                reb_phase = dict(candidate_pf)
-                reb_gate = validate_final_keyframes_for_ai(
-                    reb_kf, reb_phase, reb_det, poses=poses, fps=_fps_pi,
-                )
-                _prior_rows = keyframes
-                _better = keyframe_repair_score(reb_gate, reb_kf) < keyframe_repair_score(_prior_gate, _prior_rows)
-                if bool(reb_gate.get("pass")) or _better:
-                    keyframes = reb_kf
-                    phase_keyframes = reb_phase
-                    kf_validation = dict(kf_validation)
-                    kf_validation.update(
-                        {
-                            "details": reb_det,
-                            "final_phase_keyframes": dict(reb_phase),
-                            "final_keyframe_validation": dict(reb_gate),
-                            "final_keyframe_order_ok": bool(reb_gate.get("final_keyframe_order_ok")),
-                            "final_keyframe_time_order_ok": bool(reb_gate.get("final_keyframe_time_order_ok")),
-                            "final_phase_keyframes_sync_ok": bool(reb_gate.get("final_phase_keyframes_sync_ok")),
-                            "negative_time_gap_in_details": bool(reb_gate.get("negative_time_gap_in_details")),
-                            "final_keyframe_gate_pass": bool(reb_gate.get("pass")),
-                            "all_passed": bool(reb_gate.get("pass")),
-                            "final_validation_failed": not bool(reb_gate.get("pass")),
-                            "final_keyframe_source": "post_impact_chain_rebound"
-                            if bool(reb_gate.get("pass"))
-                            else "post_impact_chain_rebound_best_effort",
-                            "rebuild_used": True,
-                            "phase_strip_repaired": True,
-                        },
-                    )
-                    logger.info(
-                        "[PLUS] post_impact_chain_rebound applied gate_pass=%s best_effort=%s spi=%s",
-                        bool(reb_gate.get("pass")),
-                        not bool(reb_gate.get("pass")),
-                        [int(k.get("source_pose_idx", -1)) for k in keyframes],
-                    )
-                else:
-                    logger.warning(
-                        "[PLUS] post_impact_chain rebound not_adopted candidate_pf=%s",
-                        {p: int(candidate_pf.get(p, -1)) for p in _phase_order_trace},
-                    )
-            else:
-                logger.warning(
-                    "[PLUS] post_impact_chain material_change=1 rebind_incomplete len=%s",
-                    len(reb_kf),
-                )
-        _strict_fail_reasons = set(
-            ((kf_validation.get("final_keyframe_validation") or {}).get("strict_contract_fail_reasons") or [])
-        )
-        _need_display_rebuild = (
-            not bool(kf_validation.get("final_keyframe_gate_pass", False))
-            and bool(_strict_fail_reasons & {"NEAR_DUPLICATE_PRESENT", "TIME_TOO_CLOSE_PRESENT"})
-            and len(keyframes) == 8
-            and len(phase_keyframes) == 8
-        )
-        if _need_display_rebuild:
-            from services.keyframe_service import (
-                PHASE_ORDER,
-                build_uniform_spaced_phase_keyframes,
-                build_semantic_oriented_phase_map,
-            )
-
-            _pod = dict(kf_validation.get("phase_oriented_semantic_debug") or {})
-            _semantic_spi = list(_pod.get("source_pose_idx_list") or [])
-            _display_phase_map = dict(phase_keyframes)
-            _display_phase_source = "phase_chain_map"
-            _gem_obs_map = dict(phase_debug.get("gemini_observed_keyframes") or {})
-            _gem_phase_ok = bool((phase_debug.get("gemini_validation") or {}).get("passed"))
-            # Do not drive JPEG extraction from Gemini indices when phase_detect failed validation:
-            # mapped indices can break monotonic frame_index vs pose stream → ordered_fallback drops phases → missing thumbnails.
-            if len(_gem_obs_map) == 8 and _gem_phase_ok:
-                _display_phase_map = respace_phase_keyframes(_gem_obs_map, len(poses))
-                _display_phase_source = "gemini_observation_map"
-            elif len(_semantic_spi) == 8:
-                _display_phase_map = {pid: int(_semantic_spi[i]) for i, pid in enumerate(PHASE_ORDER)}
-                _display_phase_source = "semantic_oriented_map"
-            elif len(poses) >= 8:
-                _sem_bundle = build_semantic_oriented_phase_map(poses, dict(phase_keyframes), fps=30.0)
-                _sem_map = dict(_sem_bundle.get("phase_keyframes") or {})
-                if _sem_bundle.get("ok") and len(_sem_map) == 8:
-                    _display_phase_map = _sem_map
-                    _display_phase_source = "semantic_solver_map"
-                else:
-                    # Last fallback for display: use guaranteed monotonic temporal spread
-                    _display_phase_map = build_uniform_spaced_phase_keyframes(poses)
-                    _display_phase_source = "uniform_spread_map"
-            logger.warning(
-                "[PLUS] keyframe display rebuild: strict gate failed by near-dup/time-close; "
-                "rebuilding keyframe images for UI consistency using phase_map=%s",
-                _display_phase_map,
-            )
-            _disp_kf, _disp_sum = extract_keyframes_ordered_fallback(
-                tmp_path,
-                poses,
-                swing_phases,
-                dict(_display_phase_map),
-                320,
-                enforce_time_gap=False,
-            )
-            if len(_disp_kf) == 8:
-                keyframes = list(_disp_kf)
-                _disp_pf = dict(_disp_sum.get("final_phase_keyframes") or {})
-                if len(_disp_pf) == 8:
-                    phase_keyframes = _disp_pf
-                    kf_validation["final_phase_keyframes"] = dict(_disp_pf)
-                kf_validation["display_rebuild_applied"] = True
-                kf_validation["display_rebuild_source"] = _display_phase_source
-                if not bool((phase_debug.get("authoritative_phase_chain") or {}).get("ok")):
-                    kf_validation["display_rebuild_applied_but_authoritative_failed"] = 1
-                    logger.warning("[PLUS] display_rebuild_applied_but_authoritative_failed=1")
-                logger.info(
-                    "[PLUS] keyframe display rebuild applied source=%s source_pose_idx=%s",
-                    _display_phase_source,
-                    [int(k.get("source_pose_idx", -1)) for k in keyframes],
-                )
-        _post_repair_spi = [int(k.get("source_pose_idx", -1)) for k in keyframes]
-        logger.info(
-            "[PLUS] keyframe_pipeline post_repair_source_pose_idx=%s final_keyframe_source=%s gate_pass=%s",
-            _post_repair_spi,
-            str(kf_validation.get("final_keyframe_source") or ""),
-            bool(kf_validation.get("final_keyframe_gate_pass", False)),
-        )
-
-        def _strip_matches_authoritative(kfs: list[dict], auth_map: dict[str, int]) -> bool:
-            if len(kfs) != 8 or len(auth_map) < 8:
-                return False
-            for p in _phase_order_trace:
-                exp = int(auth_map.get(p, -1))
-                row = next((k for k in kfs if str(k.get("phase")) == p), None)
-                if row is None or int(row.get("source_pose_idx", -2)) != exp:
-                    return False
-            return True
-
-        if bool(_ap_chain_dbg.get("ok")) and _ap_map_dbg and not _strip_matches_authoritative(keyframes, _ap_map_dbg):
-            logger.warning(
-                "[PLUS] authoritative_chain_lost_in_keyframe_pipeline=1 before_extract_spi=%s after_pipeline_spi=%s "
-                "authoritative_phase_map=%s final_keyframe_source=%s strict_reasons=%s",
-                plus_extract_spi,
-                _post_repair_spi,
-                {p: int(_ap_map_dbg.get(p, -1)) for p in _phase_order_trace},
-                str(kf_validation.get("final_keyframe_source") or ""),
-                list(((kf_validation.get("final_keyframe_validation") or {}).get("strict_contract_fail_reasons") or [])),
-            )
-        elif bool(_ap_chain_dbg.get("ok")) and _ap_map_dbg:
-            logger.info(
-                "[PLUS] authoritative_chain_preserved_in_keyframe_pipeline=1 after_pipeline_spi=%s",
-                _post_repair_spi,
-            )
         hard_biomech = validate_phase_chain_hard(poses, phase_keyframes)
         biomech_hard_passed = bool(hard_biomech.get("passed"))
         if not biomech_hard_passed:
@@ -979,39 +492,16 @@ async def analyze_plus(
         logger.info("[ROLE=BIOMECH] passed=%s reasons=%s", biomech_hard_passed, list(hard_biomech.get("reasons") or []))
 
         t_kf = time.time()
-        logger.info("[PLUS] smart_keyframes pipeline: %.2fs (%d phases)", t_kf - t1, len(keyframes))
-
-        def _strip_vision_bundle():
-            return build_ai_vision_images_from_phase_keyframes(
-                tmp_path, poses, keyframes, phase_keyframes,
-            )
-
-        ai_frames = await _timed_plus_stage(
-            "build_ai_vision_images_from_phase_keyframes",
-            loop.run_in_executor(_executor, _strip_vision_bundle),
-            _PLUS_AI_VISION_STRIP_TIMEOUT_S,
+        logger.info(
+            "[PLUS] prov3_keyframe_bridge wall_since_uniform=%.2fs keyframes=%d gate_pass=%s",
+            t_kf - t1,
+            len(keyframes),
+            bool(kf_validation.get("final_keyframe_gate_pass")),
         )
 
-        sem_report = await _timed_plus_stage(
-            "build_semantic_phase_report",
-            loop.run_in_executor(
-                _executor,
-                partial(
-                    build_semantic_phase_report,
-                    poses,
-                    dict(phase_keyframes),
-                    phase_validation,
-                    list(keyframes),
-                    dict(kf_validation.get("final_keyframe_validation") or {}),
-                ),
-            ),
-            _PLUS_SEMANTIC_REPORT_TIMEOUT_S,
-        )
         kf_src = str(kf_validation.get("final_keyframe_source") or "")
         gate_pass_kf = bool(kf_validation.get("final_keyframe_gate_pass", False))
         sem_ok = bool(sem_report.get("final_phase_semantic_ok"))
-        pv_pass = bool(sem_report.get("phase_validation_passed"))
-        phase_validation_for_cap = {**(phase_validation or {}), "passed": pv_pass}
         final_pf = dict(kf_validation.get("final_phase_keyframes") or phase_keyframes)
         gemini_assess = assess_gemini_uniform_map_vs_final_phase_strip(
             phase_source,
@@ -1092,8 +582,11 @@ async def analyze_plus(
         )
         phase_evaluations_warning = ""
         if not gate_pass_kf or kf_src == "ordered_fallback_empty":
-            phase_source = "kinematic_degraded"
-            phase_evaluations_warning = "keyframe_gate_failed_or_empty_fallback"
+            if str(kf_src).startswith("prov3_"):
+                phase_evaluations_warning = "prov3_keyframe_gate_failed_or_low_trust"
+            else:
+                phase_source = "kinematic_degraded"
+                phase_evaluations_warning = "keyframe_gate_failed_or_empty_fallback"
             logger.warning("[PLUS] Final keyframe gate failed (%s); vision uses phase strip only", kf_src)
         elif kf_src == "ordered_fallback":
             phase_evaluations_warning = "ordered_fallback_semantics_untrusted"
