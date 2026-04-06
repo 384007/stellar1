@@ -251,8 +251,10 @@ export default function ProPageClient({ deepLinkAnalysisId }: { deepLinkAnalysis
               } else {
                 setProVideoSrc(null);
               }
+              return;
             }
-            return;
+            // Session had payload but we skipped UI (e.g. analyze still marked in-flight, or Strict Mode
+            // cancelled the first run). Fall through to history/API so the results page is not blank.
           } catch (e) {
             console.warn("[pro] session result restore failed", e);
           }
@@ -299,6 +301,11 @@ export default function ProPageClient({ deepLinkAnalysisId }: { deepLinkAnalysis
     })();
     return () => {
       cancelled = true;
+      // React Strict Mode / remount: allow the next mount to run restore again (otherwise the guard
+      // below blocks forever and session restore never applies).
+      if (deepLinkStartedForRef.current === deepId) {
+        deepLinkStartedForRef.current = null;
+      }
     };
   }, [deepId, lang]);
 
