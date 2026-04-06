@@ -108,7 +108,10 @@ export interface PlusAnalysisResult {
     source_frame_count?: number;
   };
   /** Stellar Pro: multi-day plan from analyzer (optional). */
-  training_plan?: Record<string, { focus: string; drills: string[]; duration: string }>;
+  training_plan?: Record<
+    string,
+    { focus: string; drills: string[]; duration?: string; focus_en?: string }
+  >;
   keyframes_degraded?: boolean;
   keyframe_display_mode?: "product_ready" | "degraded_debug_strip" | string;
   final_keyframe_gate_pass?: boolean;
@@ -1817,6 +1820,24 @@ export default function PlusResultView({ result, lang, externalVideoSrc, backend
   const gemObsBullets = (lang === "zh" ? gemObs.bullets_zh : gemObs.bullets_en) || [];
   const gemObsNotes = Array.isArray(gemObs.frame_notes) ? gemObs.frame_notes : [];
 
+  /** 问题说明：只用摘要一条链路，避免「摘要前 500 字」与「展开后全文」两段重复。 */
+  const summaryZhTrim = (result.summary_zh || "").trim();
+  const summaryEnTrim = (result.summary || "").trim();
+  const problemDescriptionFull = lang === "zh" ? summaryZhTrim : summaryEnTrim;
+  const problemDescriptionNeedsMore = problemDescriptionFull.length > 500;
+
+  /** 低信任时 API 可能不给 quick_tip：用摘要/问题列表兜底，保证始终有贴士。 */
+  const quickTipDisplay =
+    lang === "zh"
+      ? (result.quick_tip_zh || "").trim() ||
+        summaryZhTrim.slice(0, 280) ||
+        (issuesArr[0] || "").trim() ||
+        "对照上方诊断与摘要，每次练习只改一个动作要点。"
+      : (result.quick_tip_en || "").trim() ||
+        summaryEnTrim.slice(0, 280) ||
+        (issuesArr[0] || "").trim() ||
+        "Use the diagnosis and summary above—change one swing priority per practice.";
+
   const getPoseForKf = useCallback((kfIdx: number): PoseFrame | null => {
     const kf = lowTrustPreviewOnly ? null : officialKeyframes?.[kfIdx];
     if (!kf) return null;
@@ -2439,18 +2460,44 @@ export default function PlusResultView({ result, lang, externalVideoSrc, backend
             </div>
           )}
 
-          {/* 3-Second Tip */}
+          {/* 小帖士（低信任时亦有摘要/问题兜底） */}
           <div className="glass-card p-5">
-            <h4 className="text-sm font-bold text-brand-gold mb-2">{lang === "zh" ? "3秒小贴士" : "3-Second Tip"}</h4>
-            <p className="text-sm text-white/70 leading-relaxed">{lang === "zh" ? (result.quick_tip_zh || "") : (result.quick_tip_en || "")}</p>
+            <h4 className="text-sm font-bold text-brand-gold mb-2">{lang === "zh" ? "小帖士" : "Quick Tip"}</h4>
+            <p className="text-sm text-white/70 leading-relaxed">{quickTipDisplay}</p>
           </div>
 
-          {/* Problem Description */}
+          {/* Problem Description — 仅展示摘要，展开后不再叠一段相同开头 */}
           <div className="glass-card p-5">
             <h4 className="text-sm font-bold text-white mb-2">{lang === "zh" ? "问题说明" : "Problem Description"}</h4>
-            <p className="text-sm text-white/60 leading-relaxed">{lang === "zh" ? (result.problem_description_zh || "") : (result.problem_description_en || "")}</p>
-            {!showMoreDesc && <button onClick={() => setShowMoreDesc(true)} className="mt-3 w-full rounded-xl border border-white/10 py-2 text-xs text-white/40 hover:text-white/60 transition">{lang === "zh" ? "查看更多" : "View More"}</button>}
-            {showMoreDesc && <div className="mt-3 pt-3 border-t border-white/5 text-sm text-white/50 leading-relaxed">{lang === "zh" ? (result.summary_zh || "") : (result.summary || "")}</div>}
+            {!showMoreDesc ? (
+              <>
+                <p className="text-sm text-white/60 leading-relaxed">
+                  {problemDescriptionNeedsMore
+                    ? `${problemDescriptionFull.slice(0, 500)}…`
+                    : problemDescriptionFull}
+                </p>
+                {problemDescriptionNeedsMore ? (
+                  <button
+                    type="button"
+                    onClick={() => setShowMoreDesc(true)}
+                    className="mt-3 w-full rounded-xl border border-white/10 py-2 text-xs text-white/40 hover:text-white/60 transition"
+                  >
+                    {lang === "zh" ? "查看更多" : "View More"}
+                  </button>
+                ) : null}
+              </>
+            ) : (
+              <>
+                <p className="text-sm text-white/60 leading-relaxed">{problemDescriptionFull}</p>
+                <button
+                  type="button"
+                  onClick={() => setShowMoreDesc(false)}
+                  className="mt-3 w-full rounded-xl border border-white/10 py-2 text-xs text-white/40 hover:text-white/60 transition"
+                >
+                  {lang === "zh" ? "收起" : "Show less"}
+                </button>
+              </>
+            )}
           </div>
 
           {/* Dimension Scores */}
@@ -2566,11 +2613,14 @@ export default function PlusResultView({ result, lang, externalVideoSrc, backend
           {result.type === "pro" && result.training_plan && Object.keys(result.training_plan).length > 0 && (
             <div className="glass-card p-6">
               <h3 className="mb-6 text-xl font-bold text-brand-gold">
-                {lang === "en" ? "7-Day Training Plan" : "7天训练计划"}
+                {lang === "zh" ? "训练计划" : "Training Plan"}
               </h3>
               <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
                 {Object.entries(result.training_plan).map(([day, plan]) => {
-                  const dayNum = day.replace("day", "");
+                  const dayNumMatch = day.match(/(\d+)/);
+                  const dayNum = dayNumMatch ? dayNumMatch[1] : "1";
+                  const focusZh = plan.focus;
+                  const focusEn = plan.focus_en?.trim() || plan.focus;
                   return (
                     <div
                       key={day}
@@ -2578,11 +2628,13 @@ export default function PlusResultView({ result, lang, externalVideoSrc, backend
                     >
                       <div className="mb-2 flex items-center justify-between">
                         <span className="rounded-full bg-brand-gold/20 px-3 py-0.5 text-xs font-bold text-brand-gold">
-                          Day {dayNum}
+                          {lang === "zh" ? `第 ${dayNum} 天` : `Day ${dayNum}`}
                         </span>
-                        <span className="text-xs text-white/40">{plan.duration}</span>
+                        <span className="text-xs text-white/40">{plan.duration ?? ""}</span>
                       </div>
-                      <h4 className="mb-2 text-sm font-semibold text-white">{plan.focus}</h4>
+                      <h4 className="mb-2 text-sm font-semibold text-white">
+                        {lang === "zh" ? focusZh : focusEn}
+                      </h4>
                       <ul className="space-y-1">
                         {plan.drills.map((drill, i) => (
                           <li key={i} className="flex items-start gap-1 text-xs text-white/60">
