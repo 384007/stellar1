@@ -69,6 +69,9 @@ export interface PlusAnalysisResult {
     label_zh: string;
     timestamp: number;
     image_base64: string;
+    keyframe_image_url?: string;
+    keyframe_image_source?: string;
+    frame_index?: number;
     analysis_timestamp?: number;
     display_source_kind?: string;
     display_source_timestamp?: number;
@@ -279,18 +282,25 @@ function keyframeForPhase(
   );
 }
 
-/** Backend may emit empty/short base64; wrong data: MIME breaks <img> decode. */
-function plusKeyframeB64Usable(b64: string | undefined | null): boolean {
-  return keyframeImageDataUrl(b64) !== null;
+function plusKeyframeImageSrc(kf: { keyframe_image_url?: string; image_base64?: string } | null | undefined): string | null {
+  const u = String(kf?.keyframe_image_url ?? "").trim();
+  if (u) return u;
+  return keyframeImageDataUrl(kf?.image_base64) ?? null;
+}
+
+function plusKeyframeImageUsable(kf: { keyframe_image_url?: string; image_base64?: string } | null | undefined): boolean {
+  return plusKeyframeImageSrc(kf) !== null;
 }
 
 function PlusKeyframePhoto({
+  keyframe_image_url,
   image_base64,
   alt,
   className,
   placeholderClassName,
   lang = "zh",
 }: {
+  keyframe_image_url?: string;
   image_base64?: string;
   alt: string;
   className?: string;
@@ -298,7 +308,7 @@ function PlusKeyframePhoto({
   lang?: "en" | "zh";
 }) {
   const [broken, setBroken] = useState(false);
-  const dataUrl = keyframeImageDataUrl(image_base64);
+  const dataUrl = plusKeyframeImageSrc({ keyframe_image_url, image_base64 });
   const usable = dataUrl !== null;
   const ph = lang === "en" ? "No image" : "无图";
   if (!usable || broken) {
@@ -850,12 +860,33 @@ function MotionCorrectionPanel({ poseFrame, phase, lang }: { poseFrame: PoseFram
 
 /* ═══════════════ Save highlight ═══════════════ */
 
-function saveHighlight(imgBase64: string, label: string) {
-  const url = keyframeImageDataUrl(imgBase64);
-  if (!url) return;
+async function saveHighlight(
+  keyframe: { keyframe_image_url?: string; image_base64?: string },
+  label: string,
+) {
+  const remote = String(keyframe.keyframe_image_url ?? "").trim();
+  if (remote) {
+    try {
+      const r = await fetch(remote);
+      if (r.ok) {
+        const blob = await r.blob();
+        const obj = URL.createObjectURL(blob);
+        const link = document.createElement("a");
+        link.href = obj;
+        link.download = `stellar-plus-${label.replace(/\s+/g, "-")}-${Date.now()}.jpg`;
+        link.click();
+        URL.revokeObjectURL(obj);
+        return;
+      }
+    } catch {
+      /* fallback to base64 */
+    }
+  }
+  const dataUrl = keyframeImageDataUrl(keyframe.image_base64);
+  if (!dataUrl) return;
   const link = document.createElement("a");
-  link.href = url;
-  const ext = url.startsWith("data:image/png") ? "png" : url.startsWith("data:image/webp") ? "webp" : "jpg";
+  link.href = dataUrl;
+  const ext = dataUrl.startsWith("data:image/png") ? "png" : dataUrl.startsWith("data:image/webp") ? "webp" : "jpg";
   link.download = `stellar-plus-${label.replace(/\s+/g, "-")}-${Date.now()}.${ext}`;
   link.click();
 }
@@ -1007,6 +1038,7 @@ function FullSwingView({ result, lang }: Props) {
           <div className="relative bg-black w-full overflow-hidden" style={{ minHeight: showProRef ? "50vh" : "65vh" }}>
             {currentKf && (
               <PlusKeyframePhoto
+                keyframe_image_url={currentKf.keyframe_image_url}
                 image_base64={currentKf.image_base64}
                 alt={phaseLabel.en}
                 className="w-full h-full object-contain absolute inset-0"
@@ -1016,8 +1048,8 @@ function FullSwingView({ result, lang }: Props) {
             <SkeletonCanvas key={`skel-${showProRef}`} poseFrame={currentPose} showSkeleton={showSkeleton} showGuideLines={showGuideLines} />
             <SkeletonToggles showSkeleton={showSkeleton} showGuideLines={showGuideLines}
               onSkel={() => setShowSkeleton(s => !s)} onGuide={() => setShowGuideLines(g => !g)} lang={lang} />
-            {currentKf && plusKeyframeB64Usable(currentKf.image_base64) && (
-              <button onClick={() => saveHighlight(currentKf.image_base64, phaseLabel.en)}
+            {currentKf && plusKeyframeImageUsable(currentKf) && (
+              <button onClick={() => void saveHighlight(currentKf, phaseLabel.en)}
                 className="absolute top-3 right-3 rounded-lg bg-black/40 backdrop-blur-sm p-2 text-white/50 hover:text-white border border-white/10 transition"
                 style={{ zIndex: 20 }}>
                 <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}><path strokeLinecap="round" strokeLinejoin="round" d="M3 16.5v2.25A2.25 2.25 0 0 0 5.25 21h13.5A2.25 2.25 0 0 0 21 18.75V16.5M16.5 12 12 16.5m0 0L7.5 12m4.5 4.5V3" /></svg>
@@ -1077,6 +1109,7 @@ function FullSwingView({ result, lang }: Props) {
                   <div className={`h-12 w-full rounded-lg overflow-hidden border-2 mb-0.5 ${activePhase === i ? "border-brand-purple" : isErr ? "border-orange-400/30" : "border-transparent"}`}>
                     {kf ? (
                       <PlusKeyframePhoto
+                        keyframe_image_url={kf.keyframe_image_url}
                         image_base64={kf.image_base64}
                         alt={pl.en}
                         className="w-full h-full object-cover"
@@ -2047,12 +2080,12 @@ export default function PlusResultView({ result, lang, externalVideoSrc, backend
                   }
                   topRightActions={
                     result.keyframes[activeKeyframe] &&
-                    plusKeyframeB64Usable(result.keyframes[activeKeyframe].image_base64) ? (
+                    plusKeyframeImageUsable(result.keyframes[activeKeyframe]) ? (
                       <button
                         type="button"
                         onClick={() =>
-                          saveHighlight(
-                            result.keyframes[activeKeyframe].image_base64,
+                          void saveHighlight(
+                            result.keyframes[activeKeyframe],
                             result.keyframes[activeKeyframe].label_en,
                           )
                         }
@@ -2068,6 +2101,7 @@ export default function PlusResultView({ result, lang, externalVideoSrc, backend
               ) : (
                 <div className="relative isolate h-[70vh] min-h-[280px] w-full max-h-[85vh] bg-black">
                   <PlusKeyframePhoto
+                    keyframe_image_url={result.keyframes[activeKeyframe]?.keyframe_image_url}
                     image_base64={result.keyframes[activeKeyframe]?.image_base64}
                     alt="Swing frame"
                     className="absolute inset-0 h-full w-full object-contain"
@@ -2085,10 +2119,10 @@ export default function PlusResultView({ result, lang, externalVideoSrc, backend
                     onGuide={() => setShowGuideLines((g) => !g)}
                     lang={lang}
                   />
-                  {result.keyframes[activeKeyframe] && plusKeyframeB64Usable(result.keyframes[activeKeyframe].image_base64) && (
+                  {result.keyframes[activeKeyframe] && plusKeyframeImageUsable(result.keyframes[activeKeyframe]) && (
                     <button
                       onClick={() =>
-                        saveHighlight(result.keyframes[activeKeyframe].image_base64, result.keyframes[activeKeyframe].label_en)
+                        void saveHighlight(result.keyframes[activeKeyframe], result.keyframes[activeKeyframe].label_en)
                       }
                       className="absolute right-3 top-3 rounded-lg border border-white/10 bg-black/40 p-2 text-white/50 backdrop-blur-sm transition hover:text-white"
                       style={{ zIndex: 20 }}
@@ -2114,6 +2148,7 @@ export default function PlusResultView({ result, lang, externalVideoSrc, backend
                   <button key={i} onClick={() => setActiveKeyframe(i)}
                     className={`flex-shrink-0 w-20 h-16 rounded-lg overflow-hidden border-2 transition ${activeKeyframe === i ? "border-brand-purple" : "border-transparent opacity-60"}`}>
                     <PlusKeyframePhoto
+                      keyframe_image_url={kf.keyframe_image_url}
                       image_base64={kf.image_base64}
                       alt={kf.label_en}
                       className="w-full h-full object-cover"

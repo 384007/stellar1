@@ -17,7 +17,7 @@ const SWING_PHASE_IDS = [
 ] as const;
 
 function derivePhaseKeyframesFromStrip(
-  keyframes: Array<{ phase?: string; source_pose_idx?: unknown; source_frame_index?: unknown }>,
+  keyframes: Array<{ phase?: string; frame_index?: unknown; source_pose_idx?: unknown; source_frame_index?: unknown }>,
 ): Record<string, number> | undefined {
   const out: Record<string, number> = {};
   for (const kf of keyframes) {
@@ -26,12 +26,15 @@ function derivePhaseKeyframesFromStrip(
       .replace(/[\s-]+/g, "_");
     const spi = kf.source_pose_idx;
     const sfi = kf.source_frame_index;
+    const fi = kf.frame_index;
     const idx =
-      typeof spi === "number" && Number.isFinite(spi)
-        ? spi
-        : typeof sfi === "number" && Number.isFinite(sfi)
-          ? sfi
-          : undefined;
+      typeof fi === "number" && Number.isFinite(fi)
+        ? fi
+        : typeof spi === "number" && Number.isFinite(spi)
+          ? spi
+          : typeof sfi === "number" && Number.isFinite(sfi)
+            ? sfi
+            : undefined;
     if (ph && idx !== undefined) {
       out[ph] = idx;
     }
@@ -52,7 +55,7 @@ function ensureAnalysisIdOnRaw(raw: Record<string, any>): void {
 
 function mergePhaseKeyframeMaps(
   rawPk: unknown,
-  keyframes: Array<{ phase?: string; source_pose_idx?: unknown; source_frame_index?: unknown }>,
+  keyframes: Array<{ phase?: string; frame_index?: unknown; source_pose_idx?: unknown; source_frame_index?: unknown }>,
 ): Record<string, number> | undefined {
   const fromStrip = derivePhaseKeyframesFromStrip(keyframes) ?? {};
   const fromRaw =
@@ -110,8 +113,20 @@ export function proExpandedToPlusViewModel(r: Record<string, any>): PlusAnalysis
   const keyframes = Array.isArray(r.keyframes)
     ? r.keyframes.filter((k: unknown) => k != null && typeof k === "object" && !Array.isArray(k))
     : [];
+  const normalizedKeyframes = keyframes.map((kf) => ({
+    ...(kf as Record<string, unknown>),
+    keyframe_image_url:
+      typeof (kf as { keyframe_image_url?: unknown }).keyframe_image_url === "string"
+        ? String((kf as { keyframe_image_url?: string }).keyframe_image_url)
+        : undefined,
+    keyframe_image_source:
+      typeof (kf as { keyframe_image_source?: unknown }).keyframe_image_source === "string"
+        ? String((kf as { keyframe_image_source?: string }).keyframe_image_source)
+        : undefined,
+    frame_index: Number((kf as { frame_index?: unknown }).frame_index ?? 0),
+  }));
   const phasesWithKf = new Set(
-    keyframes.map((k: { phase?: string }) =>
+    normalizedKeyframes.map((k: { phase?: string }) =>
       String(k.phase ?? "")
         .toLowerCase()
         .replace(/[\s-]+/g, "_"),
@@ -142,7 +157,7 @@ export function proExpandedToPlusViewModel(r: Record<string, any>): PlusAnalysis
   };
 
   const scoresRaw = r.scores && typeof r.scores === "object" ? (r.scores as Record<string, number>) : null;
-  const pk = mergePhaseKeyframeMaps(r.phase_keyframes, keyframes);
+  const pk = mergePhaseKeyframeMaps(r.phase_keyframes, normalizedKeyframes);
 
   return {
     analysis_id: String(r.analysis_id ?? ""),
@@ -165,7 +180,7 @@ export function proExpandedToPlusViewModel(r: Record<string, any>): PlusAnalysis
     suggestions_zh,
     summary,
     summary_zh,
-    keyframes: keyframes as PlusAnalysisResult["keyframes"],
+    keyframes: normalizedKeyframes as PlusAnalysisResult["keyframes"],
     skeleton_data:
       r.skeleton_data && typeof r.skeleton_data === "object"
         ? (r.skeleton_data as PlusAnalysisResult["skeleton_data"])
@@ -263,8 +278,13 @@ export function expandStellarProForUi(raw: Record<string, any>): Record<string, 
           phase,
           label_en: String(kf.label_en ?? phase),
           label_zh: String(kf.label_zh ?? phase),
+          frame_index: Number(kf.frame_index ?? 0),
           timestamp: Number(kf.timestamp ?? 0),
           image_base64: String(kf.image_base64 ?? ""),
+          keyframe_image_url:
+            typeof kf.keyframe_image_url === "string" ? kf.keyframe_image_url : undefined,
+          keyframe_image_source:
+            typeof kf.keyframe_image_source === "string" ? kf.keyframe_image_source : "analysis_video",
         };
       }),
     skeleton_data: raw.skeleton_data ?? { frames: [], total_frames: 0 },

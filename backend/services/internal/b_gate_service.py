@@ -7,6 +7,17 @@ from lib.prov3.keyframes.event_rules import core_frame_gap_ok, validate_event_or
 from lib.prov3.keyframes.scoring import average_confidence
 
 
+def _high_risk_gap_ok(refined_keyframes: List[dict]) -> bool:
+    idx = {str(x.get("event_name") or ""): int(x.get("frame_index", -1)) for x in refined_keyframes}
+    top = idx.get("Top", -1)
+    mid_down = idx.get("Mid-downswing", -1)
+    impact = idx.get("Impact", -1)
+    finish = idx.get("Finish", -1)
+    if min(top, mid_down, impact, finish) < 0:
+        return False
+    return (mid_down - top) >= 4 and (impact - mid_down) >= 4 and (finish - impact) >= 6
+
+
 def run_b_gate(refined_keyframes: List[dict], incoming_fail_reasons: List[str]) -> Tuple[str, List[str]]:
     fail_reasons: List[str] = list(incoming_fail_reasons)
 
@@ -15,6 +26,8 @@ def run_b_gate(refined_keyframes: List[dict], incoming_fail_reasons: List[str]) 
 
     if not core_frame_gap_ok(refined_keyframes):
         fail_reasons.append("top_impact_relation_unstable")
+    if not _high_risk_gap_ok(refined_keyframes):
+        fail_reasons.append("high_risk_event_spacing_unstable")
 
     if average_confidence(refined_keyframes) < B_PASS_MIN_AVG_CONFIDENCE:
         fail_reasons.append("confidence_below_refine_threshold")

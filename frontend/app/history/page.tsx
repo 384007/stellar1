@@ -56,14 +56,15 @@ function prov3ScreenModeFromHistoryRecord(rec: AnalysisRecord): boolean {
   }
 }
 
-/** D1 list rows are compacted (~90k cap); keyframe JPEGs often live only in R2. Detect stripped/poisoned cache. */
+/** D1 list rows are compacted (~90k cap); keyframe JPEGs often live only in R2. Detect stripped/poisoned cache (URL or base64). */
 function plusKeyframesMissingImages(parsed: ParsedResult): boolean {
   const kfs = parsed.keyframes;
   if (!Array.isArray(kfs) || kfs.length === 0) return true;
   const withImg = kfs.filter((k) => {
     const b = (k as { image_base64?: string }).image_base64;
-    if (typeof b !== "string") return false;
-    return rawBase64ImagePayload(b).length > 400;
+    if (typeof b === "string" && rawBase64ImagePayload(b).length > 400) return true;
+    const u = (k as { keyframe_image_url?: string }).keyframe_image_url;
+    return typeof u === "string" && u.trim().length > 8;
   }).length;
   return withImg < Math.min(6, kfs.length);
 }
@@ -119,8 +120,11 @@ interface ParsedResult {
     phase: string;
     label_en: string;
     label_zh: string;
+    frame_index?: number;
     timestamp: number;
     image_base64: string;
+    keyframe_image_url?: string;
+    keyframe_image_source?: string;
   }>;
   skeleton_data?: {
     frames: Array<Record<string, unknown>>;
