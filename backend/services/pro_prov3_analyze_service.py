@@ -20,13 +20,14 @@ import cv2
 from PIL import Image, ImageDraw
 
 from lib.prov3.keyframes.constants import EVENT_SEQUENCE
+from lib.prov3.keyframes.decode_spacing import spread_keyframes_min_decode_gap
 from services.internal.prov3_ffmpeg import ffmpeg_extract_frames_bgr_by_decode_index, ffprobe_video_meta
 from services.prov3_keyframe_orchestrator_service import run_keyframe_analyze
 
 logger = logging.getLogger(__name__)
 
-# ── Prov3 **UI 条图专用**：容器旋转元数据 → 显示方向。不 import 其他业务链路；
-#    A/B / SwingNet / pose 分析路径完全不动，仅 `_build_ui_keyframes` 使用下列函数。
+# ── Prov3 **UI 条图**：旋转元数据、ffmpeg 抽帧、以及条图前对 ``frame_index`` 的最小帧距修正
+#    （避免 low trust 时 8 帧挤在几十毫秒内导致缩略图看起来一样）。
 
 _PROV3_THUMB_FFPROBE_OK: Optional[bool] = None
 _PROV3_THUMB_FFPROBE_WARNED = False
@@ -406,6 +407,24 @@ def run_pro_video_analyze_via_prov3(
         )
     # Prefer analysis_240fps.mp4 (same file as A/B); last resort cleanup path (indices may mismatch).
     thumb_src = av_path if thumb_ok else input_video_path
+    if thumb_ok and len(raw_kfs) == 8:
+        try:
+            meta_sp = ffprobe_video_meta(av_path)
+            nb_sp = int(meta_sp.get("nb_frames") or 0)
+            dur_sp = float(meta_sp.get("duration_s") or 0.0)
+            fps_sp = float(meta_sp.get("fps") or ANALYSIS_FPS)
+            if nb_sp <= 0 and dur_sp > 0 and fps_sp > 0:
+                nb_sp = max(int(round(dur_sp * fps_sp)), 8)
+            nb_sp = max(nb_sp, 1)
+            raw_kfs, did_spread = spread_keyframes_min_decode_gap(list(raw_kfs), nb_sp)
+            if did_spread:
+                logger.info(
+                    "[PRO_PROV3] strip keyframe spread applied nb_frames=%s (B-layer snap / low trust)",
+                    nb_sp,
+                )
+        except Exception as exc:
+            logger.warning("[PRO_PROV3] strip keyframe spread skipped: %s", exc)
+
     ui_keyframes = _build_ui_keyframes(raw_kfs, thumb_src)
     avg_c = _avg_confidence(ui_keyframes)
     total_score = round(min(100.0, max(0.0, avg_c * 100.0)), 1)

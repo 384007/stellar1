@@ -29,6 +29,7 @@ import torch
 import torch.nn.functional as F
 
 from lib.prov3.keyframes.constants import EVENT_SEQUENCE, TOP_K
+from lib.prov3.keyframes.decode_spacing import spread_keyframes_min_decode_gap
 from lib.golfdb_swingnet.event_detector import EventDetector
 from services.golfdb_swingnet_paths import resolve_swingnet_checkpoint_path
 
@@ -319,6 +320,14 @@ def run_swingnet_extract(
             probs = probs[:m]
             sample_indices = sample_indices[:m]
         kfs = _keyframes_from_probs(probs, sample_indices)
+        span = max(int(total), int(np.max(sample_indices)) + 1) if len(sample_indices) else int(total)
+        span = max(span, 1)
+        kfs, _spread = spread_keyframes_min_decode_gap(kfs, span)
+        if _spread:
+            logger.info(
+                "[SwingNet] decode-index spread applied span_frames=%s (avoid clustered keyframe thumbs)",
+                span,
+            )
         with _CTX_LOCK:
             _REFINE_CTX[analysis_id] = {
                 "probs": probs,

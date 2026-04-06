@@ -699,7 +699,9 @@ export default function KeyframeProv3InteractiveViewer({
           <span className="text-[9px] tabular-nums text-white/25">{activeIndex + 1} / {keyframes.length}</span>
           {stripMeta?.timeline === "analysis_240" && stripMeta.thumbnails_from_analysis_video !== false ? (
             <span className="max-w-[90%] text-[8px] leading-tight text-emerald-400/75">
-              {lang === "zh" ? "条图来自 240Hz 分析轨（与引擎一致）" : "Strips: 240 Hz analysis timeline (engine-aligned)"}
+              {lang === "zh"
+                ? "条图来自真 240 分析视频（与 A/B 同一解码帧号）"
+                : "Strips: true 240fps analysis file (same decode indices as A/B)"}
             </span>
           ) : stripMeta?.timeline === "fallback_source" ? (
             <span className="max-w-[90%] text-[8px] leading-tight text-amber-300/80">

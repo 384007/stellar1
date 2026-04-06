@@ -99,7 +99,7 @@ export interface PlusAnalysisResult {
   _plus_usage?: { used: number; remaining: number; limit: number | null; is_pro: boolean };
   /** Pro v3 product pipeline (`POST /pro-v3/analyze` — `routers.prov3_api`) */
   screen_mode?: boolean;
-  /** 八关键帧条图：与 240Hz 分析轨 / SwingNet frame_index 对齐；历史同步时一并保存 */
+  /** 八关键帧条图：真 240 分析 MP4 上的解码帧号，与 SwingNet frame_index 一致；历史同步时一并保存 */
   keyframes_strip?: {
     timeline?: string;
     analysis_fps?: number;
