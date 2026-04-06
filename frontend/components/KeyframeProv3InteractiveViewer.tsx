@@ -601,6 +601,13 @@ export default function KeyframeProv3InteractiveViewer({
                 >
                   <IconRuler />
                 </IconTool>
+                <StrokeColorPicker
+                  rail
+                  colors={STROKE_COLORS}
+                  value={strokeColor}
+                  onChange={setStrokeColor}
+                  ariaLabel={t ? "画笔颜色" : "Stroke color"}
+                />
                 <div className="my-0.5 h-px w-6 shrink-0 self-center bg-white/[0.08]" aria-hidden />
                 <IconTool label={t ? "旋转" : "Rotate"} onClick={rotateCw} rail>
                   <IconRotate />
@@ -624,23 +631,9 @@ export default function KeyframeProv3InteractiveViewer({
                 </IconTool>
               </div>
             </div>
-            <div className="pointer-events-auto absolute bottom-[4.25rem] left-12 right-3 z-[16] flex items-center justify-start px-1">
-              <StrokeColorPicker
-                colors={STROKE_COLORS}
-                value={strokeColor}
-                onChange={setStrokeColor}
-                ariaLabel={t ? "画笔颜色" : "Stroke color"}
-              />
-            </div>
           </>
         ) : (
-          <div className="pointer-events-auto absolute bottom-3 left-1/2 z-[15] flex max-w-[calc(100%-1rem)] -translate-x-1/2 flex-row flex-wrap items-center justify-center gap-1.5">
-            <StrokeColorPicker
-              colors={STROKE_COLORS}
-              value={strokeColor}
-              onChange={setStrokeColor}
-              ariaLabel={t ? "画笔颜色" : "Stroke color"}
-            />
+          <div className="pointer-events-auto absolute bottom-3 left-1/2 z-[15] flex max-w-[calc(100%-1rem)] -translate-x-1/2 flex-row flex-wrap items-center justify-center">
             <div className="flex max-w-full items-center gap-0.5 rounded-[12px] border border-white/[0.09] bg-[#2b2b2b]/90 px-1 py-1 opacity-80 shadow-lg backdrop-blur-xl">
               <IconTool active={tool === "pan"} label={t ? "移动" : "Move"} onClick={() => setTool("pan")}>
                 <IconHand />
@@ -651,6 +644,12 @@ export default function KeyframeProv3InteractiveViewer({
               <IconTool active={tool === "ruler"} label={t ? "测量" : "Measure"} onClick={() => setTool("ruler")}>
                 <IconRuler />
               </IconTool>
+              <StrokeColorPicker
+                colors={STROKE_COLORS}
+                value={strokeColor}
+                onChange={setStrokeColor}
+                ariaLabel={t ? "画笔颜色" : "Stroke color"}
+              />
               <div className="mx-0.5 h-7 w-px shrink-0 bg-white/[0.08]" aria-hidden />
               <IconTool label={t ? "旋转" : "Rotate"} onClick={rotateCw}>
                 <IconRotate />
@@ -686,17 +685,20 @@ export default function KeyframeProv3InteractiveViewer({
   );
 }
 
-/** 调色板按钮；点击后在同位置叠层淡入色板（无常驻色点） */
+/** 与 IconTool 同尺寸的调色板按钮；点击后在同位置叠层淡入色板 */
 function StrokeColorPicker({
   colors,
   value,
   onChange,
   ariaLabel,
+  rail,
 }: {
   colors: readonly string[];
   value: string;
   onChange: (c: string) => void;
   ariaLabel: string;
+  /** 左侧竖条工具栏样式（与 IconTool rail 一致） */
+  rail?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
@@ -717,6 +719,14 @@ function StrokeColorPicker({
     };
   }, [open]);
 
+  const triggerClass = rail
+    ? open
+      ? "bg-[#5eb3ff]/14 text-[#a8d8ff] shadow-[inset_0_0_0_1px_rgba(94,179,255,0.22)]"
+      : "text-white/30 hover:bg-white/[0.05] hover:text-white/65"
+    : open
+      ? "bg-[#5eb3ff]/20 text-[#7ec8ff] shadow-[inset_0_0_0_1px_rgba(94,179,255,0.35)]"
+      : "text-white/45 hover:bg-white/[0.08] hover:text-white/85";
+
   return (
     <div ref={rootRef} className="relative z-[30] flex h-9 w-9 shrink-0 items-center justify-center">
       <button
@@ -726,8 +736,8 @@ function StrokeColorPicker({
         aria-expanded={open}
         aria-haspopup="listbox"
         onClick={() => setOpen((v) => !v)}
-        className={`absolute inset-0 z-10 flex items-center justify-center rounded-xl border border-white/[0.11] bg-gradient-to-b from-white/[0.08] to-white/[0.02] text-white/42 shadow-[inset_0_1px_0_rgba(255,255,255,0.07),0_4px_18px_rgba(0,0,0,0.25)] backdrop-blur-md transition-all duration-200 ease-out hover:border-white/[0.18] hover:from-white/[0.11] hover:text-white/72 active:scale-[0.96] ${
-          open ? "pointer-events-none scale-[0.92] opacity-0" : "opacity-100"
+        className={`absolute inset-0 z-10 flex items-center justify-center rounded-md transition ${triggerClass} active:scale-[0.97] ${
+          open ? "pointer-events-none opacity-0" : "opacity-100"
         }`}
       >
         <IconPalette />
@@ -858,7 +868,7 @@ function IconClear() {
 
 function IconPalette() {
   return (
-    <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden>
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden>
       <path
         strokeLinecap="round"
         strokeLinejoin="round"
