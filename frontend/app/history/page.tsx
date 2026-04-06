@@ -42,6 +42,7 @@ import {
   prov3HistoryMergePayloadScore,
   type Prov3ResultLike,
 } from "@/lib/prov3-keyframe-media";
+import { normalizeProv3MediaInRaw } from "@/lib/prov3-media-url";
 
 function isFiniteAnalysisScore(v: unknown): v is number {
   return typeof v === "number" && Number.isFinite(v);
@@ -946,6 +947,7 @@ export default function HistoryPage() {
       } else if (keyframes.length === 0 && preview.length > 0) {
         r.keyframes = preview;
       }
+      normalizeProv3MediaInRaw(r);
       return r as ParsedResult;
     } catch {
       return {};

@@ -23,6 +23,7 @@ import {
   PROV3_KEYFRAME_MEDIA_FAIL_EN,
   type Prov3KeyframeGateState,
 } from "@/lib/prov3-keyframe-media";
+import { resolveProv3ProductMediaUrl } from "@/lib/prov3-media-url";
 
 /* ═══════════════ Types ═══════════════ */
 
@@ -303,7 +304,7 @@ function plusKeyframeImageSrc(
   kf: { keyframe_image_url?: string; image_base64?: string } | null | undefined,
   urlOnly?: boolean,
 ): string | null {
-  const u = String(kf?.keyframe_image_url ?? "").trim();
+  const u = resolveProv3ProductMediaUrl(String(kf?.keyframe_image_url ?? "").trim());
   if (u) return u;
   if (urlOnly) return null;
   return keyframeImageDataUrl(kf?.image_base64) ?? null;

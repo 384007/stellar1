@@ -25,7 +25,7 @@ from lib.prov3.r2_media import (
     prov3_r2_object_key,
     prov3_r2_public_url_for_key,
     r2_head_object_exists,
-    upload_prov3_media_directory_to_r2,
+    upload_prov3_media_directory_to_r2_and_verify,
 )
 from routers.auth import get_current_user
 from services.internal.prov3_ffmpeg import FFmpegNotFoundError
@@ -74,13 +74,9 @@ def prov3_analyze_single_flight_active() -> bool:
 
 
 def _prov3_durable_media_required() -> bool:
-    """Modal (and similar) workers use ephemeral ``/tmp`` — require R2 unless explicitly opted out."""
+    """Product prov3 responses must not reference ephemeral worker disk only. Opt out for local dev."""
     v = (os.getenv("STELLAR_PROV3_REQUIRE_R2") or "").strip().lower()
-    if v in ("0", "false", "no", "off"):
-        return False
-    if v in ("1", "true", "yes", "on"):
-        return True
-    return _modal_pro_single_flight_enabled()
+    return v not in ("0", "false", "no", "off")
 
 
 router_pro_v3 = APIRouter(prefix="/pro-v3", tags=["pro-v3"])
@@ -412,7 +408,7 @@ async def _run_pro_analyze_body(
                 detail=(
                     "Pro v3 requires durable media (Cloudflare R2) on this runtime: set R2_ENDPOINT, "
                     "R2_ACCESS_KEY, R2_SECRET_KEY, R2_BUCKET, and STELLAR_PROV3_R2_PUBLIC_BASE. "
-                    "For local/ephemeral-only testing on Modal, set STELLAR_PROV3_REQUIRE_R2=0."
+                    "For local/dev without R2, set STELLAR_PROV3_REQUIRE_R2=0 (non-durable media URLs)."
                 ),
             )
         with tempfile.TemporaryDirectory(prefix="stellar_pro_analyze_") as tmpdir:
@@ -513,11 +509,13 @@ async def _run_pro_analyze_body(
                     shutil.copy2(screen_src, screen_dst)
                     screen_cropped_video_url = f"{base}{mp}/media/{analysis_id}/{screen_name}"
 
+                contact_sheet_filename: str | None = None
                 contact_src = Path(str(result.get("contact_sheet_url") or ""))
                 if contact_src.exists() and contact_src.is_file():
                     contact_name = f"contact_sheet{contact_src.suffix or '.jpg'}"
                     contact_dst = media_dir / contact_name
                     shutil.copy2(contact_src, contact_dst)
+                    contact_sheet_filename = contact_name
                     result["contact_sheet_url"] = f"{base}{mp}/media/{analysis_id}/{contact_name}"
 
                 if screen_cropped_video_url:
@@ -525,11 +523,25 @@ async def _run_pro_analyze_body(
 
                 if prov3_r2_media_fully_configured():
                     try:
-                        r2_by_fn = await asyncio.to_thread(
-                            upload_prov3_media_directory_to_r2,
-                            media_dir,
-                            analysis_id,
-                        )
+                        r2_required: set[str] = set(keyframe_url_by_file.keys())
+                        r2_required.add(original_name)
+                        if playback_video_url:
+                            r2_required.add(playback_dst.name)
+                        if analysis_video_url:
+                            r2_required.add(analysis_dst.name)
+                        if screen_cropped_video_url:
+                            r2_required.add(screen_dst.name)
+                        if contact_sheet_filename:
+                            r2_required.add(contact_sheet_filename)
+
+                        def _upload_verify() -> dict[str, str]:
+                            return upload_prov3_media_directory_to_r2_and_verify(
+                                media_dir,
+                                analysis_id,
+                                r2_required,
+                            )
+
+                        r2_by_fn = await asyncio.to_thread(_upload_verify)
                         _rewrite_prov3_result_urls_to_r2(result, r2_by_fn)
                     except Exception as exc:
                         logger.exception("[PRO_PROV3][R2] durable media upload failed: %s", exc)

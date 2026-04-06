@@ -2,6 +2,7 @@
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { PROV3_KEYFRAME_MEDIA_FAIL_EN, PROV3_KEYFRAME_MEDIA_FAIL_ZH } from "@/lib/prov3-keyframe-media";
+import { resolveProv3ProductMediaUrl } from "@/lib/prov3-media-url";
 import {
   getFrameState,
   loadProv3KfStore,
@@ -146,7 +147,9 @@ export default function KeyframeProv3InteractiveViewer({
   const [imgBroken, setImgBroken] = useState(false);
 
   const frame = keyframes[activeIndex];
-  const dataUrl = frame ? String(frame.keyframe_image_url || "").trim() || null : null;
+  const dataUrl = frame
+    ? resolveProv3ProductMediaUrl(String(frame.keyframe_image_url || "").trim()) || null
+    : null;
 
   useEffect(() => {
     setStore(loadProv3KfStore(analysisId));

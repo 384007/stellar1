@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { keyframeImageDataUrl } from "@/lib/image-base64";
+import { resolveProv3ProductMediaUrl } from "@/lib/prov3-media-url";
 
 export interface PoseSnapshotJoint {
   name: string;
@@ -50,7 +51,7 @@ function KeyframeStripMedia({
 }) {
   const [imgBroken, setImgBroken] = useState(false);
   const showSkel = showSkeleton && !!kf.pose_snapshot?.joints?.length;
-  const url = String(kf.keyframe_image_url ?? "").trim();
+  const url = resolveProv3ProductMediaUrl(String(kf.keyframe_image_url ?? "").trim());
   const b64Url = urlOnlyTimeline ? null : keyframeImageDataUrl(kf.image_base64);
   const imgSrc = urlOnlyTimeline ? (url || null) : url || b64Url;
   if (imgSrc && !imgBroken) {

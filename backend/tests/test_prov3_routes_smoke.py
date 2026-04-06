@@ -11,6 +11,8 @@ import unittest
 
 # main 导入前需要 JWT_SECRET（auth 模块在 import 时会读）
 os.environ.setdefault("JWT_SECRET", "test-secret-prov3-smoke")
+# CI / 本地冒烟无 R2：跳过「必须 durable」门禁，否则空文件用例会在读 body 前 503
+os.environ.setdefault("STELLAR_PROV3_REQUIRE_R2", "0")
 
 from fastapi.testclient import TestClient  # noqa: E402
 

@@ -4,6 +4,7 @@
  */
 
 import type { PlusAnalysisResult } from "@/components/PlusResultView";
+import { normalizeProv3MediaInRaw } from "@/lib/prov3-media-url";
 
 const SWING_PHASE_IDS = [
   "address",
@@ -83,6 +84,7 @@ function parseProTotalScore(v: unknown): number {
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function proExpandedToPlusViewModel(r: Record<string, any>): PlusAnalysisResult {
   ensureAnalysisIdOnRaw(r);
+  normalizeProv3MediaInRaw(r as Record<string, unknown>);
   const issues = Array.isArray(r.issues) ? (r.issues as string[]) : [];
   const issues_zh = Array.isArray(r.issues_zh) ? (r.issues_zh as string[]) : [];
   const suggestions = Array.isArray(r.suggestions) ? (r.suggestions as string[]) : [];
@@ -285,6 +287,7 @@ export function proExpandedToPlusViewModel(r: Record<string, any>): PlusAnalysis
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function expandStellarProForUi(raw: Record<string, any>): Record<string, any> {
   ensureAnalysisIdOnRaw(raw);
+  normalizeProv3MediaInRaw(raw as Record<string, unknown>);
   const summary = String(raw.summary ?? "").trim();
   const summary_zh = String(raw.summary_zh ?? raw.summary ?? "").trim();
   const keyframes = Array.isArray(raw.keyframes) ? raw.keyframes : [];

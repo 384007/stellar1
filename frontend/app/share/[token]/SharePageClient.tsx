@@ -10,6 +10,7 @@ import PlusResultView, { type PlusAnalysisResult } from "@/components/PlusResult
 import VideoAnalysisOverlay from "@/components/VideoAnalysisOverlay";
 import { coachingTipsFromParsed } from "@/lib/video-analysis-coaching";
 import { normalizePoseFramesForOverlay } from "@/lib/analysis-pose-storage";
+import { normalizeProv3MediaInRaw } from "@/lib/prov3-media-url";
 
 interface SharedRecord {
   id: string;
@@ -279,8 +280,14 @@ function ProTrainingCurve({ frames, keyframes, lang }: {
 }
 
 function parseResult(json: string): ParsedResult {
-  try { return JSON.parse(json) as ParsedResult; }
-  catch { return {}; }
+  try {
+    const r = JSON.parse(json) as Record<string, unknown>;
+    if (!r || typeof r !== "object") return {};
+    normalizeProv3MediaInRaw(r);
+    return r as ParsedResult;
+  } catch {
+    return {};
+  }
 }
 
 function getUserAngles(parsed: ParsedResult) {

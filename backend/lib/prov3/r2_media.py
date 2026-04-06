@@ -81,6 +81,23 @@ def _guess_content_type(path: Path) -> str:
     return "application/octet-stream"
 
 
+def upload_prov3_media_directory_to_r2_and_verify(
+    media_dir: Path,
+    analysis_id: str,
+    required_filenames: set[str],
+) -> dict[str, str]:
+    """Upload every file in ``media_dir``, verify S3 head for each required name, return ``{fn: public_url}``."""
+    out = upload_prov3_media_directory_to_r2(media_dir, analysis_id)
+    missing = required_filenames - set(out.keys())
+    if missing:
+        raise RuntimeError(f"prov3_media_gate:r2_upload_incomplete:{sorted(missing)}")
+    for fn in out:
+        key = prov3_r2_object_key(analysis_id, fn)
+        if not r2_head_object_exists(key):
+            raise RuntimeError(f"prov3_media_gate:r2_head_missing_after_put:{fn}")
+    return out
+
+
 def upload_prov3_media_directory_to_r2(media_dir: Path, analysis_id: str) -> dict[str, str]:
     """Upload every file under ``media_dir``; return ``{filename: public_url}``."""
     if not prov3_r2_media_fully_configured():

@@ -1,6 +1,25 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import {
+  isProv3DurableR2ProductUrl,
+  normalizeProv3MediaInRaw,
+  resolveProv3ProductMediaUrl,
+} from "@/lib/prov3-media-url";
+
+/** Session tab: URLs that already failed probe — avoid repeated HEAD/img 404 spam on re-render. */
+const prov3MediaProbeFailedUrls = new Set<string>();
+
+export function markProv3MediaUrlsProbeFailed(urls: string[]): void {
+  for (const u of urls) {
+    const s = u.trim();
+    if (s) prov3MediaProbeFailedUrls.add(s);
+  }
+}
+
+export function prov3MediaUrlsHadProbeFailure(urls: string[]): boolean {
+  return urls.some((u) => prov3MediaProbeFailedUrls.has(u.trim()));
+}
 
 /** User-facing copy when true-240 JPG URLs are missing or unloadable */
 export const PROV3_KEYFRAME_MEDIA_FAIL_ZH =
@@ -106,9 +125,18 @@ export async function verifyProv3KeyframeUrlsLoad(
   urls: string[],
   timeoutMs = 20000,
 ): Promise<{ ok: true } | { ok: false; url?: string }> {
-  for (const url of urls) {
+  const resolved = urls
+    .map((u) => resolveProv3ProductMediaUrl(u.trim()))
+    .filter((u) => u.length > 0);
+  if (resolved.length > 0 && resolved.every((u) => isProv3DurableR2ProductUrl(u))) {
+    return { ok: true };
+  }
+  for (const url of resolved) {
     const head = await prov3KeyframeMediaHeadMissing(url, PROV3_MEDIA_HEAD_MS);
-    if (head === true) return { ok: false, url };
+    if (head === true) {
+      markProv3MediaUrlsProbeFailed(resolved);
+      return { ok: false, url };
+    }
     const decoded = await new Promise<boolean>((resolve) => {
       const img = new Image();
       const t = window.setTimeout(() => {
@@ -126,7 +154,10 @@ export async function verifyProv3KeyframeUrlsLoad(
       };
       img.src = url;
     });
-    if (!decoded) return { ok: false, url };
+    if (!decoded) {
+      markProv3MediaUrlsProbeFailed(resolved);
+      return { ok: false, url };
+    }
   }
   return { ok: true };
 }
@@ -135,6 +166,7 @@ export async function verifyProv3KeyframeUrlsLoad(
 export function prov3HistoryMergePayloadScore(json: string): number {
   try {
     const p = JSON.parse(json) as Record<string, unknown>;
+    normalizeProv3MediaInRaw(p);
     if (!isProv3StrictMediaPolicyResult(p as Prov3ResultLike)) return 0;
     const rows = prov3DisplayKeyframeRows(p as Prov3ResultLike);
     let score = 0;
@@ -161,7 +193,9 @@ export function useProv3KeyframeDisplayGate(result: Prov3ResultLike): Prov3Keyfr
   const pipeline = String(result.pipeline ?? "");
   const trustKey = `${result.final_status ?? ""}|${result.analysis_trust ?? result.trust_level ?? ""}|${Boolean(result.low_trust_preview_only)}`;
   const urlSig = JSON.stringify(
-    prov3DisplayKeyframeRows(result).map((k) => String(k.keyframe_image_url ?? "").trim()),
+    prov3DisplayKeyframeRows(result).map((k) =>
+      resolveProv3ProductMediaUrl(String(k.keyframe_image_url ?? "").trim()),
+    ),
   );
 
   useEffect(() => {
@@ -174,8 +208,22 @@ export function useProv3KeyframeDisplayGate(result: Prov3ResultLike): Prov3Keyfr
       setState("fail");
       return;
     }
+    const urls = rows
+      .map((row) => resolveProv3ProductMediaUrl(String(row.keyframe_image_url ?? "").trim()))
+      .filter((u) => u.length > 0);
+    if (urls.length < rows.length) {
+      setState("fail");
+      return;
+    }
+    if (urls.length > 0 && urls.every((u) => isProv3DurableR2ProductUrl(u))) {
+      setState("ok");
+      return;
+    }
+    if (prov3MediaUrlsHadProbeFailure(urls)) {
+      setState("fail");
+      return;
+    }
     setState("checking");
-    const urls = rows.map((r) => String(r.keyframe_image_url ?? "").trim());
     let cancelled = false;
     void verifyProv3KeyframeUrlsLoad(urls).then((res) => {
       if (cancelled) return;

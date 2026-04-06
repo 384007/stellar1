@@ -5,6 +5,7 @@ import {
   prov3HistoryKeyframesIncomplete,
   type Prov3ResultLike,
 } from "@/lib/prov3-keyframe-media";
+import { normalizeProv3MediaInRaw } from "@/lib/prov3-media-url";
 import { getAnalysisVideoBlob } from "@/lib/video-store";
 
 export type LoadedProAnalysis = {
@@ -35,6 +36,7 @@ export async function loadProAnalysisById(
     if (hit?.result_json) {
       const raw = JSON.parse(hit.result_json) as Record<string, unknown>;
       raw.analysis_id = String(raw.analysis_id || id);
+      normalizeProv3MediaInRaw(raw);
       const videoBlob = await getAnalysisVideoBlob(id);
       const needCloudDetail =
         Boolean(token && !token.startsWith("local-")) &&
@@ -62,8 +64,11 @@ export async function loadProAnalysisById(
         };
         const raw = JSON.parse(String(row.result_json || "{}")) as Record<string, unknown>;
         raw.analysis_id = String(raw.analysis_id || id);
+        normalizeProv3MediaInRaw(raw);
         if (row.video_url) raw.video_url = row.video_url;
         if (row.analysis_video_url) raw.analysis_video_url = row.analysis_video_url;
+        // Row overlays can reintroduce relative / wrong-host prov3 paths — normalize again.
+        normalizeProv3MediaInRaw(raw);
 
         let videoBlob: Blob | null = null;
         try {
