@@ -264,23 +264,27 @@ export default function ProPageClient({ deepLinkAnalysisId }: { deepLinkAnalysis
     const p = consumeReanalyzeFromHistoryPayload();
     if (!p || p.page !== "pro") return;
     void (async () => {
-      // History queues both URLs; timeline first is implemented inside fetchVideoBlobForHistoryReanalyze.
-      const blob = await fetchVideoBlobForHistoryReanalyze(
-        p.analysisId,
-        p.videoUrl,
-        p.analysisVideoUrl,
-      );
-      if (!blob || blob.size === 0) {
-        setError(
-          lang === "zh"
-            ? "无法加载该记录原视频。请确认本机已缓存或已登录且云端仍保存视频。"
-            : "Could not load the original video for this record.",
+      try {
+        // History queues both URLs; timeline first is implemented inside fetchVideoBlobForHistoryReanalyze.
+        const blob = await fetchVideoBlobForHistoryReanalyze(
+          p.analysisId,
+          p.videoUrl,
+          p.analysisVideoUrl,
         );
-        return;
+        if (!blob || blob.size === 0) {
+          setError(
+            lang === "zh"
+              ? "无法加载该记录原视频。请确认本机已缓存或已登录且云端仍保存视频。"
+              : "Could not load the original video for this record.",
+          );
+          return;
+        }
+        const sm = reanalyzePayloadProv3ScreenMode(p);
+        if (sm) setInputMode("screen");
+        await processBlob(blob, reanalyzeHistoryFilename(blob), sm);
+      } catch (e) {
+        console.warn("[pro] reanalyze pipeline error:", e);
       }
-      const sm = reanalyzePayloadProv3ScreenMode(p);
-      if (sm) setInputMode("screen");
-      processBlob(blob, reanalyzeHistoryFilename(blob), sm);
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);

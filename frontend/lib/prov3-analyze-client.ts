@@ -109,10 +109,11 @@ async function tryProv3ModalHosts(
   for (const mUrlRaw of modalUrls) {
     const mUrl = normalizeProHttpApiBase(mUrlRaw);
     if (!mUrl) continue;
-    hrLoop: for (let hr = 0; hr < 5; hr++) {
+    const maxHr = 3;
+    hrLoop: for (let hr = 0; hr < maxHr; hr++) {
       if (hr > 0) {
         await new Promise((r) => setTimeout(r, 5_000));
-        console.log(`${logPrefix} Modal HTTP retry round ${hr + 1}/5 → ${mUrl}`);
+        console.log(`${logPrefix} Modal HTTP retry round ${hr + 1}/${maxHr} → ${mUrl}`);
       }
       let modalConnCtrl: AbortController | null = null;
       for (let connAttempt = 0; connAttempt < 2; connAttempt++) {
@@ -153,9 +154,9 @@ async function tryProv3ModalHosts(
           if (mRes.ok) {
             return { response: mRes, route: "modal" };
           }
-          if (shouldRetryModalHttp(mRes.status) && hr < 4) {
+          if (shouldRetryModalHttp(mRes.status) && hr < maxHr - 1) {
             console.warn(
-              `${logPrefix} Modal ${mRes.status} on ${mUrl} — retrying same host (${hr + 1}/5)`,
+              `${logPrefix} Modal ${mRes.status} on ${mUrl} — retrying same host (${hr + 1}/${maxHr})`,
             );
             continue hrLoop;
           }

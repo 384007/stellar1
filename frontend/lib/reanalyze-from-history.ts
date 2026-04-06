@@ -1,3 +1,4 @@
+import { resolveProv3ProductMediaUrl } from "@/lib/prov3-media-url";
 import { getAnalysisVideoBlob } from "@/lib/video-store";
 
 export const REANALYZE_FROM_HISTORY_KEY = "stellar_reanalyze_from_history_v1";
@@ -85,61 +86,15 @@ function abortSignalForMs(ms: number): AbortSignal | undefined {
   return undefined;
 }
 
-/**
- * Pro v3 persisted media: cheap HEAD before GET so missing timeline files skip full download.
- * If HEAD is blocked (CORS) or errors, returns false and caller may still GET.
- */
-async function prov3MediaUrlCertainlyMissing(u: string): Promise<boolean> {
-  if (!u.includes("/pro-v3/media/")) return false;
-  try {
-    const sig = abortSignalForMs(5000);
-    const r = await fetch(u, {
-      method: "HEAD",
-      mode: "cors",
-      cache: "no-store",
-      ...(sig ? { signal: sig } : {}),
-    });
-    return r.status === 404;
-  } catch {
-    return false;
-  }
+/** Worker-local ``/pro-v3/media/…`` (ephemeral). R2 product URLs use ``/prov3-media/…``. */
+function isEphemeralProv3WorkerMediaUrl(url: string): boolean {
+  const lower = url.trim().toLowerCase();
+  if (!lower.includes("/pro-v3/media/")) return false;
+  if (lower.includes("/prov3-media/")) return false;
+  return true;
 }
 
-/**
- * History「重新分析」取视频，顺序固定为：
- * 1) `analysisVideoUrl`（Pro v3 时间线等，远程）
- * 2) `videoUrl`（记录里的原片 URL，远程）
- * 3) IndexedDB 缓存
- * 4) `GET /api/history/video/{analysisId}`（同源）
- *
- * 参数名与历史页 `queueReanalyzeFromHistory` 字段一致：`videoUrl` / `analysisVideoUrl`。
- */
-export async function fetchVideoBlobForHistoryReanalyze(
-  analysisId: string,
-  videoUrl?: string,
-  analysisVideoUrl?: string,
-): Promise<Blob | null> {
-  const remoteCandidates = [(analysisVideoUrl || "").trim(), (videoUrl || "").trim()].filter(Boolean);
-  for (const u of remoteCandidates) {
-    if (/^https?:\/\//i.test(u) || u.startsWith("/")) {
-      try {
-        if (await prov3MediaUrlCertainlyMissing(u)) continue;
-        const sig = abortSignalForMs(REMOTE_VIDEO_FETCH_MS);
-        const r = await fetch(u, {
-          mode: "cors",
-          cache: "no-store",
-          ...(sig ? { signal: sig } : {}),
-        });
-        if (r.ok) {
-          const blob = await r.blob();
-          if (blob.size > 0) return blob;
-        }
-      } catch {
-        /* fall through */
-      }
-    }
-  }
-
+async function tryCachedOrHistoryVideoBlob(analysisId: string): Promise<Blob | null> {
   try {
     const fromIdb = await getAnalysisVideoBlob(analysisId);
     if (fromIdb && fromIdb.size > 0) return fromIdb;
@@ -164,4 +119,58 @@ export async function fetchVideoBlobForHistoryReanalyze(
   }
 
   return null;
+}
+
+/**
+ * History「重新分析」取视频：
+ * - 解析相对 / 错源的 prov3 URL（与展示层一致）
+ * - **不再**对同一资源先发 HEAD 再 GET（避免 Modal 上出现「两条 media run + 一条 analyze」）
+ * - 若首选时间线是易失效的 worker ``/pro-v3/media/…``，先尝试 IndexedDB / 同源历史视频 API，再尝试远程
+ * - 否则保持：远程（analysis → video）→ 本地缓存 → 历史 API
+ *
+ * 参数名与历史页 `queueReanalyzeFromHistory` 一致：`videoUrl` / `analysisVideoUrl`。
+ */
+export async function fetchVideoBlobForHistoryReanalyze(
+  analysisId: string,
+  videoUrl?: string,
+  analysisVideoUrl?: string,
+): Promise<Blob | null> {
+  const rawA = (analysisVideoUrl || "").trim();
+  const rawV = (videoUrl || "").trim();
+  const remoteCandidates: string[] = [];
+  const seen = new Set<string>();
+  for (const raw of [rawA, rawV]) {
+    if (!raw) continue;
+    const u = resolveProv3ProductMediaUrl(raw);
+    if (!u || seen.has(u)) continue;
+    seen.add(u);
+    remoteCandidates.push(u);
+  }
+
+  const firstRemote = remoteCandidates[0] || "";
+  if (firstRemote && isEphemeralProv3WorkerMediaUrl(firstRemote)) {
+    const early = await tryCachedOrHistoryVideoBlob(analysisId);
+    if (early) return early;
+  }
+
+  for (const u of remoteCandidates) {
+    if (!/^https?:\/\//i.test(u) && !u.startsWith("/")) continue;
+    try {
+      const sig = abortSignalForMs(REMOTE_VIDEO_FETCH_MS);
+      const r = await fetch(u, {
+        method: "GET",
+        mode: "cors",
+        cache: "no-store",
+        ...(sig ? { signal: sig } : {}),
+      });
+      if (r.ok) {
+        const blob = await r.blob();
+        if (blob.size > 0) return blob;
+      }
+    } catch {
+      /* fall through */
+    }
+  }
+
+  return tryCachedOrHistoryVideoBlob(analysisId);
 }

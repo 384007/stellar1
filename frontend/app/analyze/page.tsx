@@ -190,23 +190,27 @@ export default function AnalyzePage() {
     const p = consumeReanalyzeFromHistoryPayload();
     if (!p || p.page !== "analyze") return;
     void (async () => {
-      const blob = await fetchVideoBlobForHistoryReanalyze(
-        p.analysisId,
-        p.videoUrl,
-        p.analysisVideoUrl,
-      );
-      if (!blob || blob.size === 0) {
-        setError(
-          lang === "zh"
-            ? "无法加载该记录原视频。请确认本机已缓存或已登录且云端仍保存视频。"
-            : "Could not load the original video for this record.",
+      try {
+        const blob = await fetchVideoBlobForHistoryReanalyze(
+          p.analysisId,
+          p.videoUrl,
+          p.analysisVideoUrl,
         );
-        return;
+        if (!blob || blob.size === 0) {
+          setError(
+            lang === "zh"
+              ? "无法加载该记录原视频。请确认本机已缓存或已登录且云端仍保存视频。"
+              : "Could not load the original video for this record.",
+          );
+          return;
+        }
+        const mode: AnalysisMode = p.analysisMode === "pro" ? "pro" : "lite";
+        const screenTag = reanalyzePayloadProv3ScreenMode(p);
+        if (screenTag) setInputMode("screen");
+        await processBlob(blob, reanalyzeHistoryFilename(blob), screenTag, mode);
+      } catch (e) {
+        console.warn("[analyze] reanalyze pipeline error:", e);
       }
-      const mode: AnalysisMode = p.analysisMode === "pro" ? "pro" : "lite";
-      const screenTag = reanalyzePayloadProv3ScreenMode(p);
-      if (screenTag) setInputMode("screen");
-      processBlob(blob, reanalyzeHistoryFilename(blob), screenTag, mode);
     })();
     // processBlob 为稳定闭包即可；仅依赖登录就绪与语言（错误文案）
     // eslint-disable-next-line react-hooks/exhaustive-deps
