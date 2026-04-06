@@ -77,7 +77,11 @@ export function isValidProv3KeyframeImageUrl(url: string): boolean {
   if (u.length < 12) return false;
   if (!/^https?:\/\//i.test(u) && !u.startsWith("/")) return false;
   const path = u.split("?")[0].toLowerCase();
-  return path.endsWith(".jpg") || path.endsWith(".jpeg");
+  if (path.endsWith(".jpg") || path.endsWith(".jpeg")) return true;
+  if (path.endsWith(".png") || path.endsWith(".webp")) return true;
+  // Product media paths may omit extension; R2/Modal still serve raster frames.
+  if (path.includes("/prov3-media/") || path.includes("/pro-v3/media/")) return true;
+  return false;
 }
 
 /** Static check before decode: every display row must have a plausible timeline JPG URL */

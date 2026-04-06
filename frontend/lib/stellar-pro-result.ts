@@ -296,6 +296,10 @@ export function proExpandedToPlusViewModel(r: Record<string, any>): PlusAnalysis
     screen_clean_video_url:
       typeof r.screen_clean_video_url === "string" ? r.screen_clean_video_url : undefined,
     playback_video_url: typeof r.playback_video_url === "string" ? r.playback_video_url : undefined,
+    /** Must pass through for PlusResultView ``originalVideoDownloadUrl`` / video tab (was dropped → no URL fallback). */
+    video_url: typeof r.video_url === "string" ? r.video_url : undefined,
+    original_video_url: typeof r.original_video_url === "string" ? r.original_video_url : undefined,
+    analysis_video_url: typeof r.analysis_video_url === "string" ? r.analysis_video_url : undefined,
     routing_execution:
       r.routing_execution && typeof r.routing_execution === "object" && !Array.isArray(r.routing_execution)
         ? (r.routing_execution as PlusAnalysisResult["routing_execution"])

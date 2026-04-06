@@ -1639,7 +1639,7 @@ export default function PlusResultView({ result, lang, externalVideoSrc, backend
   const overlayCoachingMode = coachingMode ?? (result.type === "pro" ? "pro" : "plus");
   const prov3Strict = isProv3StrictMediaPolicyResult(result);
   const prov3KfGate = useProv3KeyframeDisplayGate(result);
-  const [activeTab, setActiveTab] = useState<TabKey>(() => initialActiveTab ?? "diagnosis");
+  const [activeTab, setActiveTab] = useState<TabKey>(() => initialActiveTab ?? (result.type === "pro" ? "video" : "diagnosis"));
   const [activeKeyframe, setActiveKeyframe] = useState(0);
   const [showAllIssues, setShowAllIssues] = useState(false);
   const [showMoreDesc, setShowMoreDesc] = useState(false);
@@ -1721,43 +1721,99 @@ export default function PlusResultView({ result, lang, externalVideoSrc, backend
     });
   }, [result.analysis_id, externalVideoSrc]);
 
-  // Video tab: parent blob URL first; else IndexedDB with short backoff (saveAnalysisVideo may lag).
+  // Video tab: parent src first; always try IndexedDB to upgrade http→blob; without parent, show result URLs immediately (do not wait for IDB).
   useEffect(() => {
     if (activeTab !== "video") return;
 
+    const id = String(result.analysis_id ?? "").trim();
+    const urlFallback = originalVideoDownloadUrl;
+
+    const tryUpgradeParentUrlToIdbBlob = () => {
+      if (!id) return () => {};
+      let cancelled = false;
+      const gapsMs = [0, 120, 350, 800, 1800];
+      void (async () => {
+        for (let i = 0; i < gapsMs.length; i++) {
+          if (i > 0) await new Promise((r) => setTimeout(r, gapsMs[i] - gapsMs[i - 1]));
+          if (cancelled) return;
+          const blob = await getAnalysisVideoBlob(id).catch(() => null);
+          if (blob && blob.size > 0) {
+            if (!cancelled) {
+              setVideoSrc((prev) => {
+                if (prev?.startsWith("blob:")) {
+                  try {
+                    URL.revokeObjectURL(prev);
+                  } catch {
+                    /* ignore */
+                  }
+                }
+                return URL.createObjectURL(blob);
+              });
+              setVideoIdbExhausted(false);
+            }
+            return;
+          }
+        }
+      })();
+      return () => {
+        cancelled = true;
+      };
+    };
+
     if (externalVideoSrc) {
       setVideoSrc((prev) => {
-        if (prev && prev !== externalVideoSrc) {
-          try { URL.revokeObjectURL(prev); } catch { /* */ }
+        if (prev && prev !== externalVideoSrc && prev.startsWith("blob:")) {
+          try {
+            URL.revokeObjectURL(prev);
+          } catch {
+            /* ignore */
+          }
         }
         return externalVideoSrc;
       });
-      videoSrcLoaded.current = true;
       setVideoIdbExhausted(false);
+      videoSrcLoaded.current = true;
+      if (!externalVideoSrc.startsWith("blob:")) {
+        return tryUpgradeParentUrlToIdbBlob();
+      }
       return;
     }
 
     if (videoSrcLoaded.current) return;
-    const id = result.analysis_id;
+
     if (!id) {
       videoSrcLoaded.current = true;
-      setVideoIdbExhausted(true);
+      if (urlFallback) {
+        setVideoSrc(urlFallback);
+        setVideoIdbExhausted(false);
+      } else {
+        setVideoIdbExhausted(true);
+      }
       return;
     }
 
     let cancelled = false;
-    const gapsMs = [0, 150, 400, 1000];
+    const gapsMs = [0, 120, 350, 800, 1800];
+
+    if (urlFallback) {
+      setVideoSrc(urlFallback);
+      setVideoIdbExhausted(false);
+    }
 
     void (async () => {
       for (let i = 0; i < gapsMs.length; i++) {
         if (i > 0) await new Promise((r) => setTimeout(r, gapsMs[i] - gapsMs[i - 1]));
         if (cancelled) return;
         const blob = await getAnalysisVideoBlob(id).catch(() => null);
-        if (blob) {
+        if (blob && blob.size > 0) {
           if (!cancelled) {
             setVideoSrc((prev) => {
-              if (prev) {
-                try { URL.revokeObjectURL(prev); } catch { /* */ }
+              if (prev?.startsWith("blob:")) {
+                try {
+                  URL.revokeObjectURL(prev);
+                } catch {
+                  /* ignore */
+                }
               }
               return URL.createObjectURL(blob);
             });
@@ -1769,11 +1825,7 @@ export default function PlusResultView({ result, lang, externalVideoSrc, backend
       }
       if (!cancelled) {
         videoSrcLoaded.current = true;
-        const fallback = originalVideoDownloadUrl;
-        if (fallback) {
-          setVideoSrc(fallback);
-          setVideoIdbExhausted(false);
-        } else {
+        if (!urlFallback) {
           setVideoIdbExhausted(true);
         }
       }
