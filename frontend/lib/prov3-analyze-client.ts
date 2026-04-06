@@ -1,6 +1,7 @@
 /** Same-origin Pro v3 orchestration (upload → one Modal ``/analyze/start`` → R2 job poll). */
-/* CN: try presigned PUT to R2 first (``/api/history/upload-video/presign``) to avoid Pages ~100s wall
- * clock on slow uploads. Non-CN uses same-origin proxy only. Modal runs after ``analyze/start``. */
+/* CN: **only** presigned browser→R2 PUT (no Pages proxy fallback — proxy hits ~100s wall clock on slow links).
+ * CN polling: no client wall-clock cap (until completed/failed/auth error/user abort).
+ * Non-CN: proxy upload + ``modalTimeoutMs`` poll budget. */
 const PRO_V3_EDGE_ANALYZE_START = "/api/prov3/analyze/start";
 const PRO_V3_EDGE_ANALYZE_CANCEL = "/api/prov3/analyze/cancel";
 
@@ -34,7 +35,7 @@ export type RunProv3AnalyzeOptions = {
   backendUrls: string[];
   cnNetworkHint: boolean;
   screenMode: boolean;
-  /** Wall-clock budget for **polling** only, starting after ``job_id`` is returned (upload + analyze/start do not consume this). */
+  /** Poll budget after ``job_id`` (upload/start excluded). **Ignored when ``cnNetworkHint``** — CN polls until done/fail/abort. */
   modalTimeoutMs: number;
   renderTimeoutMs: number;
   logPrefix: string;
@@ -113,6 +114,12 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+/** CN path must not use Pages proxy upload (Cloudflare single-request wall clock breaks slow/large files). */
+export const PROV3_CN_DIRECT_UPLOAD_REQUIRED_ZH =
+  "当前为中国网络路径：视频须通过「预签名直连 R2」上传。Pages 未返回直传地址、或浏览器直连 R2 失败（常见为 R2 桶未配置 CORS）。\n\n" +
+  "请在 Cloudflare Pages Secrets 配置与 Modal 相同的 R2 S3 凭证：R2_ACCOUNT_ID（或 CLOUDFLARE_ACCOUNT_ID）、R2_BUCKET、R2_ACCESS_KEY、R2_SECRET_KEY；并在 R2 桶 CORS 中允许本站来源的 PUT、GET（AllowedHeaders 含 Content-Type）。\n\n" +
+  "配置完成并重新部署后再试。勿依赖经 Pages 转发的整段上传（易受约 100 秒墙钟限制）。";
+
 /** One in-flight Pro analyze orchestration per tab (avoids duplicate Modal job → 409). */
 let _prov3AnalyzeClientBusy = false;
 
@@ -152,6 +159,13 @@ export async function runProv3AnalyzeMultipart(
     let videoR2Key = "";
 
     if (opts.cnNetworkHint) {
+      type PresignJson = {
+        mode?: string;
+        upload_url?: string;
+        video_r2_key?: string;
+        content_type?: string;
+      };
+      let presignBody: PresignJson;
       try {
         const pr = await fetch("/api/history/upload-video/presign", {
           method: "POST",
@@ -168,36 +182,63 @@ export async function runProv3AnalyzeMultipart(
           }),
           signal: abortSignal,
         });
-        if (pr.ok) {
-          const pj = (await pr.json()) as {
-            mode?: string;
-            upload_url?: string;
-            video_r2_key?: string;
-            content_type?: string;
-          };
-          if (pj.mode === "direct" && pj.upload_url && pj.video_r2_key) {
-            const putMime = (pj.content_type || mime).trim() || mime;
-            const putRes = await fetch(pj.upload_url, {
-              method: "PUT",
-              headers: { "Content-Type": putMime },
-              body: blob,
-              signal: abortSignal,
-            });
-            if (putRes.ok) {
-              videoR2Key = String(pj.video_r2_key).trim();
-            } else {
-              console.warn(
-                `${opts.logPrefix} [PROV3_EDGE_JOB] R2 presigned PUT failed HTTP ${putRes.status} — falling back to Pages proxy upload`,
-              );
-            }
+        if (pr.status === 401 || pr.status === 403) {
+          let detail = `HTTP ${pr.status}`;
+          try {
+            const j = (await pr.json()) as { detail?: string };
+            if (typeof j.detail === "string") detail = j.detail;
+          } catch {
+            /* ignore */
           }
+          throw new Error(detail);
         }
+        if (!pr.ok) {
+          throw new Error(PROV3_CN_DIRECT_UPLOAD_REQUIRED_ZH);
+        }
+        presignBody = (await pr.json()) as PresignJson;
       } catch (e) {
-        console.warn(`${opts.logPrefix} [PROV3_EDGE_JOB] presign/direct upload error, using proxy:`, e);
+        if (abortSignal?.aborted) {
+          throw new Error(userCancelledMessage || "分析已停止");
+        }
+        if (e instanceof Error && (e.message.includes("中国网络路径") || e.message.startsWith("HTTP "))) {
+          throw e;
+        }
+        console.warn(`${opts.logPrefix} [PROV3_EDGE_JOB] CN presign request failed:`, e);
+        throw new Error(PROV3_CN_DIRECT_UPLOAD_REQUIRED_ZH);
       }
-    }
 
-    if (!videoR2Key) {
+      if (presignBody.mode !== "direct" || !presignBody.upload_url || !presignBody.video_r2_key) {
+        throw new Error(PROV3_CN_DIRECT_UPLOAD_REQUIRED_ZH);
+      }
+
+      const putMime = (presignBody.content_type || mime).trim() || mime;
+      let putRes: Response;
+      try {
+        putRes = await fetch(presignBody.upload_url, {
+          method: "PUT",
+          headers: { "Content-Type": putMime },
+          body: blob,
+          signal: abortSignal,
+        });
+      } catch (e) {
+        if (abortSignal?.aborted) {
+          throw new Error(userCancelledMessage || "分析已停止");
+        }
+        console.warn(`${opts.logPrefix} [PROV3_EDGE_JOB] CN R2 PUT network error:`, e);
+        throw new Error(`${PROV3_CN_DIRECT_UPLOAD_REQUIRED_ZH}\n无法完成浏览器→R2 直连（网络或 TLS 被拦截）。`);
+      }
+      if (!putRes.ok) {
+        const hint =
+          putRes.status === 403
+            ? "（多为 CORS 或签名过期）"
+            : `（HTTP ${putRes.status}）`;
+        throw new Error(`${PROV3_CN_DIRECT_UPLOAD_REQUIRED_ZH}\n直连上传失败${hint}`);
+      }
+      videoR2Key = String(presignBody.video_r2_key).trim();
+      if (!videoR2Key) {
+        throw new Error(PROV3_CN_DIRECT_UPLOAD_REQUIRED_ZH);
+      }
+    } else {
       const upRes = await fetch("/api/history/upload-video", {
         method: "POST",
         headers: {
@@ -269,8 +310,8 @@ export async function runProv3AnalyzeMultipart(
       throw new Error("分析任务未返回 job_id，请重试或联系支持。");
     }
 
-    // Upload can take many minutes on slow networks; polling budget applies only after the job is queued.
-    const pollDeadline = Date.now() + opts.modalTimeoutMs;
+    // Non-CN: bounded poll. CN: no wall clock (Modal can run arbitrarily long; avoid false "timeout").
+    const pollDeadline = opts.cnNetworkHint ? Number.POSITIVE_INFINITY : Date.now() + opts.modalTimeoutMs;
 
     while (Date.now() < pollDeadline) {
       bumpAbort();
