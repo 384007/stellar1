@@ -56,14 +56,15 @@ function prov3ScreenModeFromHistoryRecord(rec: AnalysisRecord): boolean {
   }
 }
 
-/** D1 list rows are compacted (~90k cap); keyframe JPEGs often live only in R2. Detect stripped/poisoned cache. */
+/** D1 list rows are compacted (~90k cap); keyframe JPEGs often live only in R2. Detect stripped/poisoned cache (URL or base64). */
 function plusKeyframesMissingImages(parsed: ParsedResult): boolean {
   const kfs = parsed.keyframes;
   if (!Array.isArray(kfs) || kfs.length === 0) return true;
   const withImg = kfs.filter((k) => {
     const b = (k as { image_base64?: string }).image_base64;
-    if (typeof b !== "string") return false;
-    return rawBase64ImagePayload(b).length > 400;
+    if (typeof b === "string" && rawBase64ImagePayload(b).length > 400) return true;
+    const u = (k as { keyframe_image_url?: string }).keyframe_image_url;
+    return typeof u === "string" && u.trim().length > 8;
   }).length;
   return withImg < Math.min(6, kfs.length);
 }
@@ -119,8 +120,11 @@ interface ParsedResult {
     phase: string;
     label_en: string;
     label_zh: string;
+    frame_index?: number;
     timestamp: number;
     image_base64: string;
+    keyframe_image_url?: string;
+    keyframe_image_source?: string;
   }>;
   skeleton_data?: {
     frames: Array<Record<string, unknown>>;
@@ -885,8 +889,17 @@ export default function HistoryPage() {
   function parseResult(json: string | null | undefined): ParsedResult {
     try {
       if (!json) return {};
-      const r = JSON.parse(json);
-      return (r && typeof r === "object") ? r : {};
+      const r = JSON.parse(json) as Record<string, unknown>;
+      if (!r || typeof r !== "object") return {};
+      const finalStatus = String(r.final_status ?? "");
+      const trust = String(r.analysis_trust ?? r.trust_level ?? "");
+      const lowTrust = finalStatus !== "pass" || trust === "low_trust" || r.low_trust_preview_only === true;
+      const keyframes = Array.isArray(r.keyframes) ? r.keyframes : [];
+      const preview = Array.isArray(r.preview_keyframes) ? r.preview_keyframes : [];
+      if (lowTrust && keyframes.length === 0 && preview.length > 0) {
+        r.keyframes = preview;
+      }
+      return r as ParsedResult;
     } catch {
       return {};
     }
