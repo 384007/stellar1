@@ -509,6 +509,7 @@ def run_pro_video_analyze_via_prov3(
         fail_reasons = [*fail_reasons, "low_trust_preview_only"]
     official_phase_keyframes = [] if low_trust_preview_only else list(ui_keyframes)
     preview_keyframes = list(ui_keyframes)
+    display_keyframes = preview_keyframes if low_trust_preview_only else official_phase_keyframes
     issues = fail_reasons[:3] if fail_reasons else []
     issues_zh = fail_reasons[:3] if fail_reasons else []
 
@@ -533,7 +534,7 @@ def run_pro_video_analyze_via_prov3(
         "summary": summary,
         "summary_zh": summary_zh,
         "total_score": total_score,
-        "keyframes": official_phase_keyframes,
+        "keyframes": display_keyframes,
         "official_phase_keyframes": official_phase_keyframes,
         "preview_keyframes": preview_keyframes,
         "contact_sheet_url": sheet_path or "",

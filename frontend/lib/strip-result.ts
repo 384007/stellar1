@@ -19,20 +19,25 @@ import { slimPoseFramesForCloudRow, subsamplePoseFramesEven } from "./analysis-p
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function stripResultForStorage(result: any): any {
   const out = { ...result };
+  const slimKeyframeList = (rows: any[]) =>
+    rows.map((kf: any) => {
+      const { image_base64, pose_snapshot, ...meta } = kf;
+      return {
+        ...meta,
+        pose_snapshot: pose_snapshot && typeof pose_snapshot === "object" ? pose_snapshot : undefined,
+        image_base64: typeof image_base64 === "string" ? image_base64 : undefined,
+      };
+    });
 
   // Keep ALL keyframes with images + pose_snapshot (needed for history replay)
   if (Array.isArray(out.keyframes)) {
-    out.keyframes = out.keyframes.map(
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      (kf: any) => {
-        const { image_base64, pose_snapshot, ...meta } = kf;
-        return {
-          ...meta,
-          pose_snapshot: pose_snapshot && typeof pose_snapshot === "object" ? pose_snapshot : undefined,
-          image_base64: typeof image_base64 === "string" ? image_base64 : undefined,
-        };
-      },
-    );
+    out.keyframes = slimKeyframeList(out.keyframes);
+  }
+  if (Array.isArray(out.official_phase_keyframes)) {
+    out.official_phase_keyframes = slimKeyframeList(out.official_phase_keyframes);
+  }
+  if (Array.isArray(out.preview_keyframes)) {
+    out.preview_keyframes = slimKeyframeList(out.preview_keyframes);
   }
 
   // Keep pose_frames but strip the heavy per-frame image_base64
@@ -66,12 +71,19 @@ export function stripResultForStorage(result: any): any {
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function stripHeavyMediaForLocalHistory(result: any): any {
   const out = { ...result };
-  if (Array.isArray(out.keyframes)) {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    out.keyframes = out.keyframes.map((kf: any) => {
+  const stripMedia = (rows: any[]) =>
+    rows.map((kf: any) => {
       const { image_base64: _img, pose_snapshot: _ps, ...meta } = kf;
       return { ...meta };
     });
+  if (Array.isArray(out.keyframes)) {
+    out.keyframes = stripMedia(out.keyframes);
+  }
+  if (Array.isArray(out.official_phase_keyframes)) {
+    out.official_phase_keyframes = stripMedia(out.official_phase_keyframes);
+  }
+  if (Array.isArray(out.preview_keyframes)) {
+    out.preview_keyframes = stripMedia(out.preview_keyframes);
   }
   return out;
 }

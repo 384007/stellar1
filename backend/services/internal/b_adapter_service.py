@@ -202,6 +202,21 @@ def _refine_core_triplet(rows: List[Dict[str, object]], available_frames: set[in
     if not top_c or not mid_c or not imp_c:
         return out
 
+    def _semantic_bonus(t: int, m: int, i: int) -> float:
+        # Encourage a real core-event structure instead of uniform spreading.
+        top_peak = max((fi for fi, _ in _topk_rows(top)), default=t)
+        impact_peak = max((fi for fi, _ in _topk_rows(impact)), default=i)
+        b = 0.0
+        b += max(0.0, 0.06 - abs(t - top_peak) * 0.0012)
+        b += max(0.0, 0.06 - abs(i - impact_peak) * 0.0012)
+        # Mid-downswing must sit between Top and Impact, biased toward the first half of downswing.
+        ideal_mid = t + max(3, int(round((i - t) * 0.45)))
+        b += max(0.0, 0.05 - abs(m - ideal_mid) * 0.0015)
+        # Impact should be later enough than Top to avoid pseudo-impact frames.
+        if i - t >= 10:
+            b += 0.025
+        return b
+
     best = None
     best_score = float("-inf")
     for t in top_c:
@@ -217,7 +232,7 @@ def _refine_core_triplet(rows: List[Dict[str, object]], available_frames: set[in
                     continue
                 s_i = _item_score(impact, i, available_frames)
                 gap_bonus = min(0.06, (i - t) * 0.0018)
-                score = s_t + s_m + s_i + gap_bonus
+                score = s_t + s_m + s_i + gap_bonus + _semantic_bonus(t, m, i)
                 if score > best_score:
                     best_score = score
                     best = (t, m, i)

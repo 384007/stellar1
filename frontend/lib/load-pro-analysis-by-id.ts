@@ -44,10 +44,12 @@ export async function loadProAnalysisById(
         const row = (await res.json()) as {
           result_json?: string;
           video_url?: string;
+          analysis_video_url?: string;
         };
         const raw = JSON.parse(String(row.result_json || "{}")) as Record<string, unknown>;
         raw.analysis_id = String(raw.analysis_id || id);
         if (row.video_url) raw.video_url = row.video_url;
+        if (row.analysis_video_url) raw.analysis_video_url = row.analysis_video_url;
 
         let videoBlob: Blob | null = null;
         try {

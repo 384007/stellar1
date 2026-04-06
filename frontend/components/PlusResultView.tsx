@@ -1023,9 +1023,10 @@ function FullSwingView({ result, lang }: Props) {
     Array.isArray(result.preview_keyframes) && result.preview_keyframes.length > 0
       ? result.preview_keyframes
       : result.keyframes;
+  const displayKeyframes = lowTrustPreviewOnly ? previewKeyframes : officialKeyframes;
 
   const phaseKey = SWING_PHASES[activePhase];
-  const currentKf = keyframeForPhase(officialKeyframes, phaseKey);
+  const currentKf = keyframeForPhase(displayKeyframes, phaseKey);
   const currentPose = poseForPhase(result, phaseKey, activePhase);
   const phaseLabel = PHASE_LABELS[phaseKey] || { en: phaseKey, zh: phaseKey };
   const phaseEval = result.swing_phase_evaluations?.find(e => e.phase === phaseKey);
@@ -1035,6 +1036,11 @@ function FullSwingView({ result, lang }: Props) {
       {lowTrustPreviewOnly && (
         <div className="glass-card border border-amber-400/35 bg-amber-500/10 p-3 text-xs text-amber-200">
           {lang === "zh" ? "低信任，关键帧未通过验证（仅预览，不作为正式相位关键帧）" : "Low trust: keyframes not validated (preview only, not official phase keyframes)."}
+        </div>
+      )}
+      {displayKeyframes.length === 0 && (
+        <div className="glass-card border border-amber-400/30 bg-amber-500/10 p-3 text-xs text-amber-200">
+          {lang === "zh" ? "本次分析低信任，暂无可用正式关键帧。" : "Low-trust analysis: no usable official keyframes."}
         </div>
       )}
       {/* Main viewer */}
@@ -1124,7 +1130,7 @@ function FullSwingView({ result, lang }: Props) {
           {/* Phase thumbnail strip */}
           <div className="flex gap-1.5 overflow-x-auto pb-1">
             {SWING_PHASES.map((phase, i) => {
-              const kf = keyframeForPhase(officialKeyframes, phase);
+              const kf = keyframeForPhase(displayKeyframes, phase);
               const isErr = result.swing_phase_evaluations?.find(e => e.phase === phase)?.status === "error";
               const pl = PHASE_LABELS[phase] || { en: phase, zh: phase };
               return (
@@ -1551,14 +1557,19 @@ export default function PlusResultView({ result, lang, externalVideoSrc, backend
     Array.isArray(result.preview_keyframes) && result.preview_keyframes.length > 0
       ? result.preview_keyframes
       : result.keyframes;
-  const displayKeyframes = lowTrustPreviewOnly
-    ? previewKeyframes.map((kf, i) => ({
-        ...kf,
-        phase: `preview_${i + 1}`,
-        label_en: `Preview ${i + 1}`,
-        label_zh: `预览 ${i + 1}`,
-      }))
-    : officialKeyframes;
+  const displayKeyframes = lowTrustPreviewOnly ? previewKeyframes : officialKeyframes;
+  const safeActiveKeyframe =
+    displayKeyframes.length > 0 ? Math.min(activeKeyframe, displayKeyframes.length - 1) : 0;
+
+  useEffect(() => {
+    if (displayKeyframes.length === 0) {
+      if (activeKeyframe !== 0) setActiveKeyframe(0);
+      return;
+    }
+    if (activeKeyframe > displayKeyframes.length - 1) {
+      setActiveKeyframe(displayKeyframes.length - 1);
+    }
+  }, [activeKeyframe, displayKeyframes.length]);
 
   // Video tab: parent blob URL first; else IndexedDB with short backoff (saveAnalysisVideo may lag).
   useEffect(() => {
@@ -2147,14 +2158,14 @@ export default function PlusResultView({ result, lang, externalVideoSrc, backend
                     />
                   }
                   topRightActions={
-                    displayKeyframes[activeKeyframe] &&
-                    plusKeyframeImageUsable(displayKeyframes[activeKeyframe]) ? (
+                    displayKeyframes[safeActiveKeyframe] &&
+                    plusKeyframeImageUsable(displayKeyframes[safeActiveKeyframe]) ? (
                       <button
                         type="button"
                         onClick={() =>
                           void saveHighlight(
-                            displayKeyframes[activeKeyframe],
-                            displayKeyframes[activeKeyframe].label_en,
+                            displayKeyframes[safeActiveKeyframe],
+                            displayKeyframes[safeActiveKeyframe].label_en,
                           )
                         }
                         className="rounded-lg border border-white/[0.08] bg-black/30 p-2 text-white/40 opacity-60 backdrop-blur-sm transition hover:border-white/15 hover:bg-black/45 hover:text-white/80 hover:opacity-95"
@@ -2169,14 +2180,14 @@ export default function PlusResultView({ result, lang, externalVideoSrc, backend
               ) : (
                 <div className="relative isolate h-[70vh] min-h-[280px] w-full max-h-[85vh] bg-black">
                   <PlusKeyframePhoto
-                    keyframe_image_url={displayKeyframes[activeKeyframe]?.keyframe_image_url}
-                    image_base64={displayKeyframes[activeKeyframe]?.image_base64}
+                    keyframe_image_url={displayKeyframes[safeActiveKeyframe]?.keyframe_image_url}
+                    image_base64={displayKeyframes[safeActiveKeyframe]?.image_base64}
                     alt="Swing frame"
                     className="absolute inset-0 h-full w-full object-contain"
                     lang={lang}
                   />
                   <SkeletonCanvas
-                    poseFrame={getPoseForKf(activeKeyframe)}
+                    poseFrame={getPoseForKf(safeActiveKeyframe)}
                     showSkeleton={showSkeleton}
                     showGuideLines={showGuideLines}
                   />
@@ -2187,10 +2198,10 @@ export default function PlusResultView({ result, lang, externalVideoSrc, backend
                     onGuide={() => setShowGuideLines((g) => !g)}
                     lang={lang}
                   />
-                  {displayKeyframes[activeKeyframe] && plusKeyframeImageUsable(displayKeyframes[activeKeyframe]) && (
+                  {displayKeyframes[safeActiveKeyframe] && plusKeyframeImageUsable(displayKeyframes[safeActiveKeyframe]) && (
                     <button
                       onClick={() =>
-                        void saveHighlight(displayKeyframes[activeKeyframe], displayKeyframes[activeKeyframe].label_en)
+                        void saveHighlight(displayKeyframes[safeActiveKeyframe], displayKeyframes[safeActiveKeyframe].label_en)
                       }
                       className="absolute right-3 top-3 rounded-lg border border-white/10 bg-black/40 p-2 text-white/50 backdrop-blur-sm transition hover:text-white"
                       style={{ zIndex: 20 }}
@@ -2202,13 +2213,20 @@ export default function PlusResultView({ result, lang, externalVideoSrc, backend
                   )}
                   <div className="absolute bottom-3 right-3" style={{ zIndex: 20 }}>
                     <span className="rounded-full bg-black/60 px-3 py-1 text-xs font-medium text-white/80 backdrop-blur-sm">
-                      {displayKeyframes[activeKeyframe]
+                      {displayKeyframes[safeActiveKeyframe]
                         ? lang === "zh"
-                          ? displayKeyframes[activeKeyframe].label_zh
-                          : displayKeyframes[activeKeyframe].label_en
+                          ? displayKeyframes[safeActiveKeyframe].label_zh
+                          : displayKeyframes[safeActiveKeyframe].label_en
                         : ""}
                     </span>
                   </div>
+                </div>
+              )}
+              {displayKeyframes.length === 0 && (
+                <div className="p-3 text-center text-xs text-amber-200">
+                  {lang === "zh"
+                    ? "本次分析低信任，暂无可用正式关键帧。"
+                    : "Low-trust analysis: no usable official keyframes."}
                 </div>
               )}
               <div className="flex gap-1.5 p-3 overflow-x-auto">

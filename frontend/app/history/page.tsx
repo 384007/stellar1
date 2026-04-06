@@ -58,7 +58,17 @@ function prov3ScreenModeFromHistoryRecord(rec: AnalysisRecord): boolean {
 
 /** D1 list rows are compacted (~90k cap); keyframe JPEGs often live only in R2. Detect stripped/poisoned cache (URL or base64). */
 function plusKeyframesMissingImages(parsed: ParsedResult): boolean {
-  const kfs = parsed.keyframes;
+  const lowTrust =
+    String(parsed.final_status ?? "") !== "pass" ||
+    String(parsed.analysis_trust ?? parsed.trust_level ?? "") === "low_trust" ||
+    parsed.low_trust_preview_only === true;
+  const kfs = lowTrust
+    ? (Array.isArray(parsed.preview_keyframes) && parsed.preview_keyframes.length > 0
+        ? parsed.preview_keyframes
+        : parsed.keyframes)
+    : (Array.isArray(parsed.official_phase_keyframes) && parsed.official_phase_keyframes.length > 0
+        ? parsed.official_phase_keyframes
+        : parsed.keyframes);
   if (!Array.isArray(kfs) || kfs.length === 0) return true;
   const withImg = kfs.filter((k) => {
     const b = (k as { image_base64?: string }).image_base64;
@@ -108,6 +118,10 @@ interface TrendPoint {
 }
 
 interface ParsedResult {
+  final_status?: string;
+  analysis_trust?: string;
+  trust_level?: string;
+  low_trust_preview_only?: boolean;
   scores?: Record<string, number>;
   total_score?: number;
   issues?: string[];
@@ -126,6 +140,9 @@ interface ParsedResult {
     keyframe_image_url?: string;
     keyframe_image_source?: string;
   }>;
+  official_phase_keyframes?: ParsedResult["keyframes"];
+  preview_keyframes?: ParsedResult["keyframes"];
+  analysis_video_url?: string;
   skeleton_data?: {
     frames: Array<Record<string, unknown>>;
     total_frames: number;
@@ -691,11 +708,14 @@ export default function HistoryPage() {
       rec.type === "plus" ? "plus" : rec.type === "pro" ? "pro" : "analyze";
     const analysisMode: "lite" | "pro" | undefined = page === "analyze" ? "lite" : undefined;
     const vu = (rec.video_url || "").trim();
+    const parsed = parseResult(rec.result_json);
+    const analysisVu = String(parsed.analysis_video_url || "").trim();
     queueReanalyzeFromHistory({
       analysisId: rec.id,
       page,
       analysisMode,
       videoUrl: vu && /^https?:\/\//i.test(vu) ? vu : undefined,
+      analysisVideoUrl: analysisVu && /^https?:\/\//i.test(analysisVu) ? analysisVu : undefined,
       prov3ScreenMode: prov3ScreenModeFromHistoryRecord(rec),
     });
     router.push(page === "plus" ? "/plus" : page === "pro" ? "/pro" : "/analyze");
@@ -895,8 +915,13 @@ export default function HistoryPage() {
       const trust = String(r.analysis_trust ?? r.trust_level ?? "");
       const lowTrust = finalStatus !== "pass" || trust === "low_trust" || r.low_trust_preview_only === true;
       const keyframes = Array.isArray(r.keyframes) ? r.keyframes : [];
+      const official = Array.isArray(r.official_phase_keyframes) ? r.official_phase_keyframes : [];
       const preview = Array.isArray(r.preview_keyframes) ? r.preview_keyframes : [];
-      if (lowTrust && keyframes.length === 0 && preview.length > 0) {
+      if (lowTrust) {
+        if (preview.length > 0) r.keyframes = preview;
+      } else if (official.length > 0) {
+        r.keyframes = official;
+      } else if (keyframes.length === 0 && preview.length > 0) {
         r.keyframes = preview;
       }
       return r as ParsedResult;

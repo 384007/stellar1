@@ -84,7 +84,7 @@ export async function fetchVideoBlobForHistoryReanalyze(
   videoUrl?: string,
   analysisVideoUrl?: string,
 ): Promise<Blob | null> {
-  const candidates = [(videoUrl || "").trim(), (analysisVideoUrl || "").trim()].filter(Boolean);
+  const candidates = [(analysisVideoUrl || "").trim(), (videoUrl || "").trim()].filter(Boolean);
   for (const u of candidates) {
     if (/^https?:\/\//i.test(u) || u.startsWith("/")) {
       try {

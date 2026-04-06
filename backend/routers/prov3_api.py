@@ -157,6 +157,38 @@ def _safe_analysis_media_dir(analysis_id: str) -> Path:
     return out
 
 
+def _inject_keyframe_urls(rows: list[dict], keyframe_url_by_file: dict[str, str]) -> None:
+    event_to_file = {
+        "Address": "address.jpg",
+        "Toe-up": "toe_up.jpg",
+        "Mid-backswing": "mid_backswing.jpg",
+        "Top": "top.jpg",
+        "Mid-downswing": "mid_downswing.jpg",
+        "Impact": "impact.jpg",
+        "Mid-follow-through": "mid_follow_through.jpg",
+        "Finish": "finish.jpg",
+    }
+    phase_to_event = {
+        "address": "Address",
+        "takeaway": "Toe-up",
+        "backswing": "Mid-backswing",
+        "top": "Top",
+        "downswing": "Mid-downswing",
+        "impact": "Impact",
+        "follow_through": "Mid-follow-through",
+        "finish": "Finish",
+    }
+    for kf in rows:
+        phase = str(kf.get("phase") or "").strip().lower()
+        event = str(kf.get("event_name") or "").strip() or phase_to_event.get(phase, "")
+        fn = event_to_file.get(event, "")
+        if fn and fn in keyframe_url_by_file:
+            kf["keyframe_image_url"] = keyframe_url_by_file[fn]
+            kf["keyframe_image_source"] = "analysis_video"
+        if "keyframe_image_path" in kf:
+            kf.pop("keyframe_image_path", None)
+
+
 async def _pro_media_file_handler(analysis_id: str, filename: str) -> FileResponse:
     media_dir = _safe_analysis_media_dir(analysis_id)
     safe_name = Path(filename).name
@@ -327,53 +359,9 @@ async def _run_pro_analyze_body(
                 if persisted_rows:
                     result["keyframe_images"] = persisted_rows
 
-                event_to_file = {
-                    "Address": "address.jpg",
-                    "Toe-up": "toe_up.jpg",
-                    "Mid-backswing": "mid_backswing.jpg",
-                    "Top": "top.jpg",
-                    "Mid-downswing": "mid_downswing.jpg",
-                    "Impact": "impact.jpg",
-                    "Mid-follow-through": "mid_follow_through.jpg",
-                    "Finish": "finish.jpg",
-                }
-                phase_to_event = {
-                    "address": "Address",
-                    "takeaway": "Toe-up",
-                    "backswing": "Mid-backswing",
-                    "top": "Top",
-                    "downswing": "Mid-downswing",
-                    "impact": "Impact",
-                    "follow_through": "Mid-follow-through",
-                    "finish": "Finish",
-                }
-                for kf in list(result.get("keyframes") or []):
-                    phase = str(kf.get("phase") or "")
-                    event = phase_to_event.get(phase, "")
-                    fn = event_to_file.get(event, "")
-                    if fn and fn in keyframe_url_by_file:
-                        kf["keyframe_image_url"] = keyframe_url_by_file[fn]
-                        kf["keyframe_image_source"] = "analysis_video"
-                    if "keyframe_image_path" in kf:
-                        kf.pop("keyframe_image_path", None)
-                for kf in list(result.get("official_phase_keyframes") or []):
-                    phase = str(kf.get("phase") or "")
-                    event = phase_to_event.get(phase, "")
-                    fn = event_to_file.get(event, "")
-                    if fn and fn in keyframe_url_by_file:
-                        kf["keyframe_image_url"] = keyframe_url_by_file[fn]
-                        kf["keyframe_image_source"] = "analysis_video"
-                    if "keyframe_image_path" in kf:
-                        kf.pop("keyframe_image_path", None)
-                for kf in list(result.get("preview_keyframes") or []):
-                    phase = str(kf.get("phase") or "")
-                    event = phase_to_event.get(phase, "")
-                    fn = event_to_file.get(event, "")
-                    if fn and fn in keyframe_url_by_file:
-                        kf["keyframe_image_url"] = keyframe_url_by_file[fn]
-                        kf["keyframe_image_source"] = "analysis_video"
-                    if "keyframe_image_path" in kf:
-                        kf.pop("keyframe_image_path", None)
+                _inject_keyframe_urls(list(result.get("keyframes") or []), keyframe_url_by_file)
+                _inject_keyframe_urls(list(result.get("official_phase_keyframes") or []), keyframe_url_by_file)
+                _inject_keyframe_urls(list(result.get("preview_keyframes") or []), keyframe_url_by_file)
 
                 screen_cropped_video_url = ""
                 screen_src = Path(str(result.get("screen_cropped_video_url") or ""))

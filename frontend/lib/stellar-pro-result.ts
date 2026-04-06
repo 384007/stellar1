@@ -121,25 +121,57 @@ export function proExpandedToPlusViewModel(r: Record<string, any>): PlusAnalysis
     : [];
   const isLowTrust =
     String(r.final_status ?? "") !== "pass" || String(r.analysis_trust ?? r.trust_level ?? "") === "low_trust";
-  const displayKeyframesRaw = isLowTrust ? official : official.length ? official : keyframes;
-  const normalizedOfficial = official.map((kf) => ({
-    ...(kf as Record<string, unknown>),
-    frame_index: Number((kf as { frame_index?: unknown }).frame_index ?? 0),
-  }));
-  const normalizedPreview = preview.map((kf) => ({
-    ...(kf as Record<string, unknown>),
-    frame_index: Number((kf as { frame_index?: unknown }).frame_index ?? 0),
-  }));
-  const normalizedDisplay = displayKeyframesRaw.map((kf) => ({
-    ...(kf as Record<string, unknown>),
-    frame_index: Number((kf as { frame_index?: unknown }).frame_index ?? 0),
-  }));
+  const displayKeyframesRaw = isLowTrust
+    ? (preview.length ? preview : keyframes)
+    : (official.length ? official : keyframes);
+  type NormalizedKf = {
+    phase: string;
+    label_en: string;
+    label_zh: string;
+    frame_index: number;
+    timestamp: number;
+    image_base64: string;
+    keyframe_image_url?: string;
+    keyframe_image_source?: string;
+  } & Record<string, unknown>;
+  const normalizeKeyframes = (arr: Array<Record<string, unknown>>) =>
+    arr.map((kf) => {
+      const phaseRaw = String((kf as { phase?: unknown }).phase ?? "").trim().toLowerCase().replace(/[\s-]+/g, "_");
+      const fallbackLabel = phaseRaw || "frame";
+      const frameIndexRaw = Number((kf as { frame_index?: unknown }).frame_index ?? 0);
+      const timestampRaw = Number((kf as { timestamp?: unknown }).timestamp ?? 0);
+      return {
+        ...(kf as Record<string, unknown>),
+        phase: phaseRaw || fallbackLabel,
+        label_en:
+          typeof (kf as { label_en?: unknown }).label_en === "string"
+            ? String((kf as { label_en?: string }).label_en)
+            : fallbackLabel,
+        label_zh:
+          typeof (kf as { label_zh?: unknown }).label_zh === "string"
+            ? String((kf as { label_zh?: string }).label_zh)
+            : fallbackLabel,
+        frame_index: Number.isFinite(frameIndexRaw) ? frameIndexRaw : 0,
+        timestamp: Number.isFinite(timestampRaw) ? timestampRaw : 0,
+        image_base64:
+          typeof (kf as { image_base64?: unknown }).image_base64 === "string"
+            ? String((kf as { image_base64?: string }).image_base64)
+            : "",
+        keyframe_image_url:
+          typeof (kf as { keyframe_image_url?: unknown }).keyframe_image_url === "string"
+            ? String((kf as { keyframe_image_url?: string }).keyframe_image_url)
+            : undefined,
+        keyframe_image_source:
+          typeof (kf as { keyframe_image_source?: unknown }).keyframe_image_source === "string"
+            ? String((kf as { keyframe_image_source?: string }).keyframe_image_source)
+            : undefined,
+      };
+    });
+  const normalizedOfficial = normalizeKeyframes(official as Array<Record<string, unknown>>) as NormalizedKf[];
+  const normalizedPreview = normalizeKeyframes(preview as Array<Record<string, unknown>>) as NormalizedKf[];
+  const normalizedDisplay = normalizeKeyframes(displayKeyframesRaw as Array<Record<string, unknown>>) as NormalizedKf[];
   const phasesWithKf = new Set(
-    normalizedDisplay.map((k) =>
-      String((k as { phase?: unknown }).phase ?? "")
-        .toLowerCase()
-        .replace(/[\s-]+/g, "_"),
-    ),
+    normalizedDisplay.map((k) => String(k.phase ?? "").toLowerCase().replace(/[\s-]+/g, "_")),
   );
   const swing_phase_evaluations = SWING_PHASE_IDS.map((phase) => ({
     phase,
