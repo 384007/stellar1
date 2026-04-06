@@ -28,6 +28,11 @@ def run_b_refine(
         confidence=confidence,
         fail_reasons=fail_reasons,
     )
+    max_idx = max((int(x.get("frame_index", 0)) for x in analysis_frames), default=-1)
+    if max_idx >= 0:
+        for row in refined:
+            fi = int(row.get("frame_index", 0))
+            row["frame_index"] = max(0, min(fi, max_idx))
     b_status, b_fail_reasons = run_b_gate(refined, fail_reasons)
     return RefineResult(
         analysis_id=analysis_id,

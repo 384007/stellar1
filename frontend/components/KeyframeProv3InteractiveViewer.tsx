@@ -98,6 +98,7 @@ function rulerLengthPx(a: [number, number], b: [number, number], nw: number, nh:
 export interface KeyframeLike {
   label_en: string;
   label_zh: string;
+  keyframe_image_url?: string;
   image_base64?: string;
 }
 
@@ -145,7 +146,7 @@ export default function KeyframeProv3InteractiveViewer({
   const [imgBroken, setImgBroken] = useState(false);
 
   const frame = keyframes[activeIndex];
-  const dataUrl = frame ? keyframeImageDataUrl(frame.image_base64) : null;
+  const dataUrl = frame ? String(frame.keyframe_image_url || "").trim() || keyframeImageDataUrl(frame.image_base64) : null;
 
   useEffect(() => {
     setStore(loadProv3KfStore(analysisId));
@@ -153,7 +154,7 @@ export default function KeyframeProv3InteractiveViewer({
 
   useEffect(() => {
     setImgBroken(false);
-  }, [activeIndex, frame?.image_base64]);
+  }, [activeIndex, frame?.image_base64, frame?.keyframe_image_url]);
 
   const frameState: Prov3KfFrameState = useMemo(
     () => getFrameState(store, activeIndex),

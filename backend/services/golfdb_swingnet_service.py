@@ -186,7 +186,7 @@ def _video_to_batch(
     video_path: str,
     *,
     input_size: int = 160,
-    max_frames: int = 400,
+    max_frames: int = 1200,
 ) -> tuple[torch.Tensor, np.ndarray, float, int]:
     cap = cv2.VideoCapture(video_path)
     if not cap.isOpened():
@@ -196,7 +196,17 @@ def _video_to_batch(
     if total <= 0:
         cap.release()
         raise ValueError("video_has_no_frames")
-    n_target = min(total, max_frames)
+    duration_s = float(total / fps) if fps > 0 else 0.0
+    short_target = int(round(duration_s * 200.0)) if duration_s > 0 else total
+    mid_target = int(round(duration_s * 150.0)) if duration_s > 0 else total
+    long_target = int(round(duration_s * 120.0)) if duration_s > 0 else total
+    if duration_s <= 3.0:
+        adaptive_target = max(640, short_target)
+    elif duration_s <= 6.0:
+        adaptive_target = max(800, mid_target)
+    else:
+        adaptive_target = max(900, long_target)
+    n_target = min(total, max(480, min(max_frames, adaptive_target)))
     sample_indices = np.unique(np.linspace(0, total - 1, num=n_target, dtype=np.int64))
 
     frames: list[np.ndarray] = []

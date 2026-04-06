@@ -56,7 +56,7 @@ function prov3ScreenModeFromHistoryRecord(rec: AnalysisRecord): boolean {
   }
 }
 
-/** D1 list rows are compacted (~90k cap); keyframe JPEGs often live only in R2. Detect stripped/poisoned cache. */
+/** D1 list rows are compacted (~90k cap); keyframe JPEGs often live only in R2. Detect stripped/poisoned cache (URL or base64). */
 function plusKeyframesMissingImages(parsed: ParsedResult): boolean {
   const kfs = parsed.keyframes;
   if (!Array.isArray(kfs) || kfs.length === 0) return true;

@@ -15,7 +15,7 @@ def generate_analysis_frames(
     work_dir: str,
     *,
     analysis_fps: int = 240,
-    frame_count: int = 96,
+    frame_count: int = 240,
 ) -> Dict[str, List[dict]]:
     """Sample real frames from the analysis video; build timeline indices on ``analysis_fps`` grid."""
     Path(work_dir).mkdir(parents=True, exist_ok=True)
@@ -34,11 +34,34 @@ def generate_analysis_frames(
         cap.release()
         return {"analysis_frames": [], "enhanced_local_frames": []}
 
-    n_samples = max(8, min(frame_count, total))
-    indices = np.unique(np.linspace(0, total - 1, num=n_samples, dtype=np.int64))
+    n_samples = max(24, min(frame_count, total))
+    base = np.linspace(0, total - 1, num=n_samples, dtype=np.int64)
+
+    mid_l = int(round((total - 1) * 0.15))
+    mid_r = int(round((total - 1) * 0.85))
+    if mid_r <= mid_l:
+        mid_l, mid_r = 0, total - 1
+    mid_count = max(48, min(total, 360))
+    mid_band = np.linspace(mid_l, mid_r, num=mid_count, dtype=np.int64)
+
+    core_l = int(round((total - 1) * 0.35))
+    core_r = int(round((total - 1) * 0.75))
+    if core_r <= core_l:
+        core_l, core_r = mid_l, mid_r
+    core_count = max(64, min(total, 420))
+    core_band = np.linspace(core_l, core_r, num=core_count, dtype=np.int64)
+
+    indices = np.unique(np.concatenate([base, mid_band, core_band], axis=0))
 
     analysis_frames: list[dict] = []
     enhanced_local_frames: list[dict] = []
+
+    enhanced_idx: set[int] = set()
+    for idx in indices.tolist():
+        for d in (-2, -1, 0, 1, 2):
+            x = int(idx) + d
+            if 0 <= x < total:
+                enhanced_idx.add(x)
 
     for j, idx in enumerate(indices):
         cap.set(cv2.CAP_PROP_POS_FRAMES, float(int(idx)))
@@ -53,7 +76,7 @@ def generate_analysis_frames(
                 "time_ms": time_ms,
             }
         )
-        if j % 4 == 0:
+        if int(fi) in enhanced_idx or j % 2 == 0:
             enhanced_local_frames.append({"frame_index": fi, "enhanced": True})
             # Optional mild sharpen for B-layer hints (no persistence — metadata only)
             try:

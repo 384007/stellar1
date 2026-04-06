@@ -113,8 +113,20 @@ export function proExpandedToPlusViewModel(r: Record<string, any>): PlusAnalysis
   const keyframes = Array.isArray(r.keyframes)
     ? r.keyframes.filter((k: unknown) => k != null && typeof k === "object" && !Array.isArray(k))
     : [];
+  const normalizedKeyframes = keyframes.map((kf) => ({
+    ...(kf as Record<string, unknown>),
+    keyframe_image_url:
+      typeof (kf as { keyframe_image_url?: unknown }).keyframe_image_url === "string"
+        ? String((kf as { keyframe_image_url?: string }).keyframe_image_url)
+        : undefined,
+    keyframe_image_source:
+      typeof (kf as { keyframe_image_source?: unknown }).keyframe_image_source === "string"
+        ? String((kf as { keyframe_image_source?: string }).keyframe_image_source)
+        : undefined,
+    frame_index: Number((kf as { frame_index?: unknown }).frame_index ?? 0),
+  }));
   const phasesWithKf = new Set(
-    keyframes.map((k: { phase?: string }) =>
+    normalizedKeyframes.map((k: { phase?: string }) =>
       String(k.phase ?? "")
         .toLowerCase()
         .replace(/[\s-]+/g, "_"),
@@ -145,7 +157,7 @@ export function proExpandedToPlusViewModel(r: Record<string, any>): PlusAnalysis
   };
 
   const scoresRaw = r.scores && typeof r.scores === "object" ? (r.scores as Record<string, number>) : null;
-  const pk = mergePhaseKeyframeMaps(r.phase_keyframes, keyframes);
+  const pk = mergePhaseKeyframeMaps(r.phase_keyframes, normalizedKeyframes);
 
   return {
     analysis_id: String(r.analysis_id ?? ""),
@@ -168,7 +180,7 @@ export function proExpandedToPlusViewModel(r: Record<string, any>): PlusAnalysis
     suggestions_zh,
     summary,
     summary_zh,
-    keyframes: keyframes as PlusAnalysisResult["keyframes"],
+    keyframes: normalizedKeyframes as PlusAnalysisResult["keyframes"],
     skeleton_data:
       r.skeleton_data && typeof r.skeleton_data === "object"
         ? (r.skeleton_data as PlusAnalysisResult["skeleton_data"])
