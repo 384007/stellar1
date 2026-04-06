@@ -676,8 +676,8 @@ export default function KeyframeProv3InteractiveViewer({
                 </IconTool>
               </div>
             </div>
-            <div className="pointer-events-auto absolute bottom-[4.25rem] left-12 right-3 z-[16] flex justify-center px-1">
-              <IosMarkupColorStrip
+            <div className="pointer-events-auto absolute bottom-[4.25rem] left-12 right-3 z-[16] flex items-center justify-start px-1">
+              <StrokeColorPicker
                 colors={STROKE_COLORS}
                 value={strokeColor}
                 onChange={setStrokeColor}
@@ -686,8 +686,8 @@ export default function KeyframeProv3InteractiveViewer({
             </div>
           </>
         ) : (
-          <div className="pointer-events-auto absolute bottom-3 left-1/2 z-[15] flex max-w-[calc(100%-1rem)] -translate-x-1/2 flex-col items-center gap-1.5">
-            <IosMarkupColorStrip
+          <div className="pointer-events-auto absolute bottom-3 left-1/2 z-[15] flex max-w-[calc(100%-1rem)] -translate-x-1/2 flex-row flex-wrap items-center justify-center gap-1.5">
+            <StrokeColorPicker
               colors={STROKE_COLORS}
               value={strokeColor}
               onChange={setStrokeColor}
@@ -738,7 +738,8 @@ export default function KeyframeProv3InteractiveViewer({
   );
 }
 
-function IosMarkupColorStrip({
+/** 点击当前色块后在按钮右侧展开更小、更淡的色板 */
+function StrokeColorPicker({
   colors,
   value,
   onChange,
@@ -749,25 +750,61 @@ function IosMarkupColorStrip({
   onChange: (c: string) => void;
   ariaLabel: string;
 }) {
+  const [open, setOpen] = useState(false);
+  const rootRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    function onDoc(e: MouseEvent | TouchEvent) {
+      const el = rootRef.current;
+      const target = e.target;
+      if (!el || !(target instanceof Node) || el.contains(target)) return;
+      setOpen(false);
+    }
+    document.addEventListener("mousedown", onDoc);
+    document.addEventListener("touchstart", onDoc, { passive: true });
+    return () => {
+      document.removeEventListener("mousedown", onDoc);
+      document.removeEventListener("touchstart", onDoc);
+    };
+  }, [open]);
+
   return (
-    <div
-      role="listbox"
-      aria-label={ariaLabel}
-      className="flex max-w-[min(100%,320px)] items-center gap-1.5 overflow-x-auto rounded-full border border-white/[0.12] bg-black/55 px-2 py-1.5 shadow-[inset_0_1px_0_rgba(255,255,255,0.06)] backdrop-blur-xl [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
-    >
-      {colors.map((c) => (
-        <button
-          key={c}
-          type="button"
-          role="option"
-          aria-selected={value === c}
-          className={`h-7 w-7 shrink-0 rounded-full border-[2.5px] transition active:scale-95 ${
-            value === c ? "border-white shadow-[0_0_0_1.5px_rgba(255,255,255,0.22)]" : "border-white/25"
-          }`}
-          style={{ backgroundColor: c }}
-          onClick={() => onChange(c)}
-        />
-      ))}
+    <div ref={rootRef} className="relative flex shrink-0 items-center gap-1">
+      <button
+        type="button"
+        title={ariaLabel}
+        aria-label={ariaLabel}
+        aria-expanded={open}
+        aria-haspopup="listbox"
+        onClick={() => setOpen((v) => !v)}
+        className="h-[22px] w-[22px] shrink-0 rounded-full border border-white/18 opacity-50 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.06)] transition hover:opacity-75 active:scale-95"
+        style={{ backgroundColor: value }}
+      />
+      {open ? (
+        <div
+          role="listbox"
+          aria-label={ariaLabel}
+          className="flex max-w-[min(calc(100vw-5rem),220px)] items-center gap-0.5 overflow-x-auto rounded-full border border-white/[0.07] bg-black/35 px-1 py-0.5 opacity-60 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)] backdrop-blur-md [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+        >
+          {colors.map((c) => (
+            <button
+              key={c}
+              type="button"
+              role="option"
+              aria-selected={value === c}
+              className={`h-[14px] w-[14px] shrink-0 rounded-full border transition active:scale-95 ${
+                value === c ? "border-white/55 opacity-95 ring-1 ring-white/15" : "border-white/12 opacity-70 hover:opacity-90"
+              }`}
+              style={{ backgroundColor: c }}
+              onClick={() => {
+                onChange(c);
+                setOpen(false);
+              }}
+            />
+          ))}
+        </div>
+      ) : null}
     </div>
   );
 }
