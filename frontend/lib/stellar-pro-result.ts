@@ -6,6 +6,23 @@
 import type { PlusAnalysisResult } from "@/components/PlusResultView";
 import { normalizeProv3MediaInRaw } from "@/lib/prov3-media-url";
 
+/**
+ * Low-trust / preview-only strip: only when ``final_status`` is **explicitly** non-``pass``,
+ * or trust is ``low_trust``, or ``low_trust_preview_only``.
+ * Missing/empty ``final_status`` → **not** low trust (matches ``PlusResultView.isLowTrustPreviewOnly``).
+ */
+export function stellarProTrustIsLow(r: {
+  final_status?: unknown;
+  analysis_trust?: unknown;
+  trust_level?: unknown;
+  low_trust_preview_only?: unknown;
+}): boolean {
+  const fs = String(r.final_status ?? "").trim();
+  const explicitNonPass = fs.length > 0 && fs !== "pass";
+  const trust = String(r.analysis_trust ?? r.trust_level ?? "");
+  return explicitNonPass || trust === "low_trust" || r.low_trust_preview_only === true;
+}
+
 const SWING_PHASE_IDS = [
   "address",
   "takeaway",
@@ -50,10 +67,7 @@ function derivePhaseKeyframesFromStrip(
  */
 export function normalizeProResultKeyframeArraysForTrust(r: Record<string, unknown>): void {
   if (!r || typeof r !== "object") return;
-  const finalStatus = String(r.final_status ?? "");
-  const trust = String(r.analysis_trust ?? r.trust_level ?? "");
-  const lowTrust =
-    finalStatus !== "pass" || trust === "low_trust" || r.low_trust_preview_only === true;
+  const lowTrust = stellarProTrustIsLow(r);
   const keyframes = Array.isArray(r.keyframes) ? r.keyframes : [];
   const official = Array.isArray(r.official_phase_keyframes) ? r.official_phase_keyframes : [];
   const preview = Array.isArray(r.preview_keyframes) ? r.preview_keyframes : [];
@@ -148,10 +162,7 @@ export function proExpandedToPlusViewModel(r: Record<string, any>): PlusAnalysis
   const preview = Array.isArray(r.preview_keyframes)
     ? r.preview_keyframes.filter((k: unknown) => k != null && typeof k === "object" && !Array.isArray(k))
     : [];
-  const isLowTrust =
-    String(r.final_status ?? "") !== "pass" ||
-    String(r.analysis_trust ?? r.trust_level ?? "") === "low_trust" ||
-    r.low_trust_preview_only === true;
+  const isLowTrust = stellarProTrustIsLow(r);
   const stripKfB64 = String(r.pipeline ?? "") === "prov3";
   /** High trust: prefer ``official_phase_keyframes``; some payloads only populate top-level ``keyframes``. */
   const officialForModel = isLowTrust

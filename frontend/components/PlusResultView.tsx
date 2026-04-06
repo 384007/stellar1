@@ -315,6 +315,17 @@ function isLowTrustPreviewOnly(result: PlusAnalysisResult): boolean {
   return String(result.analysis_trust || "") === "low_trust";
 }
 
+/** High-trust strip: prefer ``official_phase_keyframes``; some payloads only fill top-level ``keyframes``. */
+function officialKeyframesForPlusStrip(result: PlusAnalysisResult): PlusAnalysisResult["keyframes"] {
+  if (Array.isArray(result.official_phase_keyframes) && result.official_phase_keyframes.length > 0) {
+    return result.official_phase_keyframes;
+  }
+  if (Array.isArray(result.keyframes) && result.keyframes.length > 0) {
+    return result.keyframes;
+  }
+  return [];
+}
+
 function plusKeyframeImageSrc(
   kf: { keyframe_image_url?: string; image_base64?: string } | null | undefined,
   urlOnly?: boolean,
@@ -1060,10 +1071,7 @@ function FullSwingView({ result, lang, prov3Strict, prov3KfGate }: FullSwingView
   }, [playing]);
 
   const lowTrustPreviewOnly = isLowTrustPreviewOnly(result);
-  const officialKeyframes =
-    Array.isArray(result.official_phase_keyframes) && result.official_phase_keyframes.length > 0
-      ? result.official_phase_keyframes
-      : [];
+  const officialKeyframes = officialKeyframesForPlusStrip(result);
   const previewKeyframes = Array.isArray(result.preview_keyframes) ? result.preview_keyframes : [];
   const displayKeyframes = lowTrustPreviewOnly ? previewKeyframes : officialKeyframes;
 
@@ -1652,10 +1660,7 @@ export default function PlusResultView({ result, lang, externalVideoSrc, backend
   const lastVideoAnalysisIdRef = useRef<string>("");
   const [showPosturePractice, setShowPosturePractice] = useState(false);
   const lowTrustPreviewOnly = isLowTrustPreviewOnly(result);
-  const officialKeyframes =
-    Array.isArray(result.official_phase_keyframes) && result.official_phase_keyframes.length > 0
-      ? result.official_phase_keyframes
-      : [];
+  const officialKeyframes = officialKeyframesForPlusStrip(result);
   const previewKeyframes = Array.isArray(result.preview_keyframes) ? result.preview_keyframes : [];
   const displayKeyframes = lowTrustPreviewOnly ? previewKeyframes : officialKeyframes;
   const safeActiveKeyframe =
@@ -2117,7 +2122,16 @@ export default function PlusResultView({ result, lang, externalVideoSrc, backend
               <p className="text-[10px] uppercase tracking-wider text-white/40">
                 {lang === "zh" ? "标准化 screen_clean.mp4 预览" : "Standardized screen_clean.mp4 preview"}
               </p>
-              <video className="w-full max-h-48 rounded-lg border border-white/10 bg-black" controls playsInline preload="metadata" src={result.screen_clean_video_url} />
+              <video
+                className="w-full max-h-48 rounded-lg border border-white/10 bg-black"
+                controls
+                playsInline
+                preload="metadata"
+                src={
+                  resolveProv3ProductMediaUrl(String(result.screen_clean_video_url || "").trim()) ||
+                  result.screen_clean_video_url
+                }
+              />
             </div>
           ) : null}
           {result.screen_cropped_video_url ? (
@@ -2130,7 +2144,10 @@ export default function PlusResultView({ result, lang, externalVideoSrc, backend
                 controls
                 playsInline
                 preload="metadata"
-                src={result.screen_cropped_video_url}
+                src={
+                  resolveProv3ProductMediaUrl(String(result.screen_cropped_video_url || "").trim()) ||
+                  result.screen_cropped_video_url
+                }
               />
             </div>
           ) : null}

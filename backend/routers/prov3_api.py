@@ -397,6 +397,7 @@ def _rewrite_prov3_result_urls_to_r2(result: dict, r2_by_fn: dict[str, str]) -> 
         "playback_video_url",
         "analysis_video_url",
         "screen_cropped_video_url",
+        "screen_clean_video_url",
         "contact_sheet_url",
     ):
         url = result.get(key)

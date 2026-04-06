@@ -39,6 +39,7 @@ import {
   expandStellarProForUi,
   normalizeProResultKeyframeArraysForTrust,
   proExpandedToPlusViewModel,
+  stellarProTrustIsLow,
 } from "@/lib/stellar-pro-result";
 import {
   isProv3StrictMediaPolicyResult,
@@ -73,10 +74,7 @@ function plusKeyframesMissingImages(parsed: ParsedResult): boolean {
   if (isProv3StrictMediaPolicyResult(asV3)) {
     return prov3HistoryKeyframesIncomplete(asV3);
   }
-  const lowTrust =
-    String(parsed.final_status ?? "") !== "pass" ||
-    String(parsed.analysis_trust ?? parsed.trust_level ?? "") === "low_trust" ||
-    parsed.low_trust_preview_only === true;
+  const lowTrust = stellarProTrustIsLow(parsed);
   const kfs = lowTrust
     ? Array.isArray(parsed.preview_keyframes) && parsed.preview_keyframes.length > 0
       ? parsed.preview_keyframes

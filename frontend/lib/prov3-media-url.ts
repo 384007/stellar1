@@ -12,6 +12,14 @@ function modalApiOriginForMediaResolution(): string {
   return normalizeProHttpApiBase(DEFAULT_PROV3_MODAL_URL);
 }
 
+/** Same bucket root as Modal ``STELLAR_PROV3_R2_PUBLIC_BASE`` — fixes path-only ``/prov3-media/…`` in JSON. */
+function prov3R2PublicOrigin(): string {
+  if (typeof process !== "undefined" && process.env.NEXT_PUBLIC_STELLAR_PROV3_R2_PUBLIC_BASE?.trim()) {
+    return process.env.NEXT_PUBLIC_STELLAR_PROV3_R2_PUBLIC_BASE.trim().replace(/\/+$/, "");
+  }
+  return "";
+}
+
 /**
  * True when URL targets durable or product media paths we treat as verified — safe to skip client
  * `<img>` decode probes that often false-fail on cross-origin / latency while `<img src>` still works.
@@ -50,6 +58,10 @@ export function resolveProv3ProductMediaUrl(url: string | undefined | null): str
   if (u.startsWith("/pro-v3/media/")) {
     const origin = modalApiOriginForMediaResolution();
     return `${origin}${u}`;
+  }
+  if (u.startsWith("/prov3-media/")) {
+    const r2 = prov3R2PublicOrigin();
+    if (r2) return `${r2}${u}`;
   }
   return u;
 }

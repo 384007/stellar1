@@ -6,6 +6,7 @@ import {
   normalizeProv3MediaInRaw,
   resolveProv3ProductMediaUrl,
 } from "@/lib/prov3-media-url";
+import { stellarProTrustIsLow } from "@/lib/stellar-pro-result";
 
 /** Session tab: URLs that already failed probe — avoid repeated img decode attempts on re-render. */
 const prov3MediaProbeFailedUrls = new Set<string>();
@@ -57,10 +58,7 @@ export function isProv3StrictMediaPolicyResult(r: Prov3ResultLike | null | undef
 }
 
 export function prov3DisplayKeyframeRows(r: Prov3ResultLike): Prov3KeyframeRowLike[] {
-  const lowTrust =
-    String(r.final_status ?? "") !== "pass" ||
-    String(r.analysis_trust ?? r.trust_level ?? "") === "low_trust" ||
-    r.low_trust_preview_only === true;
+  const lowTrust = stellarProTrustIsLow(r);
   const keyframes = Array.isArray(r.keyframes) ? (r.keyframes as Prov3KeyframeRowLike[]) : [];
   const official = Array.isArray(r.official_phase_keyframes)
     ? (r.official_phase_keyframes as Prov3KeyframeRowLike[])
@@ -69,7 +67,8 @@ export function prov3DisplayKeyframeRows(r: Prov3ResultLike): Prov3KeyframeRowLi
   if (lowTrust) {
     return preview.length ? preview : [];
   }
-  return official.length ? official : [];
+  if (official.length) return official;
+  return keyframes.length ? keyframes : [];
 }
 
 export function isValidProv3KeyframeImageUrl(url: string): boolean {
