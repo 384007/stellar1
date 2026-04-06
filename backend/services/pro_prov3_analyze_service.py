@@ -9,18 +9,126 @@ from __future__ import annotations
 
 import base64
 import io
+import json
 import logging
+import shutil
+import subprocess
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Optional
 
 import cv2
 from PIL import Image, ImageDraw
 
 from lib.prov3.keyframes.constants import EVENT_SEQUENCE
 from services.prov3_keyframe_orchestrator_service import run_keyframe_analyze
-from services.video_utils import get_video_rotation, read_frame_pose_pipeline
 
 logger = logging.getLogger(__name__)
+
+# ── Prov3 **UI 条图专用**：容器旋转元数据 → 显示方向。不 import 其他业务链路；
+#    A/B / SwingNet / pose 分析路径完全不动，仅 `_build_ui_keyframes` 使用下列函数。
+
+_PROV3_THUMB_FFPROBE_OK: Optional[bool] = None
+_PROV3_THUMB_FFPROBE_WARNED = False
+
+
+def _prov3_thumb_parse_rotate_tag(val: Any) -> int:
+    if val is None:
+        return 0
+    try:
+        return int(float(val)) % 360
+    except (TypeError, ValueError):
+        return 0
+
+
+def _prov3_thumb_ffprobe_available() -> bool:
+    global _PROV3_THUMB_FFPROBE_OK, _PROV3_THUMB_FFPROBE_WARNED
+    if _PROV3_THUMB_FFPROBE_OK is None:
+        _PROV3_THUMB_FFPROBE_OK = shutil.which("ffprobe") is not None
+    if not _PROV3_THUMB_FFPROBE_OK and not _PROV3_THUMB_FFPROBE_WARNED:
+        logger.warning("[PRO_PROV3][thumb] ffprobe missing — rotation metadata may be skipped")
+        _PROV3_THUMB_FFPROBE_WARNED = True
+    return bool(_PROV3_THUMB_FFPROBE_OK)
+
+
+def _prov3_thumb_container_rotation_degrees(video_path: str) -> int:
+    """Return 0, 90, 180, or 270 for **display** correction (phone portrait MP4)."""
+    try:
+        cap = cv2.VideoCapture(video_path)
+        if cap.isOpened():
+            prop = cap.get(cv2.CAP_PROP_ORIENTATION_META)
+            cap.release()
+            if prop in (90, 180, 270):
+                return int(prop)
+    except Exception:
+        pass
+
+    if not _prov3_thumb_ffprobe_available():
+        return 0
+
+    try:
+        result = subprocess.run(
+            [
+                "ffprobe",
+                "-v",
+                "quiet",
+                "-print_format",
+                "json",
+                "-show_streams",
+                "-show_format",
+                "-select_streams",
+                "v:0",
+                video_path,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if result.returncode != 0:
+            return 0
+        info = json.loads(result.stdout)
+        for stream in info.get("streams", []):
+            tags = stream.get("tags", {})
+            rot = _prov3_thumb_parse_rotate_tag(tags.get("rotate"))
+            if rot in (90, 180, 270):
+                return rot
+            for sd in stream.get("side_data_list", []):
+                if sd.get("side_data_type") == "Display Matrix":
+                    rot_val = sd.get("rotation", 0)
+                    try:
+                        r = (-int(rot_val)) % 360
+                    except (TypeError, ValueError):
+                        r = 0
+                    if r in (90, 180, 270):
+                        return r
+        fmt_tags = info.get("format", {}).get("tags", {})
+        rot = _prov3_thumb_parse_rotate_tag(fmt_tags.get("rotate"))
+        if rot in (90, 180, 270):
+            return rot
+    except (FileNotFoundError, json.JSONDecodeError, ValueError, subprocess.TimeoutExpired) as exc:
+        logger.warning("[PRO_PROV3][thumb] ffprobe rotation parse failed: %s", exc)
+    return 0
+
+
+def _prov3_thumb_rotate_bgr(frame: Any, rotation: int) -> Any:
+    if rotation == 90:
+        return cv2.rotate(frame, cv2.ROTATE_90_CLOCKWISE)
+    if rotation == 180:
+        return cv2.rotate(frame, cv2.ROTATE_180)
+    if rotation == 270:
+        return cv2.rotate(frame, cv2.ROTATE_90_COUNTERCLOCKWISE)
+    return frame
+
+
+def _prov3_thumb_read_frame_bgr(cap: cv2.VideoCapture, frame_idx: int, rotation: int) -> Any | None:
+    total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    if total <= 0:
+        return None
+    target = int(min(max(int(frame_idx), 0), total - 1))
+    cap.set(cv2.CAP_PROP_POS_FRAMES, target)
+    ok, frame_bgr = cap.read()
+    if not ok or frame_bgr is None:
+        return None
+    return _prov3_thumb_rotate_bgr(frame_bgr, rotation)
 
 ANALYSIS_FPS = 240.0
 
@@ -80,12 +188,12 @@ def _probe_video(path: str) -> tuple[float, int, float]:
 def _build_ui_keyframes(raw_keyframes: list[dict[str, Any]], video_path: str) -> list[dict[str, Any]]:
     """Decode JPEG strips from the same timeline as Prov3 (``analysis_video`` recommended).
 
-    OpenCV returns encoded (often landscape) pixel buffers for phone MP4s; we must apply
-    container rotation metadata like the rest of the pose/keyframe pipeline.
+    Applies **container display rotation** for UI thumbnails only (Prov3-local helpers above).
+    Does not affect A/B inference or ``frame_index`` semantics.
     """
     cap = cv2.VideoCapture(video_path)
     opened = cap.isOpened()
-    rotation = int(get_video_rotation(video_path)) if opened else 0
+    rotation = int(_prov3_thumb_container_rotation_degrees(video_path)) if opened else 0
     if not opened:
         cap.release()
         logger.warning("[PRO_PROV3] cannot open video for thumbnails: %s", video_path)
@@ -108,7 +216,7 @@ def _build_ui_keyframes(raw_keyframes: list[dict[str, Any]], video_path: str) ->
         src_idx = max(0, min(src_idx, nframes - 1))
         frame_bgr = None
         if opened:
-            frame_bgr = read_frame_pose_pipeline(cap, src_idx, rotation)
+            frame_bgr = _prov3_thumb_read_frame_bgr(cap, src_idx, rotation)
         b64 = _jpeg_b64_bgr(frame_bgr) if frame_bgr is not None else ""
         conf = float(k.get("confidence") or 0.0)
         out.append(
