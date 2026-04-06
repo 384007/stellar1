@@ -1,7 +1,7 @@
 /** Same-origin Pro v3 orchestration (upload → one Modal ``/analyze/start`` → R2 job poll). */
-/* Video always lands in R2 first (``source_r2_key`` for Modal) — same as global. CN tries presigned
- * browser→R2 first (best for slow links); if unavailable or PUT fails, falls back to Pages proxy upload
- * like before (may hit ~100s CF wall clock on huge/slow uploads). CN polling: no client wall-clock cap. */
+/* Upload: Pages ``/api/history/upload-video`` → R2 binding (no extra R2 S3 secrets). Optional CN-only
+ * browser→R2 presigned PUT when ``NEXT_PUBLIC_PROV3_CN_USE_PRESIGNED_UPLOAD=true`` + Pages Secrets + CORS.
+ * CN polling: no client wall-clock cap. */
 const PRO_V3_EDGE_ANALYZE_START = "/api/prov3/analyze/start";
 const PRO_V3_EDGE_ANALYZE_CANCEL = "/api/prov3/analyze/cancel";
 
@@ -64,6 +64,11 @@ export function yieldUiBeforeHeavyParse(): Promise<void> {
  */
 export function prov3RenderFallbackEnabled(): boolean {
   return process.env.NEXT_PUBLIC_PROV3_RENDER_FALLBACK === "true";
+}
+
+/** Opt-in: CN tries presigned PUT to R2 (requires Pages R2_ACCOUNT_ID + keys + bucket CORS). Default off. */
+function prov3CnPresignedUploadEnabled(): boolean {
+  return process.env.NEXT_PUBLIC_PROV3_CN_USE_PRESIGNED_UPLOAD === "true";
 }
 
 /** 将 FastAPI `detail` 与常见 404 说明合并为一条用户可读文案。 */
@@ -152,7 +157,7 @@ export async function runProv3AnalyzeMultipart(
 
     let videoR2Key = "";
 
-    if (opts.cnNetworkHint) {
+    if (opts.cnNetworkHint && prov3CnPresignedUploadEnabled()) {
       type PresignJson = {
         mode?: string;
         upload_url?: string;
@@ -212,11 +217,6 @@ export async function runProv3AnalyzeMultipart(
           throw e;
         }
         console.warn(`${opts.logPrefix} [PROV3_EDGE_JOB] CN presign/direct skipped, using proxy:`, e);
-      }
-      if (!videoR2Key) {
-        console.warn(
-          `${opts.logPrefix} [PROV3_EDGE_JOB] CN using same-origin upload→R2 (no extra Secrets). Very large/slow uploads may still hit CF request limits; configure Pages R2 presign + bucket CORS for browser→R2 PUT if needed.`,
-        );
       }
     }
 
