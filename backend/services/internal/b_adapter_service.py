@@ -175,6 +175,65 @@ def _enforce_event_spacing(rows: List[Dict[str, object]]) -> List[Dict[str, obje
     return out
 
 
+def _item_score(item: Dict[str, object], cand: int, available_frames: set[int]) -> float:
+    conf = max(_candidate_confidence(item, cand), _confidence_shape_score(item, cand))
+    align = 0.08 if cand in available_frames else 0.0
+    return float(conf) + align
+
+
+def _event_item(rows: List[Dict[str, object]], event_name: str) -> Dict[str, object] | None:
+    for r in rows:
+        if str(r.get("event_name") or "") == event_name:
+            return r
+    return None
+
+
+def _refine_core_triplet(rows: List[Dict[str, object]], available_frames: set[int]) -> List[Dict[str, object]]:
+    out = [dict(x) for x in rows]
+    top = _event_item(out, "Top")
+    mid = _event_item(out, "Mid-downswing")
+    impact = _event_item(out, "Impact")
+    if not top or not mid or not impact:
+        return out
+
+    top_c = sorted(_dense_focus_window(top, available_frames, width=60, candidate_width=72))
+    mid_c = sorted(_dense_focus_window(mid, available_frames, width=56, candidate_width=68))
+    imp_c = sorted(_dense_focus_window(impact, available_frames, width=60, candidate_width=72))
+    if not top_c or not mid_c or not imp_c:
+        return out
+
+    best = None
+    best_score = float("-inf")
+    for t in top_c:
+        s_t = _item_score(top, t, available_frames)
+        for m in mid_c:
+            if m - t < 4:
+                continue
+            s_m = _item_score(mid, m, available_frames)
+            for i in imp_c:
+                if i - m < 4:
+                    continue
+                if i - t < 9:
+                    continue
+                s_i = _item_score(impact, i, available_frames)
+                gap_bonus = min(0.06, (i - t) * 0.0018)
+                score = s_t + s_m + s_i + gap_bonus
+                if score > best_score:
+                    best_score = score
+                    best = (t, m, i)
+    if best is None:
+        return out
+
+    top["frame_index"], mid["frame_index"], impact["frame_index"] = best
+    top["confidence"] = max(float(top.get("confidence", 0.0)), round(_confidence_shape_score(top, best[0]), 4))
+    mid["confidence"] = max(float(mid.get("confidence", 0.0)), round(_confidence_shape_score(mid, best[1]), 4))
+    impact["confidence"] = max(
+        float(impact.get("confidence", 0.0)),
+        round(_confidence_shape_score(impact, best[2]), 4),
+    )
+    return out
+
+
 def refine_with_b_layer(
     keyframes: List[Dict[str, object]],
     enhanced_local_frames: List[dict],
@@ -224,4 +283,5 @@ def refine_with_b_layer(
 
         out.append(cloned)
 
+    out = _refine_core_triplet(out, available_frames)
     return _enforce_event_spacing(out)

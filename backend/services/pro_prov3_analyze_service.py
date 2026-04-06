@@ -347,6 +347,41 @@ def _avg_confidence(keyframes: list[dict[str, Any]]) -> float:
     return sum(vals) / len(vals) if vals else 0.0
 
 
+def _semantic_acceptance_gate(keyframes: list[dict[str, Any]]) -> tuple[bool, list[str]]:
+    by_phase = {str(k.get("phase") or ""): k for k in keyframes}
+    fails: list[str] = []
+    for phase in ("address", "top", "impact", "finish"):
+        if phase not in by_phase:
+            fails.append(f"{phase}_semantic_fail")
+    if fails:
+        return False, fails
+
+    addr = int(by_phase["address"].get("frame_index") or 0)
+    top = int(by_phase["top"].get("frame_index") or 0)
+    mid_down = int(by_phase.get("downswing", {}).get("frame_index") or top)
+    impact = int(by_phase["impact"].get("frame_index") or 0)
+    finish = int(by_phase["finish"].get("frame_index") or 0)
+    conf_top = float(by_phase["top"].get("confidence") or 0.0)
+    conf_impact = float(by_phase["impact"].get("confidence") or 0.0)
+
+    if not (addr < top < impact < finish):
+        fails.append("semantic_event_order_fail")
+    if top - addr < 6:
+        fails.append("top_semantic_fail")
+    if impact - top < 6:
+        fails.append("impact_semantic_fail")
+    if finish - impact < 8:
+        fails.append("finish_semantic_fail")
+    if not (top < mid_down < impact):
+        fails.append("mid_downswing_semantic_fail")
+    if conf_top < 0.58:
+        fails.append("top_semantic_fail")
+    if conf_impact < 0.58:
+        fails.append("impact_semantic_fail")
+
+    return (len(fails) == 0), sorted(set(fails))
+
+
 def run_pro_video_analyze_via_prov3(
     input_video_path: str,
     work_dir: str,
@@ -425,6 +460,17 @@ def run_pro_video_analyze_via_prov3(
     status = str(dumped.get("status") or "low_trust")
     fail_reasons = list(dumped.get("fail_reasons") or [])
 
+    semantic_ok, semantic_fails = _semantic_acceptance_gate(ui_keyframes)
+    logger.info(
+        "[PRO_PROV3][semantic_gate] ok=%s fails=%s",
+        int(semantic_ok),
+        semantic_fails,
+    )
+    if not semantic_ok:
+        status = "low_trust"
+        trust = "low"
+        fail_reasons = sorted(set([*fail_reasons, *semantic_fails]))
+
     analysis_trust = {
         "high": "high_trust",
         "medium": "medium_trust",
@@ -451,9 +497,6 @@ def run_pro_video_analyze_via_prov3(
             f"{ '、'.join(fail_reasons) or '未指定' }。"
         )
 
-    issues = fail_reasons[:3] if fail_reasons else []
-    issues_zh = fail_reasons[:3] if fail_reasons else []
-
     sheet_path: str | None = None
     try:
         p = work / "prov3_contact_sheet.jpg"
@@ -461,8 +504,16 @@ def run_pro_video_analyze_via_prov3(
     except Exception as exc:
         logger.warning("[PRO_PROV3] contact_sheet skipped: %s", exc)
 
+    low_trust_preview_only = status != "pass" or analysis_trust == "low_trust"
+    if low_trust_preview_only and "low_trust_preview_only" not in fail_reasons:
+        fail_reasons = [*fail_reasons, "low_trust_preview_only"]
+    official_phase_keyframes = [] if low_trust_preview_only else list(ui_keyframes)
+    preview_keyframes = list(ui_keyframes)
+    issues = fail_reasons[:3] if fail_reasons else []
+    issues_zh = fail_reasons[:3] if fail_reasons else []
+
     phase_keyframes: dict[str, int] = {}
-    for k in ui_keyframes:
+    for k in official_phase_keyframes:
         ph = str(k.get("phase") or "")
         spi = k.get("frame_index")
         if ph and isinstance(spi, int):
@@ -482,7 +533,9 @@ def run_pro_video_analyze_via_prov3(
         "summary": summary,
         "summary_zh": summary_zh,
         "total_score": total_score,
-        "keyframes": ui_keyframes,
+        "keyframes": official_phase_keyframes,
+        "official_phase_keyframes": official_phase_keyframes,
+        "preview_keyframes": preview_keyframes,
         "contact_sheet_url": sheet_path or "",
         "video_url": input_video_path,
         "original_video_url": input_video_path,
@@ -509,6 +562,7 @@ def run_pro_video_analyze_via_prov3(
         "core_frame_scores": {},
         "retry_required": False,
         "retry_reasons": fail_reasons,
+        "low_trust_preview_only": low_trust_preview_only,
         "keyframe_mismatch_notice": status != "pass",
         "warning": "" if status == "pass" else "关键帧可信度有限，结论仅供参考。",
         "screen_keyframe_review_applied": False,

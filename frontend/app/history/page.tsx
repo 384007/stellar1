@@ -889,8 +889,17 @@ export default function HistoryPage() {
   function parseResult(json: string | null | undefined): ParsedResult {
     try {
       if (!json) return {};
-      const r = JSON.parse(json);
-      return (r && typeof r === "object") ? r : {};
+      const r = JSON.parse(json) as Record<string, unknown>;
+      if (!r || typeof r !== "object") return {};
+      const finalStatus = String(r.final_status ?? "");
+      const trust = String(r.analysis_trust ?? r.trust_level ?? "");
+      const lowTrust = finalStatus !== "pass" || trust === "low_trust" || r.low_trust_preview_only === true;
+      const keyframes = Array.isArray(r.keyframes) ? r.keyframes : [];
+      const preview = Array.isArray(r.preview_keyframes) ? r.preview_keyframes : [];
+      if (lowTrust && keyframes.length === 0 && preview.length > 0) {
+        r.keyframes = preview;
+      }
+      return r as ParsedResult;
     } catch {
       return {};
     }

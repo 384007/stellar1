@@ -113,21 +113,30 @@ export function proExpandedToPlusViewModel(r: Record<string, any>): PlusAnalysis
   const keyframes = Array.isArray(r.keyframes)
     ? r.keyframes.filter((k: unknown) => k != null && typeof k === "object" && !Array.isArray(k))
     : [];
-  const normalizedKeyframes = keyframes.map((kf) => ({
+  const official = Array.isArray(r.official_phase_keyframes)
+    ? r.official_phase_keyframes.filter((k: unknown) => k != null && typeof k === "object" && !Array.isArray(k))
+    : [];
+  const preview = Array.isArray(r.preview_keyframes)
+    ? r.preview_keyframes.filter((k: unknown) => k != null && typeof k === "object" && !Array.isArray(k))
+    : [];
+  const isLowTrust =
+    String(r.final_status ?? "") !== "pass" || String(r.analysis_trust ?? r.trust_level ?? "") === "low_trust";
+  const displayKeyframesRaw = isLowTrust ? official : official.length ? official : keyframes;
+  const normalizedOfficial = official.map((kf) => ({
     ...(kf as Record<string, unknown>),
-    keyframe_image_url:
-      typeof (kf as { keyframe_image_url?: unknown }).keyframe_image_url === "string"
-        ? String((kf as { keyframe_image_url?: string }).keyframe_image_url)
-        : undefined,
-    keyframe_image_source:
-      typeof (kf as { keyframe_image_source?: unknown }).keyframe_image_source === "string"
-        ? String((kf as { keyframe_image_source?: string }).keyframe_image_source)
-        : undefined,
+    frame_index: Number((kf as { frame_index?: unknown }).frame_index ?? 0),
+  }));
+  const normalizedPreview = preview.map((kf) => ({
+    ...(kf as Record<string, unknown>),
+    frame_index: Number((kf as { frame_index?: unknown }).frame_index ?? 0),
+  }));
+  const normalizedDisplay = displayKeyframesRaw.map((kf) => ({
+    ...(kf as Record<string, unknown>),
     frame_index: Number((kf as { frame_index?: unknown }).frame_index ?? 0),
   }));
   const phasesWithKf = new Set(
-    keyframes.map((kf) =>
-      String((kf as { phase?: unknown }).phase ?? "")
+    normalizedDisplay.map((k) =>
+      String((k as { phase?: unknown }).phase ?? "")
         .toLowerCase()
         .replace(/[\s-]+/g, "_"),
     ),
@@ -157,7 +166,7 @@ export function proExpandedToPlusViewModel(r: Record<string, any>): PlusAnalysis
   };
 
   const scoresRaw = r.scores && typeof r.scores === "object" ? (r.scores as Record<string, number>) : null;
-  const pk = mergePhaseKeyframeMaps(r.phase_keyframes, normalizedKeyframes);
+  const pk = isLowTrust ? undefined : mergePhaseKeyframeMaps(r.phase_keyframes, normalizedDisplay);
 
   return {
     analysis_id: String(r.analysis_id ?? ""),
@@ -180,7 +189,9 @@ export function proExpandedToPlusViewModel(r: Record<string, any>): PlusAnalysis
     suggestions_zh,
     summary,
     summary_zh,
-    keyframes: normalizedKeyframes as PlusAnalysisResult["keyframes"],
+    keyframes: normalizedDisplay as PlusAnalysisResult["keyframes"],
+    official_phase_keyframes: normalizedOfficial as PlusAnalysisResult["keyframes"],
+    preview_keyframes: normalizedPreview as PlusAnalysisResult["keyframes"],
     skeleton_data:
       r.skeleton_data && typeof r.skeleton_data === "object"
         ? (r.skeleton_data as PlusAnalysisResult["skeleton_data"])
@@ -209,6 +220,8 @@ export function proExpandedToPlusViewModel(r: Record<string, any>): PlusAnalysis
         : undefined,
     keyframe_mismatch_notice: Boolean(r.keyframe_mismatch_notice),
     warning: typeof r.warning === "string" ? r.warning : undefined,
+    final_status: typeof r.final_status === "string" ? r.final_status : undefined,
+    low_trust_preview_only: Boolean(r.low_trust_preview_only),
     screen_cropped_video_url:
       typeof r.screen_cropped_video_url === "string" ? r.screen_cropped_video_url : undefined,
     screen_clean_video_url:
@@ -241,6 +254,8 @@ export function expandStellarProForUi(raw: Record<string, any>): Record<string, 
   const summary = String(raw.summary ?? "").trim();
   const summary_zh = String(raw.summary_zh ?? raw.summary ?? "").trim();
   const keyframes = Array.isArray(raw.keyframes) ? raw.keyframes : [];
+  const official_phase_keyframes = Array.isArray(raw.official_phase_keyframes) ? raw.official_phase_keyframes : [];
+  const preview_keyframes = Array.isArray(raw.preview_keyframes) ? raw.preview_keyframes : [];
   const emptyPrediction = {
     predicted_distance: 0,
     lateral_offset: 0,
@@ -287,6 +302,8 @@ export function expandStellarProForUi(raw: Record<string, any>): Record<string, 
             typeof kf.keyframe_image_source === "string" ? kf.keyframe_image_source : "analysis_video",
         };
       }),
+    official_phase_keyframes,
+    preview_keyframes,
     skeleton_data: raw.skeleton_data ?? { frames: [], total_frames: 0 },
     prediction: raw.prediction ?? emptyPrediction,
     trajectory: raw.trajectory ?? [],
@@ -309,6 +326,8 @@ export function expandStellarProForUi(raw: Record<string, any>): Record<string, 
     retry_reasons: raw.retry_reasons,
     keyframe_mismatch_notice: raw.keyframe_mismatch_notice,
     warning: raw.warning,
+    final_status: raw.final_status,
+    low_trust_preview_only: raw.low_trust_preview_only,
     screen_clean_video_url: raw.screen_clean_video_url,
     screen_keyframe_review_applied: raw.screen_keyframe_review_applied,
     routing_strategy: raw.routing_strategy,

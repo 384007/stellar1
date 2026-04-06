@@ -356,6 +356,24 @@ async def _run_pro_analyze_body(
                         kf["keyframe_image_source"] = "analysis_video"
                     if "keyframe_image_path" in kf:
                         kf.pop("keyframe_image_path", None)
+                for kf in list(result.get("official_phase_keyframes") or []):
+                    phase = str(kf.get("phase") or "")
+                    event = phase_to_event.get(phase, "")
+                    fn = event_to_file.get(event, "")
+                    if fn and fn in keyframe_url_by_file:
+                        kf["keyframe_image_url"] = keyframe_url_by_file[fn]
+                        kf["keyframe_image_source"] = "analysis_video"
+                    if "keyframe_image_path" in kf:
+                        kf.pop("keyframe_image_path", None)
+                for kf in list(result.get("preview_keyframes") or []):
+                    phase = str(kf.get("phase") or "")
+                    event = phase_to_event.get(phase, "")
+                    fn = event_to_file.get(event, "")
+                    if fn and fn in keyframe_url_by_file:
+                        kf["keyframe_image_url"] = keyframe_url_by_file[fn]
+                        kf["keyframe_image_source"] = "analysis_video"
+                    if "keyframe_image_path" in kf:
+                        kf.pop("keyframe_image_path", None)
 
                 screen_cropped_video_url = ""
                 screen_src = Path(str(result.get("screen_cropped_video_url") or ""))
