@@ -16,3 +16,4 @@ Pillow==11.1.0
 python-dotenv==1.0.1
 openai>=1.54.0
 supervision==0.25.1
+boto3==1.35.96

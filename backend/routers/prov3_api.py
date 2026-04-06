@@ -17,9 +17,16 @@ from pathlib import Path
 from typing import Optional
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, RedirectResponse
 
 from lib.prov3.keyframes.types import ExtractRequest, RefineRequest
+from lib.prov3.r2_media import (
+    prov3_r2_media_fully_configured,
+    prov3_r2_object_key,
+    prov3_r2_public_url_for_key,
+    r2_head_object_exists,
+    upload_prov3_media_directory_to_r2,
+)
 from routers.auth import get_current_user
 from services.internal.prov3_ffmpeg import FFmpegNotFoundError
 from services.prov3_analyze_control import (
@@ -223,6 +230,39 @@ def _prov3_assert_timeline_video_on_disk(media_dir: Path) -> None:
         raise RuntimeError("prov3_media_gate:analysis_timeline_video_missing_on_disk")
 
 
+def _rewrite_prov3_result_urls_to_r2(result: dict, r2_by_fn: dict[str, str]) -> None:
+    """Swap Modal ``/pro-v3/media/…`` URLs for R2 public URLs after upload."""
+    if not r2_by_fn:
+        return
+    for key in (
+        "original_video_url",
+        "video_url",
+        "playback_video_url",
+        "analysis_video_url",
+        "screen_cropped_video_url",
+        "contact_sheet_url",
+    ):
+        url = result.get(key)
+        if not isinstance(url, str) or not url.strip():
+            continue
+        fn = Path(url.split("?")[0]).name
+        if fn in r2_by_fn:
+            result[key] = r2_by_fn[fn]
+    for list_key in ("keyframes", "official_phase_keyframes", "preview_keyframes", "keyframe_images"):
+        rows = result.get(list_key)
+        if not isinstance(rows, list):
+            continue
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            u = row.get("keyframe_image_url")
+            if not isinstance(u, str):
+                continue
+            fn = Path(u.split("?")[0]).name
+            if fn in r2_by_fn:
+                row["keyframe_image_url"] = r2_by_fn[fn]
+
+
 def _prov3_validate_product_media_or_raise(result: dict, media_dir: Path) -> None:
     """Every user-visible keyframe must be a persisted true-240 timeline JPG with a public URL."""
     _prov3_assert_timeline_video_on_disk(media_dir)
@@ -243,15 +283,27 @@ def _prov3_validate_product_media_or_raise(result: dict, media_dir: Path) -> Non
     _prov3_strip_keyframe_b64(list(result.get("preview_keyframes") or []))
 
 
-async def _pro_media_file_handler(analysis_id: str, filename: str) -> FileResponse:
+async def _pro_media_file_handler(analysis_id: str, filename: str) -> FileResponse | RedirectResponse:
     media_dir = _safe_analysis_media_dir(analysis_id)
     safe_name = Path(filename).name
     target = (media_dir / safe_name).resolve()
     if media_dir not in target.parents:
         raise HTTPException(status_code=400, detail="Invalid filename")
-    if not target.exists() or not target.is_file():
-        raise HTTPException(status_code=404, detail="Media not found")
-    return FileResponse(str(target))
+    if target.exists() and target.is_file():
+        return FileResponse(str(target))
+    if prov3_r2_media_fully_configured():
+        try:
+            key = prov3_r2_object_key(analysis_id, safe_name)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid filename") from None
+        if await asyncio.to_thread(r2_head_object_exists, key):
+            try:
+                pub = prov3_r2_public_url_for_key(key)
+            except Exception:
+                pub = ""
+            if pub:
+                return RedirectResponse(url=pub, status_code=302)
+    raise HTTPException(status_code=404, detail="Media not found")
 
 
 @router_pro_v3.get("/media/{analysis_id}/{filename}")
@@ -451,6 +503,22 @@ async def _run_pro_analyze_body(
 
                 if screen_cropped_video_url:
                     result["screen_cropped_video_url"] = screen_cropped_video_url
+
+                if prov3_r2_media_fully_configured():
+                    try:
+                        r2_by_fn = await asyncio.to_thread(
+                            upload_prov3_media_directory_to_r2,
+                            media_dir,
+                            analysis_id,
+                        )
+                        _rewrite_prov3_result_urls_to_r2(result, r2_by_fn)
+                    except Exception as exc:
+                        logger.exception("[PRO_PROV3][R2] durable media upload failed: %s", exc)
+                        raise HTTPException(
+                            status_code=503,
+                            detail="Pro media storage unavailable; check R2 configuration.",
+                        ) from exc
+
                 result["screen_mode"] = bool(screen_mode)
                 result["pro_http_path"] = mp
                 result.pop("_prov3_motion", None)
