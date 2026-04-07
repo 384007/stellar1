@@ -127,7 +127,6 @@ def run_plus_prov3_keyframe_bridge(
         work_dir,
         screen_mode=screen_mode,
         cancel_check=cancel_check,
-        plus_fast_b=True,
     )
     poses = list(pre.poses or [])
     pose_quality_bundle = dict(pre.pose_quality_bundle or {})
