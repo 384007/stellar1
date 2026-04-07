@@ -16,8 +16,8 @@ import ScreenModeCapture from "@/components/ScreenModeCapture";
 import { preloadPoseModel } from "@/lib/mediapipe-assets";
 import AnalysisWaiting from "@/components/AnalysisWaiting";
 import { saveAnalysisVideo } from "@/lib/video-store";
-import { fetchWithRetry, makeFormData } from "@/lib/fetch-retry";
-import { isVideoFile, uploadVideoToGemini } from "@/lib/upload-video";
+import { makeFormData } from "@/lib/fetch-retry";
+import { isVideoFile } from "@/lib/upload-video";
 import { stripResultForStorage } from "@/lib/strip-result";
 import { normalizedTotalScoreForStorage } from "@/lib/safe-analysis-score";
 import { patchLocalHistoryVideoR2Key } from "@/lib/history-sync-record";
@@ -162,6 +162,10 @@ type Stage = "upload" | "processing" | "results";
 type InputMode = "upload" | "capture" | "screen";
 type AnalysisMode = "lite" | "pro";
 
+function trimBackendOrigin(raw: string): string {
+  return raw.trim().replace(/\/+$/, "");
+}
+
 export default function AnalyzePage() {
   const router = useRouter();
   const [stage, setStage] = useState<Stage>("upload");
@@ -194,6 +198,10 @@ export default function AnalyzePage() {
   const analyzePageIsProv3Product = useMemo(
     () => Boolean(result && isProv3StrictMediaPolicyResult(result as Prov3ResultLike)),
     [result],
+  );
+  const liteBackendBase = useMemo(
+    () => trimBackendOrigin(process.env.NEXT_PUBLIC_LITE_BACKEND_URL || ""),
+    [],
   );
   const backendBaseRef = useRef<string>(process.env.NEXT_PUBLIC_BACKEND_URL || "https://stellar1-backend.onrender.com");
   const lastBlobRef = useRef<{ blob: Blob; filename: string } | null>(null);
@@ -300,9 +308,6 @@ export default function AnalyzePage() {
     proAbortSignal?: AbortSignal,
   ): Promise<AnalysisResult> {
     const isPro = (modeOverride ?? analysisMode) === "pro";
-    if (!isPro) {
-      console.warn("[stellar-analyze] 当前为 LITE 模式：请求走 /api/analyze（Cloudflare Edge），不会进入 Modal 日志。");
-    }
 
     if (isPro) {
       // Pro mode: precheck (Edge) → same-origin upload + ``/api/prov3/analyze/start`` → poll job from R2
@@ -358,51 +363,42 @@ export default function AnalyzePage() {
       return expandStellarProForUi(rawPro) as AnalysisResult;
     }
 
-    // Lite: /api/analyze on Edge. Video: upload-video → file_uri (fast path) + same File in FormData so Edge can re-upload if URI is stale (403).
+    // Lite: dedicated lite backend ``POST /analyze/lite`` (multipart file). Requires ``NEXT_PUBLIC_LITE_BACKEND_URL``; no fallback to Edge ``/api/analyze``.
+    if (!liteBackendBase) {
+      throw new Error(
+        lang === "zh"
+          ? "当前无法完成分析，请稍后重试"
+          : "Analysis is unavailable right now. Please try again later.",
+      );
+    }
+
     const headers: Record<string, string> = {};
     const token = localStorage.getItem("stellar_token");
     if (token && token.includes(".")) headers["Authorization"] = `Bearer ${token}`;
 
+    const liteAnalyzeUrl = `${liteBackendBase}/analyze/lite`;
     let res: Response;
     try {
       if (isVideoFile(file as File, filename)) {
-        const uploadCtrl = new AbortController();
-        const uploadTimer = setTimeout(() => uploadCtrl.abort(), 360_000);
+        const fd = new FormData();
+        fd.append("file", file as File, filename);
+        const analyzeCtrl = new AbortController();
+        const analyzeTimer = setTimeout(() => analyzeCtrl.abort(), 180_000);
         try {
-          const up = await uploadVideoToGemini(
-            file as File,
-            filename,
+          res = await fetch(liteAnalyzeUrl, {
+            method: "POST",
             headers,
-            undefined,
-            uploadCtrl.signal,
-          );
-          const fd = new FormData();
-          fd.append("file_uri", up.file_uri);
-          fd.append("mime_type", up.mime_type);
-          fd.append("file", file as File, filename);
-          if (typeof up.gemini_key_index === "number") {
-            fd.append("gemini_key_index", String(up.gemini_key_index));
-          }
-          const analyzeCtrl = new AbortController();
-          const analyzeTimer = setTimeout(() => analyzeCtrl.abort(), 180_000);
-          try {
-            res = await fetch("/api/analyze", {
-              method: "POST",
-              headers,
-              body: fd,
-              signal: analyzeCtrl.signal,
-            });
-          } finally {
-            clearTimeout(analyzeTimer);
-          }
+            body: fd,
+            signal: analyzeCtrl.signal,
+          });
         } finally {
-          clearTimeout(uploadTimer);
+          clearTimeout(analyzeTimer);
         }
       } else {
         const controller = new AbortController();
         const timer = setTimeout(() => controller.abort(), 120_000);
         try {
-          res = await fetch("/api/analyze", {
+          res = await fetch(liteAnalyzeUrl, {
             method: "POST",
             headers,
             body: makeFormData(file as Blob, filename),
@@ -414,22 +410,18 @@ export default function AnalyzePage() {
       }
     } catch (e) {
       if (e instanceof DOMException && e.name === "AbortError") {
-        throw new Error("分析超时，请稍后重试");
+        throw new Error(lang === "zh" ? "分析超时，请稍后重试" : "The analysis took too long. Please try again.");
       }
-      throw new Error(`网络错误：${e instanceof Error ? e.message : "无法连接服务器"}`);
+      throw new Error(
+        lang === "zh" ? "当前无法完成分析，请稍后重试" : "Analysis could not be completed. Please try again.",
+      );
     }
 
-    console.log(`[stellar-analyze] Lite Edge response: ${res.status}`);
-
     if (!res.ok) {
-      let detail = `HTTP ${res.status}`;
       try {
-        const d = await res.json();
-        detail = d.detail || detail;
-      } catch {
-        try { detail = (await res.text()).substring(0, 200) || detail; } catch { /* ignore */ }
-      }
-      throw new Error(`分析失败 [${res.status}]: ${detail}`);
+        await res.text();
+      } catch { /* ignore */ }
+      throw new Error(lang === "zh" ? "分析失败，请重试" : "Analysis failed. Please try again.");
     }
     return res.json();
   }
@@ -439,9 +431,15 @@ export default function AnalyzePage() {
   async function recalculatePredictionFromBackend(
     data: AnalysisResult,
     overrides?: { club_type?: string; club_group?: string; hand?: "R" | "L" | "UNKNOWN"; hand_confidence?: number; preferred_ball_speed?: number },
+    recalculateBaseOverride?: string,
   ): Promise<AnalysisResult["prediction"] | null> {
     try {
-      const backendUrl = backendBaseRef.current || process.env.NEXT_PUBLIC_BACKEND_URL || "https://stellar1-backend.onrender.com";
+      const overrideTrim = trimBackendOrigin(recalculateBaseOverride || "");
+      const backendUrl =
+        overrideTrim ||
+        backendBaseRef.current ||
+        process.env.NEXT_PUBLIC_BACKEND_URL ||
+        "https://stellar1-backend.onrender.com";
       const poseFrames = data.pose_frames || [];
       if (poseFrames.length === 0) return null;
       const mid = poseFrames[Math.floor(poseFrames.length / 2)];
@@ -473,23 +471,20 @@ export default function AnalyzePage() {
           signal: ctrl.signal,
         });
       } catch (e) {
-        if ((e as Error)?.name === "AbortError") {
-          console.warn(`[analyze] /analyze/recalculate aborted after ${RECALCULATE_TIMEOUT_MS}ms`);
-        } else {
-          console.warn("[analyze] /analyze/recalculate fetch error:", e);
+        if ((e as Error)?.name !== "AbortError") {
+          console.warn("[analyze] recalculate request failed");
         }
         return null;
       } finally {
         clearTimeout(t);
       }
       if (!res.ok) {
-        console.warn("[analyze] /analyze/recalculate HTTP", res.status);
         return null;
       }
       const payload = await res.json();
       return payload?.prediction ?? null;
-    } catch (e) {
-      console.warn("[analyze] recalculatePredictionFromBackend:", e);
+    } catch {
+      console.warn("[analyze] recalculate failed");
       return null;
     }
   }
@@ -692,21 +687,25 @@ export default function AnalyzePage() {
       if (shouldBackgroundRecalc) {
         void (async () => {
           try {
-            const recomputed = await recalculatePredictionFromBackend(data, {
-              club_type: data.prediction.club_type,
-              club_group: data.prediction.club_group,
-              hand: handWasConfirmed ? handRef.current : (data.prediction.hand ?? "UNKNOWN"),
-              hand_confidence: handWasConfirmed ? 1.0 : (data.prediction.hand_confidence ?? 0),
-              preferred_ball_speed: data.prediction.fused_speed,
-            });
+            const recomputed = await recalculatePredictionFromBackend(
+              data,
+              {
+                club_type: data.prediction.club_type,
+                club_group: data.prediction.club_group,
+                hand: handWasConfirmed ? handRef.current : (data.prediction.hand ?? "UNKNOWN"),
+                hand_confidence: handWasConfirmed ? 1.0 : (data.prediction.hand_confidence ?? 0),
+                preferred_ball_speed: data.prediction.fused_speed,
+              },
+              modeForRun === "lite" && liteBackendBase ? liteBackendBase : undefined,
+            );
             if (recomputed) {
               setResult((prev) => {
                 if (!prev || prev.analysis_id !== analysisId) return prev;
                 return { ...prev, prediction: { ...prev.prediction, ...recomputed } };
               });
             }
-          } catch (e) {
-            console.warn("[analyze] background recalculate failed:", e);
+          } catch {
+            console.warn("[analyze] background recalculate failed");
           }
         })();
       }
@@ -923,13 +922,17 @@ export default function AnalyzePage() {
         club_detection_confidence: 1.0,
       },
     };
-    const recomputed = await recalculatePredictionFromBackend(next, {
-      club_type: clubType,
-      club_group: newGroup,
-      hand: next.prediction.hand ?? "UNKNOWN",
-      hand_confidence: next.prediction.hand_confidence ?? 0,
-      preferred_ball_speed: next.prediction.fused_speed,
-    });
+    const recomputed = await recalculatePredictionFromBackend(
+      next,
+      {
+        club_type: clubType,
+        club_group: newGroup,
+        hand: next.prediction.hand ?? "UNKNOWN",
+        hand_confidence: next.prediction.hand_confidence ?? 0,
+        preferred_ball_speed: next.prediction.fused_speed,
+      },
+      analysisMode === "lite" && liteBackendBase ? liteBackendBase : undefined,
+    );
     setResult({
       ...next,
       prediction: recomputed ? { ...next.prediction, ...recomputed } : next.prediction,
@@ -949,13 +952,17 @@ export default function AnalyzePage() {
         hand_confidence: 1.0,
       },
     };
-    const recomputed = await recalculatePredictionFromBackend(next, {
-      hand: selectedHand,
-      hand_confidence: 1.0,
-      club_type: next.prediction.club_type,
-      club_group: next.prediction.club_group,
-      preferred_ball_speed: next.prediction.fused_speed,
-    });
+    const recomputed = await recalculatePredictionFromBackend(
+      next,
+      {
+        hand: selectedHand,
+        hand_confidence: 1.0,
+        club_type: next.prediction.club_type,
+        club_group: next.prediction.club_group,
+        preferred_ball_speed: next.prediction.fused_speed,
+      },
+      analysisMode === "lite" && liteBackendBase ? liteBackendBase : undefined,
+    );
     setResult({
       ...next,
       prediction: recomputed ? { ...next.prediction, ...recomputed } : next.prediction,

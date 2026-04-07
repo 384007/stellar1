@@ -4,6 +4,7 @@ import os
 from dotenv import load_dotenv
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import RedirectResponse
 
 load_dotenv()
 
@@ -32,6 +33,12 @@ def _safe_load(module_path: str, prefix: str, tags: list[str]):
 
 _safe_load("routers.auth", "/auth", ["Authentication"])
 _safe_load("routers.analyze", "/analyze", ["Analysis"])
+
+
+@app.get("/")
+async def root():
+    # 浏览器只打开 base URL 时默认无路由会 404；重定向到 /health 便于自检。
+    return RedirectResponse(url="/health", status_code=307)
 
 
 @app.get("/health")

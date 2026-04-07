@@ -3,7 +3,7 @@ Stellar AI — **Lite-only** Modal worker.
 
 Deploy: ``modal deploy modal_app_lite.py``
 
-Resources: cpu=1, memory=6144 MiB, timeout=900s (vs main ``modal_app.py``: 2 CPU / 6144 / 3600).
+Resources: cpu=1, memory=8192 MiB, timeout=900s (memory above main 6144: cv2+mediapipe pre-load + lite pipeline peak RSS).
 
 Uses the **same container image** as ``modal_app`` (import ``image`` + ``stellar_models_volume`` from there).
 ASGI: ``main_lite:app`` — no Plus / Pro v3 / stellar-pro routers.
@@ -26,8 +26,8 @@ from modal_app import (
 )
 
 MODAL_LITE_FUNCTION_TIMEOUT_S = 900
-# 4096 MiB 易在冷启动 / SwingNet+ffmpeg+MP 管线中 OOM（signal terminate）；与主 FastAPI 内存档对齐。
-MODAL_LITE_MEMORY_MIB = 6144
+# 6144 MiB 仍可能在预加载 cv2+mediapipe + 首次请求时 OOM（Modal: terminated by signal）。仅加内存，不改 CPU/预加载策略。
+MODAL_LITE_MEMORY_MIB = 8192
 
 app = modal.App(
     name="stellar-ai-lite",

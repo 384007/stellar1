@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Deploy **lite-only** Modal app (1 CPU / 6144 MiB / 900s). Same secrets as main (`custom-secret`).
+# Deploy **lite-only** Modal app (1 CPU / 8192 MiB / 900s). Same secrets as main (`custom-secret`).
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
