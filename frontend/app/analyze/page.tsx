@@ -25,13 +25,13 @@ import { expandStellarProForUi, stellarProTrustIsLow } from "@/lib/stellar-pro-r
 import { displayKeyframesForResult } from "@/lib/analysis-display-keyframes";
 import { isProv3StrictMediaPolicyResult, type Prov3ResultLike } from "@/lib/prov3-keyframe-media";
 import { resolveProv3ProductMediaUrl } from "@/lib/prov3-media-url";
+import { clientLikelyMainlandChinaUser } from "@/lib/client-region-hint";
 import { pruneLocalStellarHistoryRecords } from "@/lib/pro-history-retention";
 import {
   DEFAULT_PROV3_MODAL_URL,
   normalizeProv3UrlListsFromPrecheck,
   PRO_V3_EDGE_PRECHECK_PATH,
   requestProv3AnalyzeCancel,
-  prov3ClientLikelyNeedsCnFriendlyJobWait,
   runProv3AnalyzeMultipart,
   yieldUiBeforeHeavyParse,
 } from "@/lib/pro-v3-api";
@@ -337,7 +337,7 @@ export default function AnalyzePage() {
           modalUrls,
           backendUrls,
           cnNetworkHint: cnPro,
-          unboundedJobPoll: cnPro || prov3ClientLikelyNeedsCnFriendlyJobWait(),
+          unboundedJobPoll: cnPro || clientLikelyMainlandChinaUser(),
           screenMode,
           modalTimeoutMs: 600_000,
           renderTimeoutMs: 600_000,
@@ -352,19 +352,20 @@ export default function AnalyzePage() {
       return expandStellarProForUi(rawPro) as AnalysisResult;
     }
 
-    // Lite: 大陆 CN → 同源 ``/api/analyze``（CF Edge 多代理 Gemini + 多密钥 + Qwen）；非 CN → Modal ``POST /analyze/lite`` 直连。
-    let liteUseCfEdge = false;
+    // Lite: CN → same-origin ``/api/lite/analyze-proxy`` (Edge forwards to ``LITE_BACKEND_URL/analyze/lite``); else direct ``NEXT_PUBLIC_LITE_BACKEND_URL/analyze/lite``.
+    let liteUseCnProxy = false;
     try {
       const nh = await fetch("/api/lite/network-hint", { method: "GET" });
       if (nh.ok) {
         const j = (await nh.json()) as { network_hint?: string };
-        if (j.network_hint === "cn") liteUseCfEdge = true;
+        if (j.network_hint === "cn") liteUseCnProxy = true;
       }
     } catch {
-      /* ignore — fall back to non-CN path */
+      /* ignore */
     }
+    if (!liteUseCnProxy && clientLikelyMainlandChinaUser()) liteUseCnProxy = true;
 
-    if (!liteUseCfEdge && !liteBackendBase) {
+    if (!liteUseCnProxy && !liteBackendBase) {
       throw new Error(
         lang === "zh"
           ? "当前无法完成分析，请稍后重试"
@@ -384,22 +385,24 @@ export default function AnalyzePage() {
       );
     }
 
+    const headers: Record<string, string> = { "X-Stellar-Idempotency-Key": rid };
     const token = localStorage.getItem("stellar_token");
-    const authHeaders: Record<string, string> = {};
-    if (token && token.includes(".")) authHeaders.Authorization = `Bearer ${token}`;
+    if (token && token.includes(".")) headers.Authorization = `Bearer ${token}`;
 
+    const liteAnalyzeUrl = liteUseCnProxy ? "/api/lite/analyze-proxy" : `${liteBackendBase}/analyze/lite`;
     let res: Response;
     liteAnalyzeHttpIssuedRef.current = true;
     try {
-      if (liteUseCfEdge) {
+      if (isVideoFile(file as File, filename)) {
         const fd = new FormData();
-        fd.append("file", file as Blob, filename);
+        fd.append("file", file as File, filename);
+        fd.append("request_id", rid);
         const analyzeCtrl = new AbortController();
         const analyzeTimer = setTimeout(() => analyzeCtrl.abort(), 180_000);
         try {
-          res = await fetch("/api/analyze", {
+          res = await fetch(liteAnalyzeUrl, {
             method: "POST",
-            headers: authHeaders,
+            headers,
             body: fd,
             signal: analyzeCtrl.signal,
           });
@@ -407,39 +410,19 @@ export default function AnalyzePage() {
           clearTimeout(analyzeTimer);
         }
       } else {
-        const headers: Record<string, string> = { "X-Stellar-Idempotency-Key": rid, ...authHeaders };
-        const liteAnalyzeUrl = `${liteBackendBase}/analyze/lite`;
-        if (isVideoFile(file as File, filename)) {
-          const fd = new FormData();
-          fd.append("file", file as File, filename);
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), 120_000);
+        try {
+          const fd = makeFormData(file as Blob, filename);
           fd.append("request_id", rid);
-          const analyzeCtrl = new AbortController();
-          const analyzeTimer = setTimeout(() => analyzeCtrl.abort(), 180_000);
-          try {
-            res = await fetch(liteAnalyzeUrl, {
-              method: "POST",
-              headers,
-              body: fd,
-              signal: analyzeCtrl.signal,
-            });
-          } finally {
-            clearTimeout(analyzeTimer);
-          }
-        } else {
-          const controller = new AbortController();
-          const timer = setTimeout(() => controller.abort(), 120_000);
-          try {
-            const fd = makeFormData(file as Blob, filename);
-            fd.append("request_id", rid);
-            res = await fetch(liteAnalyzeUrl, {
-              method: "POST",
-              headers,
-              body: fd,
-              signal: controller.signal,
-            });
-          } finally {
-            clearTimeout(timer);
-          }
+          res = await fetch(liteAnalyzeUrl, {
+            method: "POST",
+            headers,
+            body: fd,
+            signal: controller.signal,
+          });
+        } finally {
+          clearTimeout(timer);
         }
       }
     } catch (e) {
@@ -470,17 +453,17 @@ export default function AnalyzePage() {
           : undefined;
       const detailStr = typeof detailRaw === "string" ? detailRaw : "";
 
-      if (!liteUseCfEdge && res.status === 409 && code === "LITE_ANALYZE_ALREADY_RUNNING") {
+      if (res.status === 409 && code === "LITE_ANALYZE_ALREADY_RUNNING") {
         throw new Error(
           lang === "zh" ? "已有分析正在进行，请稍候再试" : "An analysis is already running. Please wait.",
         );
       }
-      if (!liteUseCfEdge && res.status === 400 && code === "LITE_IDEMPOTENCY_KEY_REQUIRED") {
+      if (res.status === 400 && code === "LITE_IDEMPOTENCY_KEY_REQUIRED") {
         throw new Error(
           lang === "zh" ? "缺少请求标识，请刷新页面后重试" : "Missing request id. Refresh and try again.",
         );
       }
-      if (!liteUseCfEdge && res.status === 400 && code === "LITE_IDEMPOTENCY_MISMATCH") {
+      if (res.status === 400 && code === "LITE_IDEMPOTENCY_MISMATCH") {
         throw new Error(
           lang === "zh" ? "请求标识不一致，请刷新后重试" : "Request id mismatch. Refresh and try again.",
         );
