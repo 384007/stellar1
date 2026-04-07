@@ -24,6 +24,8 @@ MMAction2 + MMPose + extras: `backend/requirements-modal.txt` (no torch/ultralyt
 
 ASGI entry: ``main:app``. Pro v3 路由均在 ``/pro-v3`` 下：``POST /pro-v3/analyze``、``GET /pro-v3/media/...``、``POST /pro-v3/keyframes/*``（见 ``routers.prov3_api``）。``STELLAR_MODAL_PRO_V3_ONLY=1`` 时不加载旧 ``/stellar-pro/analyze``。
 ``fastapi_app`` 使用 ``cpu=2``、``timeout=3600``。Worker 启动时 **强制** ``STELLAR_PROV3_USE_FAST_240FPS=0``、``STELLAR_PROV3_ALLOW_MINTERPOLATE_ON_MODAL=1``（真 240 / MCI；Modal Secret 中同名变量会被覆盖）。``video_240fps_service`` 对 **所有** 输入在可用时均走 ``minterpolate``（无片长上限）；超长素材可调 ``STELLAR_PROV3_MINTERPOLATE_TIMEOUT_S``（默认 3600s）。若需 dup 轨须设 ``STELLAR_PROV3_USE_FAST_240FPS=1``（需改代码取消 Modal 强制覆盖，或另行部署）。
+
+独立 Lite Modal：`modal deploy modal_app_lite.py`（1 CPU / 4G / 900s，见该文件）。
 """
 from __future__ import annotations
 
@@ -216,8 +218,6 @@ stellar_models_volume = modal.Volume.from_name("stellar-models", create_if_missi
 
 def _wire_mmaction2_paths() -> None:
     """Enable MMAction2 TSN when baked image and/or /models volume provides weights + config."""
-    from pathlib import Path
-
     if (os.getenv("STELLAR_ACTION_BACKEND") or "").strip().lower() == "disabled":
         return
     cfg_baked = Path("/opt/mmaction_configs/tsn_imagenet-pretrained-r50_8xb32-1x1x8-100e_kinetics400-rgb.py")
@@ -238,8 +238,6 @@ def _wire_mmaction2_paths() -> None:
 
 def _wire_stellar_model_paths() -> None:
     """Map volume + baked weights to STELLAR_* env so providers resolve without extra dashboard config."""
-    from pathlib import Path
-
     baked_yolo = Path("/opt/stellar-weights/yolo11n.pt")
     vol_yolo = Path("/models/yolo11n.pt")
     if vol_yolo.is_file():
@@ -265,8 +263,6 @@ def _wire_stellar_model_paths() -> None:
 
 def _wire_swingnet_paths() -> None:
     """Set ``STELLAR_SWINGNET_CHECKPOINT`` when a file exists: volume ``/models`` wins over baked ``/opt/stellar-weights``."""
-    from pathlib import Path
-
     if (os.getenv("STELLAR_SWINGNET_CHECKPOINT") or "").strip():
         return
     for base in (Path("/models"), Path("/opt/stellar-weights")):
