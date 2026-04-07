@@ -21,9 +21,15 @@ type Props = {
   lang: "zh" | "en";
 };
 
+function isValidSourceFrameCount(v: unknown): v is number {
+  return typeof v === "number" && Number.isFinite(v) && v > 0;
+}
+
 /**
  * Prov3 时间线视频：与 PlusResultView 内默认 VideoAnalysisOverlay 同源能力
  *（plus 骨架、辅助线/弧线、scrub、轨迹、码数 HUD、全屏、toggle），仅封装给分析页等非 PlusResultView 宿主。
+ *
+ * 缺资产时仅在本组件内做前端诊断提示，不回退裸 video，不改变分析/trust 逻辑。
  */
 export default function Prov3PlusVideoRenderer({
   videoSrc,
@@ -32,48 +38,79 @@ export default function Prov3PlusVideoRenderer({
 }: Props) {
   const poses = normalizePoseFramesForOverlay(result.pose_frames);
   const src = String(videoSrc ?? "").trim();
+  const zh = lang === "zh";
 
   if (!src) {
     return (
-      <div className="flex min-h-[min(52vh,560px)] items-center justify-center rounded-xl border border-white/10 bg-black/40 px-4 text-center text-xs text-white/40">
-        {lang === "zh" ? "暂无可用视频地址" : "No video URL"}
+      <div className="flex min-h-[min(52vh,560px)] items-center justify-center rounded-xl border border-amber-500/30 bg-amber-500/[0.07] px-4 text-center text-xs leading-relaxed text-amber-100/90">
+        {zh
+          ? "prov3 缺少视频地址，无法启用 plus 视频渲染。"
+          : "Prov3: no video URL — Plus video overlay cannot be enabled."}
       </div>
     );
   }
 
   if (poses.length === 0) {
     return (
-      <div className="flex min-h-[min(52vh,560px)] flex-col items-center justify-center gap-2 rounded-xl border border-white/10 bg-black/40 px-4 py-10">
-        <div className="h-6 w-6 animate-spin rounded-full border-2 border-white/15 border-t-white/55" />
-        <p className="text-center text-xs text-white/45">
-          {lang === "zh"
-            ? "正在等待骨架帧数据，以启用完整视频叠加（轨迹、码数、Plus 骨架与辅助线）…"
-            : "Waiting for pose frames for full overlay (trajectory, yardage, Plus skeleton & guides)…"}
+      <div className="flex min-h-[min(52vh,560px)] flex-col items-center justify-center gap-2 rounded-xl border border-amber-500/30 bg-amber-500/[0.07] px-4 py-10 text-center">
+        <p className="text-xs font-medium leading-relaxed text-amber-100/95">
+          {zh
+            ? "prov3 缺少骨架帧，无法启用 plus 骨架 / 轨迹 / 码数叠加。"
+            : "Prov3: no pose frames — Plus skeleton, trajectory, and yardage overlay cannot be enabled."}
+        </p>
+        <p className="text-[11px] leading-relaxed text-amber-200/55">
+          {zh
+            ? "这是可视化数据缺失，不是页面故障。请确认完整结果已加载或重新分析。"
+            : "Missing visualization payload, not a UI failure. Ensure the full result is loaded or re-analyze."}
         </p>
       </div>
     );
   }
 
+  const predictionMissing = result.prediction == null;
+  const sfc = result.video_meta?.source_frame_count;
+  const sourceFrameCountMissing = !isValidSourceFrameCount(sfc);
+
   return (
-    <VideoAnalysisOverlay
-      videoSrc={src}
-      poseFrames={poses}
-      lang={lang}
-      coachingTips={coachingTipsFromParsed(result, "pro")}
-      prediction={
-        result.prediction as
-          | {
-              predicted_distance?: number;
-              shot_shape?: string;
-              shot_shape_zh?: string;
-              club_head_speed?: number;
-              club_type?: string;
-              hand?: "R" | "L" | "UNKNOWN";
-            }
-          | undefined
-      }
-      sourceFrameCount={result.video_meta?.source_frame_count}
-      skeletonStyle="plus"
-    />
+    <div className="flex flex-col overflow-hidden rounded-xl">
+      {predictionMissing || sourceFrameCountMissing ? (
+        <div className="shrink-0 space-y-1.5 border border-amber-500/25 border-b-0 bg-amber-500/10 px-3 py-2.5 text-[11px] leading-snug text-amber-100/90">
+          {predictionMissing ? (
+            <p>
+              {zh
+                ? "本次结果未返回 prediction，码数 / 弹道 HUD 可能不完整。"
+                : "No `prediction` in this result — yardage / trajectory HUD may be incomplete."}
+            </p>
+          ) : null}
+          {sourceFrameCountMissing ? (
+            <p>
+              {zh
+                ? "缺少 source_frame_count，时间线（视频 scrub）与姿态帧对齐可能不完整。"
+                : "Missing `source_frame_count` — timeline scrub vs pose alignment may be incomplete."}
+            </p>
+          ) : null}
+        </div>
+      ) : null}
+      <VideoAnalysisOverlay
+        videoSrc={src}
+        poseFrames={poses}
+        lang={lang}
+        coachingTips={coachingTipsFromParsed(result, "pro")}
+        prediction={
+          result.prediction as
+            | {
+                predicted_distance?: number;
+                shot_shape?: string;
+                shot_shape_zh?: string;
+                club_head_speed?: number;
+                club_type?: string;
+                hand?: "R" | "L" | "UNKNOWN";
+              }
+            | undefined
+        }
+        sourceFrameCount={isValidSourceFrameCount(sfc) ? sfc : undefined}
+        skeletonStyle="plus"
+      />
+    </div>
   );
 }
