@@ -216,6 +216,10 @@ export default function AnalyzePage() {
   const [processingProScreenMode, setProcessingProScreenMode] = useState(false);
   /** 防止重复提交 Pro / Lite 分析流程。 */
   const analysisInFlightRef = useRef(false);
+  /** Lite：单次分析固定 idempotency key（整段 processBlob 不变）。 */
+  const liteIdempotencyKeyRef = useRef<string | null>(null);
+  /** Lite：同一次分析最多发 1 次 POST /analyze/lite（禁止隐式重试）。 */
+  const liteAnalyzeHttpIssuedRef = useRef(false);
   const proAnalyzeAbortRef = useRef<AbortController | null>(null);
 
   const stopProAnalysis = useCallback(async () => {
@@ -306,6 +310,7 @@ export default function AnalyzePage() {
     prov3ScreenMode?: boolean,
     modeOverride?: AnalysisMode,
     proAbortSignal?: AbortSignal,
+    liteIdempotencyKey?: string | null,
   ): Promise<AnalysisResult> {
     const isPro = (modeOverride ?? analysisMode) === "pro";
 
@@ -372,16 +377,30 @@ export default function AnalyzePage() {
       );
     }
 
-    const headers: Record<string, string> = {};
+    const rid = (liteIdempotencyKey || "").trim();
+    if (!rid) {
+      throw new Error(
+        lang === "zh" ? "分析请求标识缺失，请重试" : "Missing analysis request id. Please try again.",
+      );
+    }
+    if (liteAnalyzeHttpIssuedRef.current) {
+      throw new Error(
+        lang === "zh" ? "分析已在进行中" : "Analysis already in progress.",
+      );
+    }
+
+    const headers: Record<string, string> = { "X-Stellar-Idempotency-Key": rid };
     const token = localStorage.getItem("stellar_token");
     if (token && token.includes(".")) headers["Authorization"] = `Bearer ${token}`;
 
     const liteAnalyzeUrl = `${liteBackendBase}/analyze/lite`;
     let res: Response;
+    liteAnalyzeHttpIssuedRef.current = true;
     try {
       if (isVideoFile(file as File, filename)) {
         const fd = new FormData();
         fd.append("file", file as File, filename);
+        fd.append("request_id", rid);
         const analyzeCtrl = new AbortController();
         const analyzeTimer = setTimeout(() => analyzeCtrl.abort(), 180_000);
         try {
@@ -398,10 +417,12 @@ export default function AnalyzePage() {
         const controller = new AbortController();
         const timer = setTimeout(() => controller.abort(), 120_000);
         try {
+          const fd = makeFormData(file as Blob, filename);
+          fd.append("request_id", rid);
           res = await fetch(liteAnalyzeUrl, {
             method: "POST",
             headers,
-            body: makeFormData(file as Blob, filename),
+            body: fd,
             signal: controller.signal,
           });
         } finally {
@@ -415,12 +436,45 @@ export default function AnalyzePage() {
       throw new Error(
         lang === "zh" ? "当前无法完成分析，请稍后重试" : "Analysis could not be completed. Please try again.",
       );
+    } finally {
+      liteAnalyzeHttpIssuedRef.current = false;
     }
 
     if (!res.ok) {
+      let errJson: unknown;
       try {
-        await res.text();
-      } catch { /* ignore */ }
+        errJson = await res.json();
+      } catch {
+        errJson = null;
+      }
+      const code =
+        errJson && typeof errJson === "object" && errJson !== null && "code" in errJson
+          ? String((errJson as { code?: string }).code || "")
+          : "";
+      const detailRaw =
+        errJson && typeof errJson === "object" && errJson !== null && "detail" in errJson
+          ? (errJson as { detail?: unknown }).detail
+          : undefined;
+      const detailStr = typeof detailRaw === "string" ? detailRaw : "";
+
+      if (res.status === 409 && code === "LITE_ANALYZE_ALREADY_RUNNING") {
+        throw new Error(
+          lang === "zh" ? "已有分析正在进行，请稍候再试" : "An analysis is already running. Please wait.",
+        );
+      }
+      if (res.status === 400 && code === "LITE_IDEMPOTENCY_KEY_REQUIRED") {
+        throw new Error(
+          lang === "zh" ? "缺少请求标识，请刷新页面后重试" : "Missing request id. Refresh and try again.",
+        );
+      }
+      if (res.status === 400 && code === "LITE_IDEMPOTENCY_MISMATCH") {
+        throw new Error(
+          lang === "zh" ? "请求标识不一致，请刷新后重试" : "Request id mismatch. Refresh and try again.",
+        );
+      }
+      if (detailStr) {
+        throw new Error(detailStr);
+      }
       throw new Error(lang === "zh" ? "分析失败，请重试" : "Analysis failed. Please try again.");
     }
     return res.json();
@@ -590,6 +644,15 @@ export default function AnalyzePage() {
     analysisInFlightRef.current = true;
     try {
     const modeForRun = analysisModeOverride ?? analysisMode;
+    if (modeForRun === "lite") {
+      liteIdempotencyKeyRef.current =
+        typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
+          ? crypto.randomUUID()
+          : `${Date.now()}-${Math.random().toString(36).slice(2, 11)}`;
+      liteAnalyzeHttpIssuedRef.current = false;
+    } else {
+      liteIdempotencyKeyRef.current = null;
+    }
     if (analysisModeOverride) setAnalysisMode(analysisModeOverride);
     setProcessingProScreenMode(
       modeForRun === "pro" && resolveProv3ScreenMode(filename, prov3ScreenMode),
@@ -655,6 +718,7 @@ export default function AnalyzePage() {
         prov3ScreenMode,
         modeForRun,
         proAbort?.signal,
+        modeForRun === "lite" ? liteIdempotencyKeyRef.current : null,
       );
       clearInterval(progressInterval);
       clearTimeout(clubFallbackTimer);

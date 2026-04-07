@@ -5,14 +5,65 @@ import base64
 
 import httpx
 from fastapi import APIRouter, HTTPException, Depends, Request
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
-from typing import Optional
+from typing import Any, Optional
 
 from routers.auth import get_current_user
 from services.json_sanitize import log_non_finite_if_any, safe_float, sanitize_json_floats
+from services.lite_singleflight import (
+    begin_lite_analyze,
+    complete_lite_analyze_failure,
+    complete_lite_analyze_success,
+)
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
+
+_ID_HEADER = "x-stellar-idempotency-key"
+
+
+def _coerce_idempotency_field(raw: object) -> str:
+    if raw is None:
+        return ""
+    if isinstance(raw, str):
+        return raw.strip()
+    return ""
+
+
+def _resolve_lite_idempotency_key(
+    request: Request,
+    form_request_id: Optional[Any],
+    json_request_id: Optional[Any],
+) -> str:
+    header_raw = request.headers.get(_ID_HEADER) or request.headers.get("X-Stellar-Idempotency-Key")
+    header_v = _coerce_idempotency_field(header_raw)
+    form_v = _coerce_idempotency_field(form_request_id)
+    json_v = _coerce_idempotency_field(json_request_id)
+    body_v = form_v or json_v
+    if not header_v or not body_v:
+        logger.warning("[lite_singleflight] missing_key header=%r form/json=%r", bool(header_v), bool(body_v))
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "detail": "Missing idempotency key",
+                "code": "LITE_IDEMPOTENCY_KEY_REQUIRED",
+            },
+        )
+    if header_v != body_v:
+        logger.warning(
+            "[lite_singleflight] mismatch header_request_id=%s body_request_id=%s",
+            header_v,
+            body_v,
+        )
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "detail": "Idempotency key mismatch",
+                "code": "LITE_IDEMPOTENCY_MISMATCH",
+            },
+        )
+    return header_v
 
 
 class LiteAnalyzeRequest(BaseModel):
@@ -80,11 +131,27 @@ async def analyze_lite(
     from services.lite_independent_pipeline import run_lite_independent_pipeline
 
     tmp_path = None
+    request_id: str | None = None
+    gate_acquired = False
+    completed_normally = False
+
+    def _lite_409(rid: str) -> JSONResponse:
+        return JSONResponse(
+            status_code=409,
+            content={
+                "detail": "Lite analyze already running",
+                "code": "LITE_ANALYZE_ALREADY_RUNNING",
+                "request_id": rid,
+            },
+        )
+
     try:
         content_type = request.headers.get("content-type", "")
         if "multipart" in content_type:
             form = await request.form()
             uploaded_file = form.get("file")
+            form_rid = form.get("request_id")
+            request_id = _resolve_lite_idempotency_key(request, form_rid, None)
             if not uploaded_file or not hasattr(uploaded_file, "read"):
                 raise HTTPException(status_code=400, detail="No file provided")
             file_bytes = await uploaded_file.read()
@@ -94,12 +161,21 @@ async def analyze_lite(
             suffix = ".mov" if ".mov" in filename.lower() else ".mp4"
             if ".webm" in filename.lower():
                 suffix = ".webm"
+
+            status, cached = await begin_lite_analyze(request_id)
+            if status == "cached":
+                return cached
+            if status == "busy":
+                return _lite_409(request_id)
+            gate_acquired = True
+
             with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
                 tmp.write(file_bytes)
                 tmp_path = tmp.name
         else:
             body = await request.json()
             video_url = body.get("video_url", "")
+            request_id = _resolve_lite_idempotency_key(request, None, body.get("request_id"))
             if not video_url:
                 raise HTTPException(status_code=400, detail="No video_url provided")
             if video_url.startswith("blob:"):
@@ -107,6 +183,14 @@ async def analyze_lite(
                     status_code=400,
                     detail="Blob URLs cannot be fetched by the server. Please upload the file directly.",
                 )
+
+            status, cached = await begin_lite_analyze(request_id)
+            if status == "cached":
+                return cached
+            if status == "busy":
+                return _lite_409(request_id)
+            gate_acquired = True
+
             async with httpx.AsyncClient(timeout=120.0) as client:
                 resp = await client.get(video_url)
                 if resp.status_code != 200:
@@ -122,14 +206,27 @@ async def analyze_lite(
             raise HTTPException(status_code=422, detail="Lite analysis failed to produce complete keyframes")
         public_result = pack_lite_public_response(internal_result)
         log_non_finite_if_any(logger, public_result, "analyze_lite")
-        return sanitize_json_floats(public_result)
-    except HTTPException:
+        out = sanitize_json_floats(public_result)
+        await complete_lite_analyze_success(request_id, out)
+        completed_normally = True
+        return out
+    except HTTPException as he:
+        if he.status_code == 400 and isinstance(he.detail, dict):
+            return JSONResponse(status_code=400, content=he.detail)
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Analysis failed: {str(e)}")
     finally:
         if tmp_path and os.path.exists(tmp_path):
-            os.unlink(tmp_path)
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+        if gate_acquired and request_id and not completed_normally:
+            try:
+                await complete_lite_analyze_failure(request_id)
+            except Exception:
+                pass
 
 
 @router.post("/recalculate")
