@@ -4,6 +4,7 @@ import { useState, useCallback, useEffect, useRef, type Dispatch, type SetStateA
 import { useRouter } from "next/navigation";
 import UploadZone from "@/components/UploadZone";
 import PlusResultView from "@/components/PlusResultView";
+import FrontErrorBoundary from "@/components/debug/FrontErrorBoundary";
 import ScreenModeCapture from "@/components/ScreenModeCapture";
 import { preloadPoseModel } from "@/lib/mediapipe-assets";
 import AnalysisWaiting from "@/components/AnalysisWaiting";
@@ -1103,15 +1104,36 @@ export default function ProPageClient({ deepLinkAnalysisId }: { deepLinkAnalysis
               </span>
             </div>
             {result ? (
-              <PlusResultView
-                key={result.analysis_id}
-                result={proExpandedToPlusViewModel(result as unknown as Record<string, unknown>)}
-                lang={lang}
-                backendUrl={backendUrlsRef.current[0] || "https://stellar1-backend.onrender.com"}
-                externalVideoSrc={proVideoSrc}
-                coachingMode="pro"
-                initialActiveTab={prov3ScreenOpenDiagnosisTabRef.current ? "diagnosis" : "video"}
-              />
+              <FrontErrorBoundary
+                label="ProPageClient PlusResultView (prov3 result)"
+                details={{
+                  hasVideoSrc: Boolean(String(proVideoSrc ?? "").trim()),
+                  poseFramesCount: result.pose_frames?.length ?? 0,
+                  hasPrediction: result.prediction != null,
+                  sourceFrameCount: result.video_meta?.source_frame_count ?? null,
+                  recordType: "pro",
+                  analysisId: result.analysis_id,
+                  hasOfficialKeyframes:
+                    Array.isArray(
+                      (result as { official_phase_keyframes?: unknown[] }).official_phase_keyframes,
+                    ) &&
+                    ((result as { official_phase_keyframes?: unknown[] }).official_phase_keyframes
+                      ?.length ?? 0) > 0,
+                  hasPreviewKeyframes:
+                    Array.isArray((result as { preview_keyframes?: unknown[] }).preview_keyframes) &&
+                    ((result as { preview_keyframes?: unknown[] }).preview_keyframes?.length ?? 0) > 0,
+                }}
+              >
+                <PlusResultView
+                  key={result.analysis_id}
+                  result={proExpandedToPlusViewModel(result as unknown as Record<string, unknown>)}
+                  lang={lang}
+                  backendUrl={backendUrlsRef.current[0] || "https://stellar1-backend.onrender.com"}
+                  externalVideoSrc={proVideoSrc}
+                  coachingMode="pro"
+                  initialActiveTab={prov3ScreenOpenDiagnosisTabRef.current ? "diagnosis" : "video"}
+                />
+              </FrontErrorBoundary>
             ) : (
               <div className="mx-auto mb-6 max-w-xl rounded-xl border border-amber-400/30 bg-amber-500/10 p-4 text-sm text-amber-200">
                 {resultRenderError ||

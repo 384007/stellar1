@@ -14,7 +14,7 @@ import logging
 import shutil
 import subprocess
 from pathlib import Path
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 import cv2
 from PIL import Image, ImageDraw
@@ -23,7 +23,8 @@ from lib.prov3.keyframes.constants import EVENT_SEQUENCE
 from lib.prov3.keyframes.decode_spacing import spread_keyframes_for_preview_strip
 from services.internal.prov3_ffmpeg import ffmpeg_extract_frames_bgr_by_decode_index, ffprobe_video_meta
 from services.internal.frame_enhance_service import persist_final_keyframe_images
-from services.prov3_keyframe_orchestrator_service import run_keyframe_analyze
+from services.pro_ui_bundle_service import build_stellar_pro_ui_bundle
+from services.prov3_keyframe_orchestrator_service import run_keyframe_analyze_with_preprocess
 
 logger = logging.getLogger(__name__)
 
@@ -185,6 +186,31 @@ def _probe_video(path: str) -> tuple[float, int, float]:
     dur = float(n / fps) if fps > 0 else 0.0
     cap.release()
     return fps, max(n, 1), dur
+
+
+def _remap_poses_for_analysis_timeline(
+    poses: List[Dict[str, Any]],
+    *,
+    analysis_decode_span: int,
+    analysis_duration_s: float,
+) -> List[Dict[str, Any]]:
+    """Map source-upload pose samples onto true-240 analysis decode indices for video scrubber alignment."""
+    if not poses:
+        return []
+    n = max(1, int(analysis_decode_span))
+    dur = float(analysis_duration_s or 0.0)
+    if dur < 0.05:
+        dur = max((float(p.get("timestamp") or 0.0) for p in poses), default=0.0)
+        if dur < 0.05:
+            dur = 1.0
+    out: List[Dict[str, Any]] = []
+    for p in poses:
+        q = {k: v for k, v in p.items() if k != "image_base64"}
+        ts = float(p.get("timestamp") or 0.0)
+        u = min(1.0, max(0.0, ts / dur))
+        q["frame_index"] = int(round(u * (n - 1)))
+        out.append(q)
+    return out
 
 
 def _build_ui_keyframes(
@@ -402,7 +428,7 @@ def run_pro_video_analyze_via_prov3(
 
     if cancel_check:
         cancel_check()
-    prov3 = run_keyframe_analyze(
+    prov3, pre = run_keyframe_analyze_with_preprocess(
         input_video_path,
         str(work),
         screen_mode=screen_mode,
@@ -429,6 +455,7 @@ def run_pro_video_analyze_via_prov3(
     }
 
     fi_max = max((int(k.get("frame_index") or 0) for k in raw_kfs), default=0)
+    dur_pf = 0.0
     try:
         _m = ffprobe_video_meta(av_path)
         nb_pf = int(_m.get("nb_frames") or 0)
@@ -520,6 +547,44 @@ def run_pro_video_analyze_via_prov3(
         if ph and isinstance(spi, int):
             phase_keyframes[ph] = spi
 
+    dur_analysis = float(dur_pf or 0.0)
+    if dur_analysis < 0.05:
+        try:
+            _m_dur = ffprobe_video_meta(av_path)
+            dur_analysis = float(_m_dur.get("duration_s") or 0.0)
+        except Exception:
+            dur_analysis = 0.0
+    poses_src = list(pre.poses or [])
+    poses_remapped = _remap_poses_for_analysis_timeline(
+        poses_src,
+        analysis_decode_span=int(span_timeline),
+        analysis_duration_s=dur_analysis,
+    )
+    ui_bundle: dict[str, Any] = {}
+    if poses_remapped:
+        try:
+            ui_bundle = build_stellar_pro_ui_bundle(
+                poses_remapped,
+                phase_keyframes,
+                fps=float(prov3.analysis_fps or ANALYSIS_FPS),
+                source_frame_count=int(span_timeline),
+                analysis_frame_count=int(span_timeline),
+                detected_club=None,
+            )
+        except Exception as exc:
+            logger.exception("[PRO_PROV3] build_stellar_pro_ui_bundle failed: %s", exc)
+            ui_bundle = {}
+    logger.info(
+        "[PRO_PROV3] pose_chain preprocess_poses=%d remapped=%d bundle_pose_frames=%d",
+        len(poses_src),
+        len(poses_remapped),
+        len((ui_bundle.get("pose_frames") or []) if ui_bundle else []),
+    )
+
+    skel = ui_bundle.get("skeleton_data") if ui_bundle else None
+    pframes = ui_bundle.get("pose_frames") if ui_bundle else None
+    pred = ui_bundle.get("prediction") if ui_bundle else None
+
     minimal: dict[str, Any] = {
         "analysis_id": str(dumped.get("analysis_id") or ""),
         "status": "completed",
@@ -568,8 +633,11 @@ def run_pro_video_analyze_via_prov3(
         "warning": "" if status == "pass" else "关键帧可信度有限，结论仅供参考。",
         "screen_keyframe_review_applied": False,
         "screen_mode_user_requested": bool(screen_mode),
-        "skeleton_data": {"frames": [], "total_frames": 0},
-        "pose_frames": [],
+        "skeleton_data": skel
+        if isinstance(skel, dict)
+        else {"frames": [], "total_frames": 0},
+        "pose_frames": pframes if isinstance(pframes, list) else [],
+        **({"prediction": pred} if isinstance(pred, dict) else {}),
         "phase_keyframes": phase_keyframes,
         "keyframe_images": persisted_kfs,
         "prov3": {
@@ -586,15 +654,24 @@ def run_pro_video_analyze_via_prov3(
         },
     }
 
-    try:
-        fps, nframes, dur = _probe_video(input_video_path)
+    uvm = ui_bundle.get("video_meta") if ui_bundle else None
+    if isinstance(uvm, dict) and uvm.get("total_pose_frames", 0):
         minimal["video_meta"] = {
-            "fps": fps,
-            "duration_s": dur,
-            "source_frame_count": nframes,
+            "fps": float(prov3.analysis_fps or ANALYSIS_FPS),
+            "duration_s": float(uvm.get("duration_s") or dur_analysis or 0.0),
+            "source_frame_count": int(uvm.get("source_frame_count") or span_timeline),
+            "total_pose_frames": int(uvm.get("total_pose_frames") or 0),
         }
-    except RuntimeError as exc:
-        logger.warning("[PRO_PROV3] video_meta probe failed: %s", exc)
+    else:
+        try:
+            fps, nframes, dur = _probe_video(input_video_path)
+            minimal["video_meta"] = {
+                "fps": fps,
+                "duration_s": dur,
+                "source_frame_count": nframes,
+            }
+        except RuntimeError as exc:
+            logger.warning("[PRO_PROV3] video_meta probe failed: %s", exc)
 
     logger.info(
         "[PRO_PROV3] done analysis_id=%s kfs=%s trust=%s",

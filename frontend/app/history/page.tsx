@@ -9,6 +9,7 @@ import ProComparison from "@/components/ProComparison";
 import SimAnimation from "@/components/SimAnimation";
 import PlusResultView, { type PlusAnalysisResult } from "@/components/PlusResultView";
 import VideoAnalysisOverlay from "@/components/VideoAnalysisOverlay";
+import FrontErrorBoundary from "@/components/debug/FrontErrorBoundary";
 import { coachingTipsFromParsed } from "@/lib/video-analysis-coaching";
 import {
   getAnalysisVideoBlob,
@@ -1612,6 +1613,24 @@ export default function HistoryPage() {
                       const curveFrames = buildCurveFrames(parsed, rec.total_score);
                       const isLoadingData = !recordVideos[rec.id] && videoLoading[rec.id] !== false
                         || detailLoading[rec.id];
+                      const historyProv3Diag = {
+                        hasVideoSrc: Boolean(recordVideos[rec.id]),
+                        poseFramesCount: parsed.pose_frames?.length ?? 0,
+                        hasPrediction: parsed.prediction != null,
+                        sourceFrameCount:
+                          (parsed as { video_meta?: { source_frame_count?: number } }).video_meta
+                            ?.source_frame_count ?? null,
+                        recordType: rec.type,
+                        analysisId: rec.id,
+                        hasOfficialKeyframes:
+                          Array.isArray(parsed.official_phase_keyframes) &&
+                          parsed.official_phase_keyframes.length > 0,
+                        hasPreviewKeyframes:
+                          Array.isArray(parsed.preview_keyframes) && parsed.preview_keyframes.length > 0,
+                        historyLiteProv3,
+                        overlayPoseCount: overlayPoses.length,
+                        liteStripKeyframeCount: liteStripKeyframes.length,
+                      };
                       return (
                       <div className="border-t border-white/5 p-4 animate-fade-in">
                         <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
@@ -1693,18 +1712,38 @@ export default function HistoryPage() {
                             </div>
                           ) : overlayPoses.length > 0 ? (
                             <div className="mb-4">
-                              <VideoAnalysisOverlay
-                                videoSrc={recordVideos[rec.id]}
-                                poseFrames={overlayPoses}
-                                lang={lang}
-                                coachingTips={coachingTipsFromParsed(parsed, rec.type)}
-                                prediction={parsed.prediction as { predicted_distance?: number; shot_shape?: string; shot_shape_zh?: string; club_head_speed?: number; club_type?: string; hand?: "R" | "L" | "UNKNOWN" } | undefined}
-                                sourceFrameCount={
-                                  (parsed as { video_meta?: { source_frame_count?: number } })
-                                    .video_meta?.source_frame_count
-                                }
-                                skeletonStyle={historyLiteProv3 ? "plus" : "legacy"}
-                              />
+                              {historyLiteProv3 ? (
+                                <FrontErrorBoundary
+                                  label="History lite prov3 VideoAnalysisOverlay"
+                                  details={historyProv3Diag}
+                                >
+                                  <VideoAnalysisOverlay
+                                    videoSrc={recordVideos[rec.id]}
+                                    poseFrames={overlayPoses}
+                                    lang={lang}
+                                    coachingTips={coachingTipsFromParsed(parsed, rec.type)}
+                                    prediction={parsed.prediction as { predicted_distance?: number; shot_shape?: string; shot_shape_zh?: string; club_head_speed?: number; club_type?: string; hand?: "R" | "L" | "UNKNOWN" } | undefined}
+                                    sourceFrameCount={
+                                      (parsed as { video_meta?: { source_frame_count?: number } })
+                                        .video_meta?.source_frame_count
+                                    }
+                                    skeletonStyle="plus"
+                                  />
+                                </FrontErrorBoundary>
+                              ) : (
+                                <VideoAnalysisOverlay
+                                  videoSrc={recordVideos[rec.id]}
+                                  poseFrames={overlayPoses}
+                                  lang={lang}
+                                  coachingTips={coachingTipsFromParsed(parsed, rec.type)}
+                                  prediction={parsed.prediction as { predicted_distance?: number; shot_shape?: string; shot_shape_zh?: string; club_head_speed?: number; club_type?: string; hand?: "R" | "L" | "UNKNOWN" } | undefined}
+                                  sourceFrameCount={
+                                    (parsed as { video_meta?: { source_frame_count?: number } })
+                                      .video_meta?.source_frame_count
+                                  }
+                                  skeletonStyle="legacy"
+                                />
+                              )}
                             </div>
                           ) : (
                             <div className="mb-4 overflow-hidden rounded-xl border border-white/10 bg-black/30">
@@ -1768,13 +1807,18 @@ export default function HistoryPage() {
                               </p>
                             </div>
                           ) : (
-                            <PlusResultView
-                              result={proExpandedToPlusViewModel(
-                                expandStellarProForUi(parsed as Record<string, unknown>),
-                              )}
-                              lang={lang}
-                              externalVideoSrc={recordVideos[rec.id] || undefined}
-                            />
+                            <FrontErrorBoundary
+                              label="History expanded pro PlusResultView"
+                              details={historyProv3Diag}
+                            >
+                              <PlusResultView
+                                result={proExpandedToPlusViewModel(
+                                  expandStellarProForUi(parsed as Record<string, unknown>),
+                                )}
+                                lang={lang}
+                                externalVideoSrc={recordVideos[rec.id] || undefined}
+                              />
+                            </FrontErrorBoundary>
                           )
                         ) : (
                           <>
@@ -1801,6 +1845,18 @@ export default function HistoryPage() {
                                       {lang === "zh" ? "加载关键帧图片…" : "Loading keyframe images…"}
                                     </p>
                                   </div>
+                                ) : historyLiteProv3 ? (
+                                  <FrontErrorBoundary
+                                    label="History lite prov3 KeyframeStrip"
+                                    details={historyProv3Diag}
+                                  >
+                                    <KeyframeStrip
+                                      keyframes={liteStripKeyframes as NonNullable<ParsedResult["keyframes"]>}
+                                      lang={lang}
+                                      urlOnlyTimeline={historyLiteProv3}
+                                      plusStyleKeyframeSkeleton={historyLiteProv3}
+                                    />
+                                  </FrontErrorBoundary>
                                 ) : (
                                   <KeyframeStrip
                                     keyframes={liteStripKeyframes as NonNullable<ParsedResult["keyframes"]>}

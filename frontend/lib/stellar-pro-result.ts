@@ -255,7 +255,15 @@ export function proExpandedToPlusViewModel(r: Record<string, any>): PlusAnalysis
   };
 
   const scoresRaw = r.scores && typeof r.scores === "object" ? (r.scores as Record<string, number>) : null;
-  const pk = isLowTrust ? undefined : mergePhaseKeyframeMaps(r.phase_keyframes, normalizedOfficial);
+  /** Low-trust prov3 often has empty official strip; preview keyframes still map phases on the 240 timeline for overlay/HUD. */
+  const stripForPhaseKeyframes = isLowTrust
+    ? normalizedPreview.length > 0
+      ? normalizedPreview
+      : normalizedOfficial
+    : normalizedOfficial.length > 0
+      ? normalizedOfficial
+      : normalizedPreview;
+  const pk = mergePhaseKeyframeMaps(r.phase_keyframes, stripForPhaseKeyframes);
 
   return {
     analysis_id: String(r.analysis_id ?? ""),
@@ -364,6 +372,8 @@ export function expandStellarProForUi(raw: Record<string, any>): Record<string, 
     trajectory: [] as { t: number; x: number; y: number; lateral: number }[],
   };
 
+  const lowTrustExpand = stellarProTrustIsLow(raw as Record<string, unknown>);
+
   return {
     ...raw,
     type: raw.type ?? "pro",
@@ -405,9 +415,11 @@ export function expandStellarProForUi(raw: Record<string, any>): Record<string, 
     pose_frames: Array.isArray(raw.pose_frames) ? raw.pose_frames : [],
     phase_keyframes: mergePhaseKeyframeMaps(
       raw.phase_keyframes,
-      Array.isArray(raw.official_phase_keyframes) && raw.official_phase_keyframes.length > 0
-        ? raw.official_phase_keyframes
-        : [],
+      lowTrustExpand && preview_keyframes.length > 0
+        ? preview_keyframes
+        : official_phase_keyframes.length > 0
+          ? official_phase_keyframes
+          : preview_keyframes,
     ),
     video_meta: raw.video_meta ?? {},
     contact_sheet_url: raw.contact_sheet_url ?? null,

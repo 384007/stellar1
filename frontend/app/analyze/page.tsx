@@ -7,6 +7,7 @@ import HUDOverlay from "@/components/HUDOverlay";
 import KeyframeStrip from "@/components/KeyframeStrip";
 import Prov3PlusVideoRenderer from "@/components/prov3/Prov3PlusVideoRenderer";
 import Prov3MotionEvidenceReport from "@/components/prov3/Prov3MotionEvidenceReport";
+import FrontErrorBoundary from "@/components/debug/FrontErrorBoundary";
 import type { PlusAnalysisResult } from "@/components/PlusResultView";
 import SimAnimation from "@/components/SimAnimation";
 import ProComparison from "@/components/ProComparison";
@@ -1679,11 +1680,30 @@ export default function AnalyzePage() {
                 </div>
                 {analyzePageIsProv3Product ? (
                   <div className="w-full bg-black px-1 pb-2 pt-1">
-                    <Prov3PlusVideoRenderer
-                      videoSrc={proVideoTimelineUrl}
-                      result={result}
-                      lang={lang}
-                    />
+                    <FrontErrorBoundary
+                      label="AnalyzePage prov3 timeline (Prov3PlusVideoRenderer)"
+                      details={{
+                        hasVideoSrc: Boolean(String(proVideoTimelineUrl ?? "").trim()),
+                        poseFramesCount: result.pose_frames?.length ?? 0,
+                        hasPrediction: result.prediction != null,
+                        sourceFrameCount: result.video_meta?.source_frame_count ?? null,
+                        recordType: "analyze",
+                        analysisId: result.analysis_id,
+                        hasOfficialKeyframes:
+                          Array.isArray(result.official_phase_keyframes) &&
+                          result.official_phase_keyframes.length > 0,
+                        hasPreviewKeyframes:
+                          Array.isArray(result.preview_keyframes) && result.preview_keyframes.length > 0,
+                        activeTab,
+                        stripKeyframeCount: stripKeyframesForResult.length,
+                      }}
+                    >
+                      <Prov3PlusVideoRenderer
+                        videoSrc={proVideoTimelineUrl}
+                        result={result}
+                        lang={lang}
+                      />
+                    </FrontErrorBoundary>
                   </div>
                 ) : (
                   <video
@@ -1730,13 +1750,42 @@ export default function AnalyzePage() {
                 ) : null}
 
                 {stripKeyframesForResult.length > 0 ? (
-                  <KeyframeStrip
-                    keyframes={stripKeyframesForResult}
-                    lang={lang}
-                    mode={analysisMode === "pro" ? "pro" : "default"}
-                    urlOnlyTimeline={analysisMode === "pro" || analyzePageIsProv3Product}
-                    plusStyleKeyframeSkeleton={analyzePageIsProv3Product}
-                  />
+                  analyzePageIsProv3Product ? (
+                    <FrontErrorBoundary
+                      label="AnalyzePage prov3 KeyframeStrip"
+                      details={{
+                        hasVideoSrc: Boolean(String(proVideoTimelineUrl ?? "").trim()),
+                        poseFramesCount: result.pose_frames?.length ?? 0,
+                        hasPrediction: result.prediction != null,
+                        sourceFrameCount: result.video_meta?.source_frame_count ?? null,
+                        recordType: "analyze",
+                        analysisId: result.analysis_id,
+                        hasOfficialKeyframes:
+                          Array.isArray(result.official_phase_keyframes) &&
+                          result.official_phase_keyframes.length > 0,
+                        hasPreviewKeyframes:
+                          Array.isArray(result.preview_keyframes) && result.preview_keyframes.length > 0,
+                        activeTab,
+                        stripKeyframeCount: stripKeyframesForResult.length,
+                      }}
+                    >
+                      <KeyframeStrip
+                        keyframes={stripKeyframesForResult}
+                        lang={lang}
+                        mode={analysisMode === "pro" ? "pro" : "default"}
+                        urlOnlyTimeline={analysisMode === "pro" || analyzePageIsProv3Product}
+                        plusStyleKeyframeSkeleton={analyzePageIsProv3Product}
+                      />
+                    </FrontErrorBoundary>
+                  ) : (
+                    <KeyframeStrip
+                      keyframes={stripKeyframesForResult}
+                      lang={lang}
+                      mode={analysisMode === "pro" ? "pro" : "default"}
+                      urlOnlyTimeline={analysisMode === "pro" || analyzePageIsProv3Product}
+                      plusStyleKeyframeSkeleton={analyzePageIsProv3Product}
+                    />
+                  )
                 ) : null}
 
                 {result.skeleton_data && result.skeleton_data.frames.length > 0 && (

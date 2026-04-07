@@ -33,7 +33,7 @@ export function slimPoseFramesForCloudRow(raw: unknown): unknown[] {
         ? fr.joints
         : Array.isArray(fr.analysis_joints) && fr.analysis_joints.length > 0
           ? fr.analysis_joints
-          : Array.isArray(fr.render_joints)
+          : Array.isArray(fr.render_joints) && fr.render_joints.length > 0
             ? fr.render_joints
             : null) ?? [];
     const joints = (jointsRaw as unknown[])
@@ -80,7 +80,7 @@ export function normalizePoseFramesForOverlay(raw: unknown): OverlayPoseFrame[] 
         ? fr.joints
         : Array.isArray(fr.analysis_joints) && fr.analysis_joints.length > 0
           ? fr.analysis_joints
-          : Array.isArray(fr.render_joints)
+          : Array.isArray(fr.render_joints) && fr.render_joints.length > 0
             ? fr.render_joints
             : []) as OverlayPoseFrame["joints"];
     if (!joints.length) continue;
