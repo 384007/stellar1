@@ -4,7 +4,6 @@ import { useState, useCallback, useEffect, useRef, type Dispatch, type SetStateA
 import { useRouter } from "next/navigation";
 import UploadZone from "@/components/UploadZone";
 import PlusResultView from "@/components/PlusResultView";
-import Prov3PlusVideoRenderer from "@/components/prov3/Prov3PlusVideoRenderer";
 import ScreenModeCapture from "@/components/ScreenModeCapture";
 import { preloadPoseModel } from "@/lib/mediapipe-assets";
 import AnalysisWaiting from "@/components/AnalysisWaiting";
@@ -1112,9 +1111,6 @@ export default function ProPageClient({ deepLinkAnalysisId }: { deepLinkAnalysis
                 externalVideoSrc={proVideoSrc}
                 coachingMode="pro"
                 initialActiveTab={prov3ScreenOpenDiagnosisTabRef.current ? "diagnosis" : "video"}
-                renderProv3VideoOverlay={({ videoSrc }) => (
-                  <Prov3PlusVideoRenderer videoSrc={videoSrc} result={result} lang={lang} />
-                )}
               />
             ) : (
               <div className="mx-auto mb-6 max-w-xl rounded-xl border border-amber-400/30 bg-amber-500/10 p-4 text-sm text-amber-200">

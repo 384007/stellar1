@@ -1677,7 +1677,7 @@ export default function AnalyzePage() {
                       : "True-240 H.264 timeline. If the original .mov will not play in-browser, use this."}
                   </p>
                 </div>
-                {analyzePageIsProv3Product && (result.pose_frames?.length ?? 0) > 0 ? (
+                {analyzePageIsProv3Product ? (
                   <div className="w-full bg-black px-1 pb-2 pt-1">
                     <Prov3PlusVideoRenderer
                       videoSrc={proVideoTimelineUrl}
