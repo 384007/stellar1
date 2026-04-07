@@ -134,6 +134,7 @@ async def analyze_lite(
     request_id: str | None = None
     gate_acquired = False
     completed_normally = False
+    last_exc: Optional[BaseException] = None
 
     def _lite_409(rid: str) -> JSONResponse:
         return JSONResponse(
@@ -215,7 +216,28 @@ async def analyze_lite(
             return JSONResponse(status_code=400, content=he.detail)
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Analysis failed: {str(e)}")
+        last_exc = e
+        logger.exception("[analyze_lite] request_id=%r pipeline_failed", request_id)
+        msg = str(e)
+        low = msg.lower()
+        is_quotaish = (
+            "429" in msg
+            or "resource exhausted" in low
+            or "resource_exhausted" in low
+            or "quota" in low
+            or "rate limit" in low
+            or "too many requests" in low
+        )
+        if is_quotaish:
+            return JSONResponse(
+                status_code=503,
+                content={
+                    "detail": msg[:4000],
+                    "code": "LITE_AI_QUOTA_OR_RATE_LIMIT",
+                    "request_id": request_id,
+                },
+            )
+        raise HTTPException(status_code=500, detail=f"Analysis failed: {msg}")
     finally:
         if tmp_path and os.path.exists(tmp_path):
             try:
@@ -224,7 +246,7 @@ async def analyze_lite(
                 pass
         if gate_acquired and request_id and not completed_normally:
             try:
-                await complete_lite_analyze_failure(request_id)
+                await complete_lite_analyze_failure(request_id, exc=last_exc)
             except Exception:
                 pass
 

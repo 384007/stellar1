@@ -10,12 +10,12 @@ import { preloadPoseModel } from "@/lib/mediapipe-assets";
 import AnalysisWaiting from "@/components/AnalysisWaiting";
 import type { PoseSnapshot } from "@/components/KeyframeStrip";
 import { getAnalysisVideoBlob, saveAnalysisVideo } from "@/lib/video-store";
+import { clientLikelyMainlandChinaUser } from "@/lib/client-region-hint";
 import {
   DEFAULT_PROV3_MODAL_URL,
   normalizeProv3UrlListsFromPrecheck,
   PRO_V3_EDGE_PRECHECK_PATH,
   requestProv3AnalyzeCancel,
-  prov3ClientLikelyNeedsCnFriendlyJobWait,
   runProv3AnalyzeMultipart,
   yieldUiBeforeHeavyParse,
 } from "@/lib/pro-v3-api";
@@ -603,7 +603,7 @@ export default function ProPageClient({ deepLinkAnalysisId }: { deepLinkAnalysis
           modalUrls: modalUrlsRef.current,
           backendUrls: backendUrlsRef.current,
           cnNetworkHint: cn,
-          unboundedJobPoll: cn || prov3ClientLikelyNeedsCnFriendlyJobWait(),
+          unboundedJobPoll: cn || clientLikelyMainlandChinaUser(),
           screenMode: effectiveScreenMode,
           // Polling-only budget (after job_id). Long Modal runs + margin; upload no longer consumes this window.
           modalTimeoutMs: 600_000,

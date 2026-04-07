@@ -1,3 +1,5 @@
+import { clientLikelyMainlandChinaUser } from "@/lib/client-region-hint";
+
 /** Same-origin Pro v3 orchestration (upload → one Modal ``/analyze/start`` → R2 job poll). */
 /* Upload: Pages ``/api/history/upload-video`` → R2 binding. Optional presigned PUT when
  * ``NEXT_PUBLIC_PROV3_CN_USE_PRESIGNED_UPLOAD=true``. Job poll: no client cap when ``unboundedJobPoll``. */
@@ -34,7 +36,7 @@ export type RunProv3AnalyzeOptions = {
   backendUrls: string[];
   /** Precheck / CF — forwarded as ``X-Stellar-Network-Hint: cn`` to Modal only when true. */
   cnNetworkHint: boolean;
-  /** No client poll wall clock (precheck CN **or** ``prov3ClientLikelyNeedsCnFriendlyJobWait()``). */
+  /** No client poll wall clock (precheck CN **or** ``clientLikelyMainlandChinaUser()``). */
   unboundedJobPoll: boolean;
   screenMode: boolean;
   /** Poll budget after ``job_id`` when ``unboundedJobPoll`` is false. */
@@ -76,17 +78,10 @@ function prov3CnPresignedUploadEnabled(): boolean {
 /**
  * When CF/precheck misses mainland (VPN etc.), still avoid false client-side job timeouts for zh-CN users.
  * Does not affect Modal routing — only ``unboundedJobPoll`` / presign try.
+ * Delegates to ``clientLikelyMainlandChinaUser`` (single source in ``client-region-hint``).
  */
 export function prov3ClientLikelyNeedsCnFriendlyJobWait(): boolean {
-  if (typeof window === "undefined") return false;
-  const lang = (navigator.language || "").toLowerCase();
-  if (lang === "zh-cn" || lang.startsWith("zh-cn-")) return true;
-  try {
-    const tz = Intl.DateTimeFormat().resolvedOptions().timeZone || "";
-    return /shanghai|chongqing|urumqi|harbin|asia\/shanghai|asia\/chongqing|asia\/urumqi/i.test(tz);
-  } catch {
-    return false;
-  }
+  return clientLikelyMainlandChinaUser();
 }
 
 /** 将 FastAPI `detail` 与常见 404 说明合并为一条用户可读文案。 */

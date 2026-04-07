@@ -1,6 +1,6 @@
 /**
- * Browser-side hint for mainland-China–friendly asset routing (MediaPipe, Pro poll, etc.).
- * Does not replace CF ``CF-IPCountry`` on the server — only augments when precheck/geo is unknown.
+ * Browser-side hint for mainland-China–friendly client behavior (Pro job poll cap, Lite ``/api/lite/analyze-proxy``, etc.).
+ * Does not replace CF ``CF-IPCountry`` on the server — augments when precheck/geo is unknown (e.g. VPN).
  */
 export function clientLikelyMainlandChinaUser(): boolean {
   if (typeof window === "undefined") return false;

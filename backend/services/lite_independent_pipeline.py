@@ -12,7 +12,7 @@ from typing import Any
 from services.gemini_service import LITE_AI_TIMEOUT_S, analyze_swing_lite, cap_confidence
 from services.handedness_service import detect_handedness
 from services.internal.a_gate_service import run_a_gate
-from services.internal.frame_enhance_service import persist_final_keyframe_images
+from services.lite_keyframe_export import lite_persist_keyframe_images
 from services.lite_keyframe_heuristic import (
     lite_build_eight_keyframe_rows,
     lite_enforce_monotonic_frame_indices,
@@ -44,7 +44,7 @@ _EVENT_TO_LITE_PHASE = {
 _LITE_POSE_PREVIEW_FRAMES = int(os.getenv("STELLAR_LITE_POSE_PREVIEW_FRAMES", "40"))
 
 
-async def _lite_club_from_previews(frames: list[np.ndarray], region: str) -> dict[str, Any]:
+async def _lite_club_from_previews(frames: list[Any], region: str) -> dict[str, Any]:
     from services.club_detector import detect_club
 
     results: list[dict[str, Any]] = []
@@ -81,7 +81,12 @@ def _build_public_keyframes(
     saved: list[dict[str, Any]],
     vfps: float,
 ) -> list[dict[str, Any]]:
-    path_map = {str(s.get("event_name")): str(s.get("image_path")) for s in saved}
+    path_map: dict[str, str] = {}
+    for s in saved:
+        ev = str(s.get("event_name") or "")
+        p = str(s.get("file_path") or s.get("image_path") or "")
+        if ev and p:
+            path_map[ev] = p
     vfps = max(float(vfps), 1e-6)
     out: list[dict[str, Any]] = []
     for row in rows:
@@ -151,7 +156,7 @@ async def run_lite_independent_pipeline(video_path: str, *, region: str = "globa
         phase_ok = a_status == "pass"
 
         out_dir = str(Path(work_dir) / "lite_keyframes")
-        saved = await asyncio.to_thread(persist_final_keyframe_images, cleaned_path, rows, out_dir)
+        saved = await asyncio.to_thread(lite_persist_keyframe_images, cleaned_path, rows, out_dir)
         keyframes = _build_public_keyframes(rows, saved, vfps)
         if len(keyframes) != 8:
             raise RuntimeError("lite_keyframe_export_incomplete")

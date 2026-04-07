@@ -64,9 +64,22 @@ async def complete_lite_analyze_success(request_id: str, public_result: dict[str
         logger.info("[lite_singleflight] completed request_id=%s", request_id)
 
 
-async def complete_lite_analyze_failure(request_id: str) -> None:
+async def complete_lite_analyze_failure(
+    request_id: str,
+    exc: Optional[BaseException] = None,
+) -> None:
     async with _lock:
         global _global_busy, _active_request_id
         _global_busy = False
         _active_request_id = None
-        logger.warning("[lite_singleflight] failed request_id=%s (not cached; retry allowed)", request_id)
+    if exc is not None:
+        logger.error(
+            "[lite_singleflight] failed request_id=%s (not cached; retry allowed)",
+            request_id,
+            exc_info=exc,
+        )
+    else:
+        logger.warning(
+            "[lite_singleflight] failed request_id=%s (not cached; retry allowed)",
+            request_id,
+        )
