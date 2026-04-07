@@ -1,0 +1,47 @@
+# Independent Lite worker: stellar-ai-lite (main_lite:app).
+# Uses the same Modal API token secrets as deploy-modal.yml.
+name: Deploy Lite to Modal
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-modal-lite
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    name: Deploy stellar-ai-lite to Modal
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Modal CLI
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install modal
+
+      - name: Deploy Lite app to Modal
+        env:
+          MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
+          MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
+        run: |
+          export STELLAR_GIT_SHA="${{ github.sha }}"
+          export STELLAR_GIT_BRANCH="${{ github.ref_name }}"
+          export STELLAR_BUILD_TIME="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          echo "[deploy-modal-lite] STELLAR_GIT_SHA=$STELLAR_GIT_SHA STELLAR_GIT_BRANCH=$STELLAR_GIT_BRANCH"
+          python -m modal deploy modal_app_lite.py
