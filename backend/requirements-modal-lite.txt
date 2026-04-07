@@ -1,5 +1,5 @@
-# Modal **Lite worker** image only: minimal deps for FastAPI + Lite analyze path (cv2/mediapipe).
-# No torch / mmaction2 / tensorflow / deeplabcut / ultralytics / swingnet bake — avoids startup RSS OOM.
+# Lite Modal image only. No mmaction2, TensorFlow, DeepLabCut, SwingNet/YOLO bake, or ultralytics.
+# Heavy CV/pose stacks load on first /analyze request, not at FastAPI import (see modal_app_lite.py).
 fastapi==0.115.6
 uvicorn[standard]==0.34.0
 python-multipart==0.0.20
@@ -10,3 +10,5 @@ numpy<2
 Pillow==11.1.0
 opencv-python-headless==4.10.0.84
 mediapipe==0.10.21
+# Gemini client for /analyze/lite (imported lazily inside gemini_service; not loaded for /health).
+google-generativeai==0.8.4

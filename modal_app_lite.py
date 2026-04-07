@@ -3,10 +3,9 @@ Stellar AI — **Lite-only** Modal worker.
 
 Deploy: ``modal deploy modal_app_lite.py``
 
-Uses a **dedicated slim image** (``lite_image`` + ``backend/requirements-modal-lite.txt``): no MMAction2,
-TensorFlow, DeepLabCut, SwingNet bake, or YOLO bake — avoids cold-start OOM / SIGKILL from heavy native
-imports in the same process as ASGI startup.
+Resources: cpu=1, memory=4096 MiB, timeout=900s. Default Modal scaling: scale to zero when idle (cold start on next request; no keep_warm).
 
+Uses **lite_image** (``backend/requirements-modal-lite.txt`` + CPU torch for SwingNet), not ``modal_app.image``.
 ASGI: ``main_lite:app`` — no Plus / Pro v3 / stellar-pro routers.
 
 Logs: ``modal app logs stellar-ai-lite --follow``
@@ -21,13 +20,9 @@ from pathlib import Path
 
 import modal
 
-# ---------------------------------------------------------------------------
-# Build metadata (duplicated from modal_app.py so we never ``import modal_app`` here — that would
-# construct the full Pro/Plus image graph on every ``modal deploy modal_app_lite.py``).
-# ---------------------------------------------------------------------------
 
-
-def _modal_build_metadata() -> dict[str, str]:
+def _lite_modal_build_metadata() -> dict[str, str]:
+    """Values captured when `modal deploy` runs (local machine or CI)."""
     root = Path(__file__).resolve().parent
 
     def from_env(key: str) -> str | None:
@@ -65,48 +60,22 @@ def _modal_build_metadata() -> dict[str, str]:
     }
 
 
-_MODAL_BUILD = _modal_build_metadata()
+_MODAL_BUILD = _lite_modal_build_metadata()
 _STELLAR_SHA_FULL = str(_MODAL_BUILD.get("STELLAR_GIT_SHA") or "unknown")
 _STELLAR_SHA_SHORT = (
     _STELLAR_SHA_FULL[:7] if len(_STELLAR_SHA_FULL) >= 7 else _STELLAR_SHA_FULL
 )
 
-# ---------------------------------------------------------------------------
-# Lite image — system libs for OpenCV headless + MediaPipe; ffmpeg for Lite pipeline preprocess.
-# ---------------------------------------------------------------------------
-lite_image = (
-    modal.Image.debian_slim(python_version="3.11")
-    .apt_install(
-        "libgl1",
-        "libglib2.0-0",
-        "libsm6",
-        "libxext6",
-        "libxrender1",
-        "libgomp1",
-        "curl",
-        "ffmpeg",
-    )
-    .run_commands(
-        "ffmpeg -hide_banner -filters 2>&1 | grep -qw minterpolate || "
-        '(echo "[modal-lite][build] FATAL: apt ffmpeg lacks minterpolate" && exit 1)'
-    )
-    .pip_install_from_requirements("backend/requirements-modal-lite.txt")
-    .env({**_MODAL_BUILD})
-    .run_commands(
-        f'echo "[modal-lite][build] STELLAR_COMMIT_SHORT={_STELLAR_SHA_SHORT} '
-        f'STELLAR_COMMIT_FULL={_STELLAR_SHA_FULL} '
-        f'BRANCH={_MODAL_BUILD.get("STELLAR_GIT_BRANCH")} '
-        f'BUILD_TIME={_MODAL_BUILD.get("STELLAR_BUILD_TIME")}"'
-    )
-    .add_local_dir("backend", remote_path="/backend")
-)
+MODAL_LITE_FUNCTION_TIMEOUT_S = 900
+# Slim image + deferred heavy imports; 4G default. No keep_warm — idle workers scale to zero (cold start).
+MODAL_LITE_MEMORY_MIB = 4096
 
-# Same volume name as main app (YOLO / motionbert overrides on Lite if present).
+# Persistent model storage: same volume name as main app (YOLO / MotionBERT / SwingNet on /models).
 stellar_models_volume = modal.Volume.from_name("stellar-models", create_if_missing=True)
 
 
 def _wire_stellar_model_paths() -> None:
-    """Map volume + baked weights to STELLAR_* env (Lite image has no baked YOLO path — volume only)."""
+    """Map volume + baked weights to STELLAR_* env (lite: no YOLO/SwingNet bake in image — volume may still supply)."""
     baked_yolo = Path("/opt/stellar-weights/yolo11n.pt")
     vol_yolo = Path("/models/yolo11n.pt")
     if vol_yolo.is_file():
@@ -129,9 +98,47 @@ def _wire_stellar_model_paths() -> None:
             return
 
 
-MODAL_LITE_FUNCTION_TIMEOUT_S = 900
-# Raised temporarily to validate stability after removing heavy image + eager native preloads.
-MODAL_LITE_MEMORY_MIB = 10240
+lite_image = (
+    modal.Image.debian_slim(python_version="3.11")
+    .apt_install(
+        "libgl1",
+        "libglib2.0-0",
+        "libsm6",
+        "libxext6",
+        "libxrender1",
+        "libgomp1",
+        "curl",
+        "ffmpeg",
+    )
+    .run_commands(
+        "ffmpeg -hide_banner -filters 2>&1 | grep -qw minterpolate || "
+        '(echo "[modal-lite][build] FATAL: apt ffmpeg lacks minterpolate" && exit 1)'
+    )
+    .pip_install_from_requirements("backend/requirements-modal-lite.txt")
+    # SwingNet (lite keyframes) needs torch; keep it out of requirements-modal-lite.txt per ops split.
+    .run_commands(
+        "python -m pip install --no-cache-dir 'torch==2.1.0+cpu' "
+        "--index-url https://download.pytorch.org/whl/cpu"
+    )
+    .run_commands(
+        "python -m pip install --no-cache-dir --no-deps 'numpy==1.26.4' --force-reinstall"
+    )
+    .env(
+        {
+            **_MODAL_BUILD,
+            "MEDIAPIPE_DISABLE_GPU": "1",
+            "GLOG_minloglevel": "3",
+        }
+    )
+    .run_commands(
+        f'echo "[modal-lite][build] STELLAR_COMMIT_SHORT={_STELLAR_SHA_SHORT} '
+        f"STELLAR_COMMIT_FULL={_STELLAR_SHA_FULL} "
+        f'BRANCH={_MODAL_BUILD.get("STELLAR_GIT_BRANCH")} '
+        f'BUILD_TIME={_MODAL_BUILD.get("STELLAR_BUILD_TIME")} '
+        f'memory_mib={MODAL_LITE_MEMORY_MIB}"'
+    )
+    .add_local_dir("backend", remote_path="/backend")
+)
 
 app = modal.App(
     name="stellar-ai-lite",
@@ -145,18 +152,22 @@ app = modal.App(
     memory=MODAL_LITE_MEMORY_MIB,
     timeout=MODAL_LITE_FUNCTION_TIMEOUT_S,
     volumes={"/models": stellar_models_volume},
+    # Default Modal behavior: no keep_warm / min_containers — cold start after idle scale-down.
 )
 @modal.asgi_app()
 def fastapi_app_lite():
     os.environ["STELLAR_RUNTIME"] = "modal"
     os.environ["STELLAR_MODAL_LITE_WORKER"] = "1"
+    # Intentionally do **not** set STELLAR_MODAL_PRO_V3_ONLY or Pro v3 ffmpeg overrides — lite worker is separate.
 
     _wire_stellar_model_paths()
+    # Lite: do not enable MMAction2 or set SwingNet env here; checkpoint still resolves via
+    # services.golfdb_swingnet_paths (e.g. /models/swingnet_1800.pth.tar on the volume).
 
     _sha = os.environ.get("STELLAR_GIT_SHA", "unknown")
     print(
-        f"[modal-lite] asgi=main_lite:app timeout_s={MODAL_LITE_FUNCTION_TIMEOUT_S} "
-        f"cpu=1 memory={MODAL_LITE_MEMORY_MIB} git_sha={_sha}",
+        f"[modal-lite] boot asgi=main_lite:app timeout_s={MODAL_LITE_FUNCTION_TIMEOUT_S} "
+        f"cpu=1 memory_mib={MODAL_LITE_MEMORY_MIB} git_sha={_sha}",
         flush=True,
         file=sys.stderr,
     )
@@ -164,12 +175,12 @@ def fastapi_app_lite():
     if "/backend" not in sys.path:
         sys.path.insert(0, "/backend")
 
+    # Defer cv2 / mediapipe / torch to first request — avoids startup OOM and signal termination.
     from main_lite import app as _app  # noqa: PLC0415
 
     print(
-        "[modal-lite] startup completed: ASGI app ready (cv2/mediapipe load on first use, not at startup)",
+        "[modal-lite] startup completed main_lite imported (cv2/mediapipe not preloaded)",
         flush=True,
         file=sys.stderr,
     )
-
     return _app
