@@ -1,0 +1,12 @@
+# Modal **Lite worker** image only: minimal deps for FastAPI + Lite analyze path (cv2/mediapipe).
+# No torch / mmaction2 / tensorflow / deeplabcut / ultralytics / swingnet bake — avoids startup RSS OOM.
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+python-multipart==0.0.20
+pyjwt==2.10.1
+httpx==0.28.1
+python-dotenv==1.0.1
+numpy<2
+Pillow==11.1.0
+opencv-python-headless==4.10.0.84
+mediapipe==0.10.21
