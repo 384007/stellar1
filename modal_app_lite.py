@@ -3,7 +3,7 @@ Stellar AI — **Lite-only** Modal worker.
 
 Deploy: ``modal deploy modal_app_lite.py``
 
-Resources: cpu=1, memory=4096 MiB, timeout=900s (vs main ``modal_app.py``: 2 CPU / 6144 / 3600).
+Resources: cpu=1, memory=6144 MiB, timeout=900s (vs main ``modal_app.py``: 2 CPU / 6144 / 3600).
 
 Uses the **same container image** as ``modal_app`` (import ``image`` + ``stellar_models_volume`` from there).
 ASGI: ``main_lite:app`` — no Plus / Pro v3 / stellar-pro routers.
@@ -26,6 +26,8 @@ from modal_app import (
 )
 
 MODAL_LITE_FUNCTION_TIMEOUT_S = 900
+# 4096 MiB 易在冷启动 / SwingNet+ffmpeg+MP 管线中 OOM（signal terminate）；与主 FastAPI 内存档对齐。
+MODAL_LITE_MEMORY_MIB = 6144
 
 app = modal.App(
     name="stellar-ai-lite",
@@ -36,7 +38,7 @@ app = modal.App(
 
 @app.function(
     cpu=1,
-    memory=4096,
+    memory=MODAL_LITE_MEMORY_MIB,
     timeout=MODAL_LITE_FUNCTION_TIMEOUT_S,
     volumes={"/models": stellar_models_volume},
 )
@@ -53,7 +55,7 @@ def fastapi_app_lite():
     _sha = os.environ.get("STELLAR_GIT_SHA", "unknown")
     print(
         f"[modal-lite] asgi=main_lite:app timeout_s={MODAL_LITE_FUNCTION_TIMEOUT_S} "
-        f"cpu=1 memory=4096 git_sha={_sha}",
+        f"cpu=1 memory={MODAL_LITE_MEMORY_MIB} git_sha={_sha}",
         flush=True,
         file=sys.stderr,
     )
