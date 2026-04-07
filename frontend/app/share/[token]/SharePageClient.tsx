@@ -7,10 +7,16 @@ import Skeleton3DViewer from "@/components/Skeleton3DViewer";
 import ProComparison from "@/components/ProComparison";
 import SimAnimation from "@/components/SimAnimation";
 import PlusResultView, { type PlusAnalysisResult } from "@/components/PlusResultView";
+import Prov3PlusVideoRenderer from "@/components/prov3/Prov3PlusVideoRenderer";
 import VideoAnalysisOverlay from "@/components/VideoAnalysisOverlay";
 import { coachingTipsFromParsed } from "@/lib/video-analysis-coaching";
 import { normalizePoseFramesForOverlay } from "@/lib/analysis-pose-storage";
 import { normalizeProv3MediaInRaw } from "@/lib/prov3-media-url";
+import {
+  isProv3StrictMediaPolicyResult,
+  prov3DisplayKeyframeRows,
+  type Prov3ResultLike,
+} from "@/lib/prov3-keyframe-media";
 
 interface SharedRecord {
   id: string;
@@ -40,9 +46,18 @@ interface ParsedResult {
     label_zh: string;
     timestamp: number;
     image_base64?: string;
+    keyframe_image_url?: string;
     visual_diff_from_prev?: number;
     phase_validation_passed?: boolean;
   }>;
+  preview_keyframes?: ParsedResult["keyframes"];
+  official_phase_keyframes?: ParsedResult["keyframes"];
+  analysis_id?: string;
+  final_status?: string;
+  analysis_trust?: string;
+  trust_level?: string;
+  low_trust_preview_only?: boolean;
+  video_meta?: { source_frame_count?: number };
   skeleton_data?: {
     frames: Array<Record<string, unknown>>;
     total_frames: number;
@@ -95,6 +110,8 @@ interface ParsedResult {
   keyframe_warning?: string;
   result_partial?: boolean;
   analysis_mode?: string;
+  /** e.g. ``prov3`` — Stellar Pro v3 product pipeline */
+  pipeline?: string;
   phase_pipeline_applied?: boolean;
   phase_evaluations_reliable?: boolean;
   phase_evaluations_warning?: string | null;
@@ -366,6 +383,10 @@ export default function SharePageClient({ token }: { token: string }) {
   }
 
   const parsed = parseResult(record.result_json);
+  const shareIsProv3Product = isProv3StrictMediaPolicyResult(parsed as Prov3ResultLike);
+  const shareStripKeyframes = shareIsProv3Product
+    ? prov3DisplayKeyframeRows(parsed as Prov3ResultLike)
+    : (parsed.keyframes ?? []);
   const shareOverlayPoses = normalizePoseFramesForOverlay(parsed.pose_frames);
   const curveFrames = buildCurveFrames(parsed, record.total_score);
 
@@ -600,17 +621,19 @@ export default function SharePageClient({ token }: { token: string }) {
         {videoSrc && (
           shareOverlayPoses.length > 0 ? (
             <div className="mb-4">
-              <VideoAnalysisOverlay
-                videoSrc={videoSrc}
-                poseFrames={shareOverlayPoses}
-                lang={lang}
-                coachingTips={coachingTipsFromParsed(parsed, record.type)}
-                prediction={parsed.prediction as { predicted_distance?: number; shot_shape?: string; shot_shape_zh?: string; club_head_speed?: number; club_type?: string; hand?: "R" | "L" | "UNKNOWN" } | undefined}
-                sourceFrameCount={
-                  (parsed as { video_meta?: { source_frame_count?: number } }).video_meta
-                    ?.source_frame_count
-                }
-              />
+              {shareIsProv3Product ? (
+                <Prov3PlusVideoRenderer videoSrc={videoSrc} result={parsed} lang={lang} />
+              ) : (
+                <VideoAnalysisOverlay
+                  videoSrc={videoSrc}
+                  poseFrames={shareOverlayPoses}
+                  lang={lang}
+                  coachingTips={coachingTipsFromParsed(parsed, record.type)}
+                  prediction={parsed.prediction as { predicted_distance?: number; shot_shape?: string; shot_shape_zh?: string; club_head_speed?: number; club_type?: string; hand?: "R" | "L" | "UNKNOWN" } | undefined}
+                  sourceFrameCount={parsed.video_meta?.source_frame_count}
+                  skeletonStyle={record.type === "pro" || record.type === "plus" ? "plus" : "legacy"}
+                />
+              )}
             </div>
           ) : (
             <div className="overflow-hidden rounded-xl border border-white/10 bg-black/30">
@@ -631,8 +654,13 @@ export default function SharePageClient({ token }: { token: string }) {
         ) : (
           <>
             {/* Keyframe strip */}
-            {parsed.keyframes && parsed.keyframes.length > 0 && (
-              <KeyframeStrip keyframes={parsed.keyframes} lang={lang} />
+            {shareStripKeyframes.length > 0 && (
+              <KeyframeStrip
+                keyframes={shareStripKeyframes as NonNullable<ParsedResult["keyframes"]>}
+                lang={lang}
+                urlOnlyTimeline={shareIsProv3Product}
+                plusStyleKeyframeSkeleton={shareIsProv3Product}
+              />
             )}
 
             {/* Skeleton HUD — show impact frame (most informative) or mid-point */}
@@ -665,7 +693,11 @@ export default function SharePageClient({ token }: { token: string }) {
             )}
 
             {/* Training curve */}
-            <ProTrainingCurve frames={curveFrames} keyframes={parsed.keyframes} lang={lang} />
+            <ProTrainingCurve
+              frames={curveFrames}
+              keyframes={shareStripKeyframes as ParsedResult["keyframes"]}
+              lang={lang}
+            />
 
             {/* Summary */}
             {(parsed.summary_zh || parsed.summary) && (

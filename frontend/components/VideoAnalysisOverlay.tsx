@@ -813,7 +813,7 @@ function drawOverlay(
   cW: number,
   cH: number,
   pose: OverlayPoseFrame | null,
-  flags: { skeleton: boolean; angles: boolean; phase: boolean },
+  flags: { skeleton: boolean; angles: boolean; phase: boolean; guideLines?: boolean },
   lang: "en" | "zh",
   opts: DrawOpts,
 ) {
@@ -915,6 +915,7 @@ function drawOverlay(
 
   /* ─── Skeleton + guides: Plus parity (meteor arcs) or legacy (time-based swing trail) ─── */
   const skelPlus = opts.skeletonStyle === "plus";
+  const showPlusGuides = flags.guideLines ?? flags.skeleton;
   if (hasPose && skelPlus) {
     const sPlus = plusSkeletonScale(renderW, renderH);
     drawPlusStyleSkeletonOverlay(
@@ -925,7 +926,7 @@ function drawOverlay(
       offsetY,
       renderH,
       flags.skeleton,
-      flags.skeleton,
+      showPlusGuides,
     );
   } else if (hasPose && flags.skeleton) {
     const lineMain = Math.max(1, 2.5 * s);
@@ -1261,13 +1262,21 @@ export default function VideoAnalysisOverlay({
   const [showSkeleton, setShowSkeleton] = useState(true);
   const [showAngles, setShowAngles] = useState(true);
   const [showPhase, setShowPhase] = useState(true);
+  /** Plus style only: plumb line + meteor arcs (independent from bone overlay when skeletonStyle is plus). */
+  const [showPlusGuideLines, setShowPlusGuideLines] = useState(true);
 
-  const flagsRef = useRef({ skeleton: true, angles: true, phase: true });
+  const flagsRef = useRef({ skeleton: true, angles: true, phase: true, guideLines: true });
   flagsRef.current = {
     skeleton: showSkeleton,
     angles: showAngles,
     phase: showPhase,
+    guideLines: skeletonStyle === "plus" ? showPlusGuideLines : showSkeleton,
   };
+
+  useEffect(() => {
+    forceRedrawRef.current = true;
+    setUiTick((n) => n + 1);
+  }, [showSkeleton, showAngles, showPhase, showPlusGuideLines]);
 
   const poseRef = useRef(poseFrames);
   poseRef.current = poseFrames;
@@ -1874,6 +1883,15 @@ export default function VideoAnalysisOverlay({
           >
             {lang === "zh" ? "骨架" : "Skel"}
           </button>
+          {skeletonStyle === "plus" && poseFrames.length > 0 ? (
+            <button
+              type="button"
+              onClick={() => setShowPlusGuideLines((v) => !v)}
+              className={`rounded-md px-1.5 py-0.5 text-[9px] font-medium transition ${showPlusGuideLines ? "bg-cyan-500/15 text-cyan-200/55 border border-cyan-500/22" : "bg-white/[0.04] text-white/25 border border-transparent"}`}
+            >
+              {lang === "zh" ? "辅助线" : "Guides"}
+            </button>
+          ) : null}
           <button
             type="button"
             disabled={poseFrames.length === 0}

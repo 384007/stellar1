@@ -1,8 +1,14 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { keyframeImageDataUrl } from "@/lib/image-base64";
 import { resolveProv3ProductMediaUrl } from "@/lib/prov3-media-url";
+import {
+  drawPlusStyleSkeletonOverlay,
+  letterboxPoseInContainer,
+  plusSkeletonScale,
+  type PlusSkelPose,
+} from "@/lib/plus-skeleton-canvas-draw";
 
 export interface PoseSnapshotJoint {
   name: string;
@@ -29,6 +35,88 @@ interface Keyframe {
   skeleton_overlay?: string;
 }
 
+function snapshotToPlusSkelPose(snap: PoseSnapshot): PlusSkelPose {
+  return {
+    joints: snap.joints.map((j) => ({
+      name: j.name,
+      normalized: { x: j.nx, y: j.ny },
+      visibility: j.v,
+    })),
+    connections: snap.connections || [],
+  };
+}
+
+function drawPlusKeyframeSkeleton(
+  ctx: CanvasRenderingContext2D,
+  cW: number,
+  cH: number,
+  pose: PlusSkelPose,
+  showSkeleton: boolean,
+  showGuideLines: boolean,
+) {
+  ctx.clearRect(0, 0, cW, cH);
+  if (!pose?.joints?.length) return;
+  const { offsetX, offsetY, renderW, renderH } = letterboxPoseInContainer(
+    100,
+    100,
+    cW,
+    cH,
+  );
+  const px = (nx: number, ny: number): [number, number] => [
+    offsetX + nx * renderW,
+    offsetY + ny * renderH,
+  ];
+  const s = plusSkeletonScale(renderW, renderH);
+  drawPlusStyleSkeletonOverlay(
+    ctx,
+    pose,
+    px,
+    s,
+    offsetY,
+    renderH,
+    showSkeleton,
+    showGuideLines,
+  );
+}
+
+function KeyframePlusSkeletonCanvas({
+  snap,
+  showSkeleton,
+}: {
+  snap: PoseSnapshot;
+  showSkeleton: boolean;
+}) {
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const parent = canvas.parentElement as HTMLElement;
+    if (!parent) return;
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    const cW = parent.offsetWidth;
+    const cH = parent.offsetHeight;
+    if (!cW || !cH) return;
+    canvas.width = cW * dpr;
+    canvas.height = cH * dpr;
+    canvas.style.width = `${cW}px`;
+    canvas.style.height = `${cH}px`;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    const pose = snapshotToPlusSkelPose(snap);
+    drawPlusKeyframeSkeleton(ctx, cW, cH, pose, showSkeleton, showSkeleton);
+  }, [snap, showSkeleton]);
+
+  return (
+    <canvas
+      ref={canvasRef}
+      className="pointer-events-none absolute inset-0 h-full w-full"
+      style={{ zIndex: 5 }}
+    />
+  );
+}
+
 function KeyframeStripMedia({
   kf,
   uniqueId,
@@ -38,6 +126,7 @@ function KeyframeStripMedia({
   showSkeleton,
   proMode,
   urlOnlyTimeline,
+  plusStyleKeyframeSkeleton,
 }: {
   kf: Keyframe;
   uniqueId: string;
@@ -48,6 +137,8 @@ function KeyframeStripMedia({
   proMode: boolean;
   /** Pro v3 history: only show timeline JPG URLs — no base64 fallback */
   urlOnlyTimeline?: boolean;
+  /** Pro v3: draw Plus gradient / meteor skeleton on keyframe thumbs (not legacy Pro SVG). */
+  plusStyleKeyframeSkeleton?: boolean;
 }) {
   const [imgBroken, setImgBroken] = useState(false);
   const showSkel = showSkeleton && !!kf.pose_snapshot?.joints?.length;
@@ -70,7 +161,11 @@ function KeyframeStripMedia({
           onError={() => setImgBroken(true)}
         />
         {showSkel ? (
-          <KeyframeSkeletonSvg snap={kf.pose_snapshot!} proMode={proMode} uniqueId={uniqueId} />
+          plusStyleKeyframeSkeleton ? (
+            <KeyframePlusSkeletonCanvas snap={kf.pose_snapshot!} showSkeleton={showSkeleton} />
+          ) : (
+            <KeyframeSkeletonSvg snap={kf.pose_snapshot!} proMode={proMode} uniqueId={uniqueId} />
+          )
         ) : showSkeleton && !enlarged ? (
           <div className="pointer-events-none absolute inset-0 bg-gradient-to-t from-brand-purple/15 via-transparent to-transparent" />
         ) : null}
@@ -80,10 +175,14 @@ function KeyframeStripMedia({
   if (showSkel && !urlOnlyTimeline) {
     return (
       <div
-        className={`relative flex items-center justify-center bg-black/50 ${className ?? ""}`}
+        className={`relative flex items-center justify-center overflow-hidden bg-black/50 ${className ?? ""}`}
         style={{ minHeight: enlarged ? "65vh" : 112 }}
       >
-        <KeyframeSkeletonSvg snap={kf.pose_snapshot!} proMode={proMode} uniqueId={uniqueId} />
+        {plusStyleKeyframeSkeleton ? (
+          <KeyframePlusSkeletonCanvas snap={kf.pose_snapshot!} showSkeleton={showSkeleton} />
+        ) : (
+          <KeyframeSkeletonSvg snap={kf.pose_snapshot!} proMode={proMode} uniqueId={uniqueId} />
+        )}
         <span className="pointer-events-none absolute bottom-2 left-2 right-2 text-center text-[9px] text-white/35">
           {lang === "en" ? "Pose only" : "仅骨架"}
         </span>
@@ -223,6 +322,8 @@ interface KeyframeStripProps {
   mode?: "default" | "pro";
   /** Pro v3: URLs only, no base64 thumbnails */
   urlOnlyTimeline?: boolean;
+  /** Pro v3 pipeline: Plus-style gradient skeleton on thumbs (same kernel as video overlay). */
+  plusStyleKeyframeSkeleton?: boolean;
 }
 
 export default function KeyframeStrip({
@@ -230,6 +331,7 @@ export default function KeyframeStrip({
   lang,
   mode = "default",
   urlOnlyTimeline = false,
+  plusStyleKeyframeSkeleton = false,
 }: KeyframeStripProps) {
   const [selectedIdx, setSelectedIdx] = useState<number | null>(null);
   const [showSkeleton, setShowSkeleton] = useState(true);
@@ -254,7 +356,13 @@ export default function KeyframeStrip({
             {lang === "en" ? "Skeleton" : "骨架"}
           </button>
           <span className="text-[9px] text-white/25">
-            {lang === "en" ? "Cyan upper · Green lower · Gold head" : "青上身 · 绿下身 · 金头部"}
+            {plusStyleKeyframeSkeleton
+              ? lang === "en"
+                ? "Plus gradient skeleton · plumb · swing arcs"
+                : "Plus 渐变骨架 · 铅垂线 · 挥杆弧"
+              : lang === "en"
+                ? "Cyan upper · Green lower · Gold head"
+                : "青上身 · 绿下身 · 金头部"}
           </span>
           <span className="text-[10px] text-white/25">
             {keyframes.length} {lang === "en" ? "frames" : "帧"}
@@ -274,6 +382,7 @@ export default function KeyframeStrip({
             showSkeleton={showSkeleton}
             proMode={proMode}
             urlOnlyTimeline={urlOnlyTimeline}
+            plusStyleKeyframeSkeleton={plusStyleKeyframeSkeleton}
           />
           <div className="absolute bottom-3 left-3 rounded-full bg-black/60 backdrop-blur-sm px-3 py-1">
             <span className="text-xs font-semibold text-brand-gold/90">
@@ -307,6 +416,7 @@ export default function KeyframeStrip({
                 showSkeleton={showSkeleton}
                 proMode={proMode}
                 urlOnlyTimeline={urlOnlyTimeline}
+                plusStyleKeyframeSkeleton={plusStyleKeyframeSkeleton}
               />
 
               <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/80 to-transparent p-2">

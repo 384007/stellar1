@@ -16,6 +16,7 @@ import { getAnalysisVideoBlob } from "@/lib/video-store";
 import { isPlusScoreWithheld } from "@/lib/safe-analysis-score";
 import { keyframeImageDataUrl } from "@/lib/image-base64";
 import KeyframeProv3InteractiveViewer from "@/components/KeyframeProv3InteractiveViewer";
+import Prov3MotionEvidenceReport from "@/components/prov3/Prov3MotionEvidenceReport";
 import {
   isProv3StrictMediaPolicyResult,
   useProv3KeyframeDisplayGate,
@@ -177,6 +178,12 @@ export interface PoseFrame {
   frame_index: number;
   timestamp: number;
   image_base64?: string;
+  phase_data?: {
+    phase_id?: string;
+    phase_zh?: string;
+    phase_en?: string;
+    progress_pct?: number;
+  };
 }
 
 export type PlusResultTabKey = "diagnosis" | "fullswing" | "compare" | "video";
@@ -190,6 +197,8 @@ interface Props {
   coachingMode?: "plus" | "pro";
   /** e.g. Stellar Pro opens on video so VideoAnalysisOverlay (trajectory / yardage HUD) shows first */
   initialActiveTab?: PlusResultTabKey;
+  /** When set (e.g. /pro prov3), replaces the Video tab overlay with this renderer (plus skeleton + overlay kernel). */
+  renderProv3VideoOverlay?: (ctx: { videoSrc: string }) => React.ReactNode;
 }
 type TabKey = PlusResultTabKey;
 
@@ -1643,7 +1652,15 @@ function isProv3KeyframeViewer(result: PlusAnalysisResult): boolean {
   return false;
 }
 
-export default function PlusResultView({ result, lang, externalVideoSrc, backendUrl, coachingMode, initialActiveTab }: Props) {
+export default function PlusResultView({
+  result,
+  lang,
+  externalVideoSrc,
+  backendUrl,
+  coachingMode,
+  initialActiveTab,
+  renderProv3VideoOverlay,
+}: Props) {
   const overlayCoachingMode = coachingMode ?? (result.type === "pro" ? "pro" : "plus");
   const prov3Strict = isProv3StrictMediaPolicyResult(result);
   const prov3KfGate = useProv3KeyframeDisplayGate(result);
@@ -1917,7 +1934,7 @@ export default function PlusResultView({ result, lang, externalVideoSrc, backend
         "Use the diagnosis and summary above—change one swing priority per practice.";
 
   const getPoseForKf = useCallback((kfIdx: number): PoseFrame | null => {
-    const kf = lowTrustPreviewOnly ? null : officialKeyframes?.[kfIdx];
+    const kf = displayKeyframes[kfIdx];
     if (!kf) return null;
 
     // 0. Prefer pose_snapshot embedded in the keyframe (guaranteed same moment as JPEG)
@@ -1945,7 +1962,7 @@ export default function PlusResultView({ result, lang, externalVideoSrc, backend
     }
 
     return poses[Math.min(kfIdx, poses.length - 1)];
-  }, [result]);
+  }, [result, displayKeyframes]);
 
   return (
     <div className="space-y-4 animate-fade-in pb-8">
@@ -2317,15 +2334,19 @@ export default function PlusResultView({ result, lang, externalVideoSrc, backend
             </button>
           ) : null}
           {videoSrc ? (
-            <VideoAnalysisOverlay
-              videoSrc={videoSrc}
-              poseFrames={normalizePoseFramesForOverlay(result.pose_frames)}
-              lang={lang}
-              coachingTips={coachingTipsFromParsed(result, overlayCoachingMode)}
-              prediction={result.prediction as { predicted_distance?: number; shot_shape?: string; shot_shape_zh?: string; club_head_speed?: number; club_type?: string; hand?: "R" | "L" | "UNKNOWN" } | undefined}
-              sourceFrameCount={result.video_meta?.source_frame_count}
-              skeletonStyle="plus"
-            />
+            renderProv3VideoOverlay ? (
+              renderProv3VideoOverlay({ videoSrc })
+            ) : (
+              <VideoAnalysisOverlay
+                videoSrc={videoSrc}
+                poseFrames={normalizePoseFramesForOverlay(result.pose_frames)}
+                lang={lang}
+                coachingTips={coachingTipsFromParsed(result, overlayCoachingMode)}
+                prediction={result.prediction as { predicted_distance?: number; shot_shape?: string; shot_shape_zh?: string; club_head_speed?: number; club_type?: string; hand?: "R" | "L" | "UNKNOWN" } | undefined}
+                sourceFrameCount={result.video_meta?.source_frame_count}
+                skeletonStyle="plus"
+              />
+            )
           ) : videoIdbExhausted ? (
             <div className="glass-card p-6 text-center">
               <p className="text-xs text-white/50 leading-relaxed">
@@ -2386,6 +2407,8 @@ export default function PlusResultView({ result, lang, externalVideoSrc, backend
               )}
             </div>
           )}
+
+          <Prov3MotionEvidenceReport result={result} lang={lang} />
 
           {/* Primary Diagnosis */}
           <div className="glass-card overflow-hidden">

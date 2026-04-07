@@ -9,6 +9,7 @@ import ProComparison from "@/components/ProComparison";
 import SimAnimation from "@/components/SimAnimation";
 import PlusResultView, { type PlusAnalysisResult } from "@/components/PlusResultView";
 import VideoAnalysisOverlay from "@/components/VideoAnalysisOverlay";
+import Prov3PlusVideoRenderer from "@/components/prov3/Prov3PlusVideoRenderer";
 import { coachingTipsFromParsed } from "@/lib/video-analysis-coaching";
 import {
   getAnalysisVideoBlob,
@@ -43,6 +44,7 @@ import {
 } from "@/lib/stellar-pro-result";
 import {
   isProv3StrictMediaPolicyResult,
+  prov3DisplayKeyframeRows,
   prov3HistoryKeyframesIncomplete,
   prov3HistoryMergePayloadScore,
   type Prov3ResultLike,
@@ -1603,6 +1605,10 @@ export default function HistoryPage() {
                         !detailParsed &&
                         loadingDetail;
                       const parsed = detailParsed || listParsed;
+                      const historyLiteProv3 = isProv3StrictMediaPolicyResult(parsed as Prov3ResultLike);
+                      const liteStripKeyframes = historyLiteProv3
+                        ? prov3DisplayKeyframeRows(parsed as Prov3ResultLike)
+                        : (parsed.keyframes ?? []);
                       const overlayPoses = normalizePoseFramesForOverlay(parsed.pose_frames);
                       const curveFrames = buildCurveFrames(parsed, rec.total_score);
                       const isLoadingData = !recordVideos[rec.id] && videoLoading[rec.id] !== false
@@ -1657,7 +1663,48 @@ export default function HistoryPage() {
                           </div>
                         )}
 
-                        {recordVideos[rec.id] ? (
+                        {rec.type === "pro" ? (
+                          recordVideos[rec.id] ? (
+                            !detailParsed ? (
+                              <div className="mb-4 rounded-xl border border-white/10 bg-white/[0.02] p-4 text-xs text-white/40">
+                                {lang === "zh" ? "正在加载 prov3 视频渲染..." : "Loading prov3 video renderer..."}
+                              </div>
+                            ) : (
+                              <div className="mb-4">
+                                <Prov3PlusVideoRenderer
+                                  videoSrc={recordVideos[rec.id]}
+                                  result={detailParsed}
+                                  lang={lang}
+                                />
+                              </div>
+                            )
+                          ) : videoLoading[rec.id] !== false ? (
+                            <div className="mb-4 rounded-xl border border-white/10 bg-white/[0.02] p-4">
+                              <div className="flex items-center justify-center">
+                                <div className="h-5 w-5 animate-spin rounded-full border-2 border-white/20 border-t-white/60" />
+                                <span className="ml-2 text-xs text-white/35">
+                                  {lang === "zh"
+                                    ? `加载视频${(videoProgress[rec.id] ?? 0) > 0 ? ` ${videoProgress[rec.id]}%` : "..."}`
+                                    : `Loading video${(videoProgress[rec.id] ?? 0) > 0 ? ` ${videoProgress[rec.id]}%` : "..."}`}
+                                </span>
+                              </div>
+                              {(videoProgress[rec.id] ?? 0) > 0 && (
+                                <div className="mt-2 h-1.5 w-full overflow-hidden rounded-full bg-white/10">
+                                  <div
+                                    className="h-full rounded-full bg-violet-500/70 transition-all duration-300"
+                                    style={{ width: `${videoProgress[rec.id]}%` }}
+                                  />
+                                </div>
+                              )}
+                            </div>
+                          ) : (
+                            <div className="mb-4 rounded-xl border border-white/10 bg-white/[0.02] p-3 text-xs text-white/35">
+                              {lang === "zh"
+                                ? "该记录未找到原视频。新分析会自动保存视频用于回放。"
+                                : "Original video is not available for this record."}
+                            </div>
+                          )
+                        ) : recordVideos[rec.id] ? (
                           waitingSkeletonDetail ? (
                             <div className="mb-4 flex flex-col items-center justify-center rounded-xl border border-white/10 bg-black/40 py-12">
                               <div className="h-6 w-6 animate-spin rounded-full border-2 border-white/15 border-t-white/50" />
@@ -1765,7 +1812,7 @@ export default function HistoryPage() {
                               ))}
                             </div>
 
-                            {parsed.keyframes && parsed.keyframes.length > 0 && (
+                            {liteStripKeyframes.length > 0 && (
                               <div className="mb-4">
                                 {awaitingKeyframePayload ? (
                                   <div className="flex flex-col items-center justify-center rounded-xl border border-white/10 bg-black/25 py-10">
@@ -1776,9 +1823,10 @@ export default function HistoryPage() {
                                   </div>
                                 ) : (
                                   <KeyframeStrip
-                                    keyframes={parsed.keyframes}
+                                    keyframes={liteStripKeyframes as NonNullable<ParsedResult["keyframes"]>}
                                     lang={lang}
-                                    urlOnlyTimeline={parsed.pipeline === "prov3"}
+                                    urlOnlyTimeline={historyLiteProv3}
+                                    plusStyleKeyframeSkeleton={historyLiteProv3}
                                   />
                                 )}
                               </div>

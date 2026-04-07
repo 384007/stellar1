@@ -5,6 +5,9 @@ import { useRouter } from "next/navigation";
 import UploadZone from "@/components/UploadZone";
 import HUDOverlay from "@/components/HUDOverlay";
 import KeyframeStrip from "@/components/KeyframeStrip";
+import Prov3PlusVideoRenderer from "@/components/prov3/Prov3PlusVideoRenderer";
+import Prov3MotionEvidenceReport from "@/components/prov3/Prov3MotionEvidenceReport";
+import type { PlusAnalysisResult } from "@/components/PlusResultView";
 import SimAnimation from "@/components/SimAnimation";
 import ProComparison from "@/components/ProComparison";
 import Skeleton3DViewer from "@/components/Skeleton3DViewer";
@@ -17,7 +20,12 @@ import { isVideoFile, uploadVideoToGemini } from "@/lib/upload-video";
 import { stripResultForStorage } from "@/lib/strip-result";
 import { normalizedTotalScoreForStorage } from "@/lib/safe-analysis-score";
 import { patchLocalHistoryVideoR2Key } from "@/lib/history-sync-record";
-import { expandStellarProForUi } from "@/lib/stellar-pro-result";
+import { expandStellarProForUi, stellarProTrustIsLow } from "@/lib/stellar-pro-result";
+import {
+  isProv3StrictMediaPolicyResult,
+  prov3DisplayKeyframeRows,
+  type Prov3ResultLike,
+} from "@/lib/prov3-keyframe-media";
 import { resolveProv3ProductMediaUrl } from "@/lib/prov3-media-url";
 import { pruneLocalStellarHistoryRecords } from "@/lib/pro-history-retention";
 import {
@@ -66,6 +74,13 @@ interface AnalysisResult {
   preview_keyframes?: AnalysisResult["keyframes"];
   official_phase_keyframes?: AnalysisResult["keyframes"];
   pipeline?: string;
+  /** OpenCV / 时间线 scrubber 与 pose frame_index 对齐（与 ``Prov3PlusVideoRenderer`` 一致） */
+  video_meta?: { source_frame_count?: number; fps?: number; duration_s?: number };
+  /** 与 ``/pro`` PlusResultView / ``prov3DisplayKeyframeRows`` 对齐，用于低高信任选条 */
+  final_status?: string;
+  analysis_trust?: string;
+  trust_level?: string;
+  low_trust_preview_only?: boolean;
   analysis_video_url?: string;
   playback_video_url?: string;
   video_url?: string;
@@ -117,7 +132,14 @@ interface AnalysisResult {
   };
 }
 
+/**
+ * 与 ``PlusResultView`` / ``prov3DisplayKeyframeRows`` 一致：prov3 低信任只用 preview 条，
+ * 高信任优先 official_phase_keyframes，避免顶层 ``keyframes`` 与预览不同步。
+ */
 function keyframesForAnalyzeStrip(r: AnalysisResult): AnalysisResult["keyframes"] {
+  if (isProv3StrictMediaPolicyResult(r as Prov3ResultLike)) {
+    return prov3DisplayKeyframeRows(r as Prov3ResultLike) as AnalysisResult["keyframes"];
+  }
   if (Array.isArray(r.keyframes) && r.keyframes.length > 0) return r.keyframes;
   if (Array.isArray(r.preview_keyframes) && r.preview_keyframes.length > 0) return r.preview_keyframes;
   if (Array.isArray(r.official_phase_keyframes) && r.official_phase_keyframes.length > 0) {
@@ -166,6 +188,10 @@ export default function AnalyzePage() {
   );
   const proVideoTimelineUrl = useMemo(
     () => (result ? proTimelineVideoUrlForAnalyze(result) : null),
+    [result],
+  );
+  const analyzePageIsProv3Product = useMemo(
+    () => Boolean(result && isProv3StrictMediaPolicyResult(result as Prov3ResultLike)),
     [result],
   );
   const backendBaseRef = useRef<string>(process.env.NEXT_PUBLIC_BACKEND_URL || "https://stellar1-backend.onrender.com");
@@ -1623,6 +1649,22 @@ export default function AnalyzePage() {
               </p>
             </div>
 
+            {analysisMode === "pro" && isProv3StrictMediaPolicyResult(result as Prov3ResultLike) ? (
+              stellarProTrustIsLow(result) ? (
+                <div className="glass-card border border-amber-400/35 bg-amber-500/10 p-3 text-xs leading-relaxed text-amber-200">
+                  {lang === "zh"
+                    ? "低信任：关键帧未通过正式验证。下方条带为预览图，不作为正式相位关键帧；评分与建议仅供参考。"
+                    : "Low trust: keyframes are not formally validated. The strip below is preview only, not official phase keyframes; scores and tips are for reference."}
+                </div>
+              ) : (
+                <div className="glass-card border border-emerald-500/25 bg-emerald-500/[0.07] p-3 text-xs leading-relaxed text-emerald-100/90">
+                  {lang === "zh"
+                    ? "高信任：真 240 时间线关键帧与报告已通过验证，可与视频时间线对照使用。"
+                    : "High trust: true-240 timeline keyframes and report passed validation—use with the timeline video."}
+                </div>
+              )
+            ) : null}
+
             {analysisMode === "pro" && proVideoTimelineUrl ? (
               <div className="glass-card overflow-hidden p-0">
                 <div className="border-b border-white/10 px-4 py-2.5">
@@ -1635,13 +1677,23 @@ export default function AnalyzePage() {
                       : "True-240 H.264 timeline. If the original .mov will not play in-browser, use this."}
                   </p>
                 </div>
-                <video
-                  className="w-full max-h-[min(56vh,520px)] bg-black"
-                  controls
-                  playsInline
-                  preload="metadata"
-                  src={proVideoTimelineUrl}
-                />
+                {analyzePageIsProv3Product && (result.pose_frames?.length ?? 0) > 0 ? (
+                  <div className="w-full bg-black px-1 pb-2 pt-1">
+                    <Prov3PlusVideoRenderer
+                      videoSrc={proVideoTimelineUrl}
+                      result={result}
+                      lang={lang}
+                    />
+                  </div>
+                ) : (
+                  <video
+                    className="w-full max-h-[min(56vh,520px)] bg-black"
+                    controls
+                    playsInline
+                    preload="metadata"
+                    src={proVideoTimelineUrl}
+                  />
+                )}
               </div>
             ) : null}
 
@@ -1670,12 +1722,20 @@ export default function AnalyzePage() {
 
             {activeTab === "analysis" && (
               <>
+                {analyzePageIsProv3Product && result ? (
+                  <Prov3MotionEvidenceReport
+                    result={result as unknown as PlusAnalysisResult}
+                    lang={lang}
+                  />
+                ) : null}
+
                 {stripKeyframesForResult.length > 0 ? (
                   <KeyframeStrip
                     keyframes={stripKeyframesForResult}
                     lang={lang}
                     mode={analysisMode === "pro" ? "pro" : "default"}
-                    urlOnlyTimeline={analysisMode === "pro" || result.pipeline === "prov3"}
+                    urlOnlyTimeline={analysisMode === "pro" || analyzePageIsProv3Product}
+                    plusStyleKeyframeSkeleton={analyzePageIsProv3Product}
                   />
                 ) : null}
 
