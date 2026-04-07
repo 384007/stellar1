@@ -604,6 +604,8 @@ Analyze the angle data carefully. Consider:
 LITE_PROMPT_APPEND_PHASE_UNRELIABLE = """
 [phase_images_reliable=FALSE — Lite route]
 Strip images may be incomplete, monotonic-fallback, or failed semantic/order gates. Rely mainly on pose_data. **Forbidden:** Plus-style per-image phase-by-phase critique; do not pin faults to "image 4 = top" etc. Keep summaries global, not indexed by frame number.
+
+**Required:** You must still return the **full** JSON schema above with substantive content: non-zero scores where justified by pose_data, at least three issues and three suggestions in **both** EN and ZH, and full summary/summary_zh — same depth as a normal coaching report. Uncertainty affects how you describe image-to-phase alignment, not whether you analyze.
 """
 
 PRO_PROMPT = """You are an elite PGA-level golf coach with expertise in biomechanics and swing analysis. Provide a comprehensive professional analysis.

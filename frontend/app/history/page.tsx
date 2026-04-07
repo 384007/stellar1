@@ -40,16 +40,15 @@ import {
   expandStellarProForUi,
   normalizeProResultKeyframeArraysForTrust,
   proExpandedToPlusViewModel,
-  stellarProTrustIsLow,
 } from "@/lib/stellar-pro-result";
 import {
   isProv3StrictMediaPolicyResult,
-  prov3DisplayKeyframeRows,
   prov3HistoryKeyframesIncomplete,
   prov3HistoryMergePayloadScore,
   type Prov3ResultLike,
 } from "@/lib/prov3-keyframe-media";
 import { normalizeProv3MediaInRaw } from "@/lib/prov3-media-url";
+import { displayKeyframesForResult } from "@/lib/analysis-display-keyframes";
 
 function isFiniteAnalysisScore(v: unknown): v is number {
   return typeof v === "number" && Number.isFinite(v);
@@ -76,16 +75,8 @@ function plusKeyframesMissingImages(parsed: ParsedResult): boolean {
   if (isProv3StrictMediaPolicyResult(asV3)) {
     return prov3HistoryKeyframesIncomplete(asV3);
   }
-  const lowTrust = stellarProTrustIsLow(parsed);
-  const kfs = lowTrust
-    ? Array.isArray(parsed.preview_keyframes) && parsed.preview_keyframes.length > 0
-      ? parsed.preview_keyframes
-      : []
-    : Array.isArray(parsed.official_phase_keyframes) && parsed.official_phase_keyframes.length > 0
-      ? parsed.official_phase_keyframes
-      : Array.isArray(parsed.keyframes)
-        ? parsed.keyframes
-        : [];
+  /** 与即时分析页同一套选条顺序，避免 Lite / 非 prov3 在历史侧判空与 UI 不一致 */
+  const kfs = displayKeyframesForResult(asV3) as ParsedResult["keyframes"];
   if (!Array.isArray(kfs) || kfs.length === 0) return true;
   const withImg = kfs.filter((k) => {
     const b = (k as { image_base64?: string }).image_base64;
@@ -188,6 +179,7 @@ interface ParsedResult {
     club_group?: string;
     hand?: "R" | "L" | "UNKNOWN";
     hand_confidence?: number;
+    fused_speed?: number;
     baseline_distance?: number;
     technique_multiplier?: number;
     strike_multiplier?: number;
@@ -200,6 +192,15 @@ interface ParsedResult {
   screen_mode?: boolean;
   /** Pro v3 product (`POST /pro-v3/analyze`) */
   pipeline?: string;
+  /** Lite 等：与即时分析页一致 */
+  type?: string;
+  what_i_see?: string;
+  what_i_see_zh?: string;
+  analysis_reliability?: {
+    level?: string;
+    capped_confidence?: number;
+    reasons?: string[];
+  };
 }
 
 interface UserInfo {
@@ -1606,9 +1607,9 @@ export default function HistoryPage() {
                         loadingDetail;
                       const parsed = detailParsed || listParsed;
                       const historyLiteProv3 = isProv3StrictMediaPolicyResult(parsed as Prov3ResultLike);
-                      const liteStripKeyframes = historyLiteProv3
-                        ? prov3DisplayKeyframeRows(parsed as Prov3ResultLike)
-                        : (parsed.keyframes ?? []);
+                      const liteStripKeyframes = displayKeyframesForResult(
+                        parsed as Prov3ResultLike,
+                      ) as NonNullable<ParsedResult["keyframes"]>;
                       const overlayPoses = normalizePoseFramesForOverlay(parsed.pose_frames);
                       const curveFrames = buildCurveFrames(parsed, rec.total_score);
                       const isLoadingData = !recordVideos[rec.id] && videoLoading[rec.id] !== false
@@ -1836,6 +1837,78 @@ export default function HistoryPage() {
                               ))}
                             </div>
 
+                            {(parsed.what_i_see_zh || parsed.what_i_see) && (
+                              <div className="mb-4 rounded-xl border border-white/5 bg-black/20 p-3">
+                                <p className="mb-1 text-[10px] text-white/40">
+                                  {lang === "zh" ? "AI 看到的内容：" : "AI detected:"}
+                                </p>
+                                <p className="text-sm text-white/70">
+                                  {lang === "zh" ? parsed.what_i_see_zh : parsed.what_i_see}
+                                </p>
+                              </div>
+                            )}
+
+                            {parsed.analysis_reliability && typeof parsed.analysis_reliability === "object" && (
+                              <div className="mb-4 rounded-xl border border-brand-purple/20 bg-brand-purple/5 p-3">
+                                <h4 className="mb-2 text-xs font-semibold text-brand-purple/90">
+                                  {lang === "zh" ? "分析可信度" : "Analysis reliability"}
+                                </h4>
+                                <div className="space-y-1 text-[11px] text-white/55">
+                                  <p>
+                                    {lang === "zh" ? "等级" : "Level"}:{" "}
+                                    {parsed.analysis_reliability.level ?? "—"}
+                                    {typeof parsed.analysis_reliability.capped_confidence === "number" && (
+                                      <span className="ml-2">
+                                        · {lang === "zh" ? "置信上限" : "Cap"}:{" "}
+                                        {parsed.analysis_reliability.capped_confidence}
+                                      </span>
+                                    )}
+                                  </p>
+                                  {Array.isArray(parsed.analysis_reliability.reasons) &&
+                                    parsed.analysis_reliability.reasons.length > 0 && (
+                                      <ul className="list-disc pl-4 text-white/45">
+                                        {parsed.analysis_reliability.reasons.map((rx, i) => (
+                                          <li key={i}>{rx}</li>
+                                        ))}
+                                      </ul>
+                                    )}
+                                </div>
+                              </div>
+                            )}
+
+                            {parsed.prediction &&
+                              ((parsed.prediction.ball_speed ?? 0) > 0 ||
+                                (parsed.prediction.fused_speed ?? 0) > 0) && (
+                              <div className="mb-4 rounded-xl border border-white/5 bg-black/20 p-4">
+                                <h4 className="mb-3 text-sm font-semibold text-white">
+                                  {lang === "zh" ? "发球数据" : "Shot Data"}
+                                </h4>
+                                <div className="grid grid-cols-3 gap-2">
+                                  <div className="rounded-lg border border-white/5 bg-black/30 p-2 text-center">
+                                    <p className="text-[9px] text-white/40">{lang === "zh" ? "球速" : "Ball Speed"}</p>
+                                    <p className="mt-0.5 text-lg font-bold text-brand-gold">
+                                      {parsed.prediction.fused_speed || parsed.prediction.ball_speed}
+                                    </p>
+                                    <p className="text-[9px] text-white/30">mph</p>
+                                  </div>
+                                  <div className="rounded-lg border border-white/5 bg-black/30 p-2 text-center">
+                                    <p className="text-[9px] text-white/40">{lang === "zh" ? "杆头速度" : "Club Speed"}</p>
+                                    <p className="mt-0.5 text-lg font-bold text-white">
+                                      {parsed.prediction.club_head_speed ?? "—"}
+                                    </p>
+                                    <p className="text-[9px] text-white/30">mph</p>
+                                  </div>
+                                  <div className="rounded-lg border border-white/5 bg-black/30 p-2 text-center">
+                                    <p className="text-[9px] text-white/40">{lang === "zh" ? "预测距离" : "Est. Distance"}</p>
+                                    <p className="mt-0.5 text-lg font-bold text-white">
+                                      {parsed.prediction.predicted_distance ?? "—"}
+                                    </p>
+                                    <p className="text-[9px] text-white/30">{lang === "zh" ? "码" : "yards"}</p>
+                                  </div>
+                                </div>
+                              </div>
+                            )}
+
                             {liteStripKeyframes.length > 0 && (
                               <div className="mb-4">
                                 {awaitingKeyframePayload ? (
@@ -1888,7 +1961,7 @@ export default function HistoryPage() {
                               </div>
                             )}
 
-                            <ProTrainingCurve frames={curveFrames} keyframes={parsed.keyframes} lang={lang} />
+                            <ProTrainingCurve frames={curveFrames} keyframes={liteStripKeyframes} lang={lang} />
 
                             {/* Summary */}
                             {(parsed.summary_zh || parsed.summary) && (

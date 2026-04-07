@@ -22,11 +22,8 @@ import { stripResultForStorage } from "@/lib/strip-result";
 import { normalizedTotalScoreForStorage } from "@/lib/safe-analysis-score";
 import { patchLocalHistoryVideoR2Key } from "@/lib/history-sync-record";
 import { expandStellarProForUi, stellarProTrustIsLow } from "@/lib/stellar-pro-result";
-import {
-  isProv3StrictMediaPolicyResult,
-  prov3DisplayKeyframeRows,
-  type Prov3ResultLike,
-} from "@/lib/prov3-keyframe-media";
+import { displayKeyframesForResult } from "@/lib/analysis-display-keyframes";
+import { isProv3StrictMediaPolicyResult, type Prov3ResultLike } from "@/lib/prov3-keyframe-media";
 import { resolveProv3ProductMediaUrl } from "@/lib/prov3-media-url";
 import { pruneLocalStellarHistoryRecords } from "@/lib/pro-history-retention";
 import {
@@ -77,7 +74,7 @@ interface AnalysisResult {
   pipeline?: string;
   /** OpenCV / 时间线 scrubber 与 pose frame_index 对齐（与 ``Prov3PlusVideoRenderer`` 一致） */
   video_meta?: { source_frame_count?: number; fps?: number; duration_s?: number };
-  /** 与 ``/pro`` PlusResultView / ``prov3DisplayKeyframeRows`` 对齐，用于低高信任选条 */
+  /** 与 ``/pro`` PlusResultView / ``displayKeyframesForResult`` 对齐，用于低高信任选条 */
   final_status?: string;
   analysis_trust?: string;
   trust_level?: string;
@@ -133,22 +130,6 @@ interface AnalysisResult {
   };
 }
 
-/**
- * 与 ``PlusResultView`` / ``prov3DisplayKeyframeRows`` 一致：prov3 低信任只用 preview 条，
- * 高信任优先 official_phase_keyframes，避免顶层 ``keyframes`` 与预览不同步。
- */
-function keyframesForAnalyzeStrip(r: AnalysisResult): AnalysisResult["keyframes"] {
-  if (isProv3StrictMediaPolicyResult(r as Prov3ResultLike)) {
-    return prov3DisplayKeyframeRows(r as Prov3ResultLike) as AnalysisResult["keyframes"];
-  }
-  if (Array.isArray(r.keyframes) && r.keyframes.length > 0) return r.keyframes;
-  if (Array.isArray(r.preview_keyframes) && r.preview_keyframes.length > 0) return r.preview_keyframes;
-  if (Array.isArray(r.official_phase_keyframes) && r.official_phase_keyframes.length > 0) {
-    return r.official_phase_keyframes;
-  }
-  return [];
-}
-
 function proTimelineVideoUrlForAnalyze(r: AnalysisResult): string | null {
   const raw = String(
     r.analysis_video_url || r.playback_video_url || r.video_url || r.original_video_url || "",
@@ -188,7 +169,10 @@ export default function AnalyzePage() {
   const screenTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const [showClubPicker, setShowClubPicker] = useState(false);
   const stripKeyframesForResult = useMemo(
-    () => (result ? keyframesForAnalyzeStrip(result) : []),
+    () =>
+      (result
+        ? (displayKeyframesForResult(result as unknown as Prov3ResultLike) as AnalysisResult["keyframes"])
+        : []),
     [result],
   );
   const proVideoTimelineUrl = useMemo(
@@ -368,8 +352,19 @@ export default function AnalyzePage() {
       return expandStellarProForUi(rawPro) as AnalysisResult;
     }
 
-    // Lite: dedicated lite backend ``POST /analyze/lite`` (multipart file). Requires ``NEXT_PUBLIC_LITE_BACKEND_URL``; no fallback to Edge ``/api/analyze``.
-    if (!liteBackendBase) {
+    // Lite: 大陆 CN → 同源 ``/api/analyze``（CF Edge 多代理 Gemini + 多密钥 + Qwen）；非 CN → Modal ``POST /analyze/lite`` 直连。
+    let liteUseCfEdge = false;
+    try {
+      const nh = await fetch("/api/lite/network-hint", { method: "GET" });
+      if (nh.ok) {
+        const j = (await nh.json()) as { network_hint?: string };
+        if (j.network_hint === "cn") liteUseCfEdge = true;
+      }
+    } catch {
+      /* ignore — fall back to non-CN path */
+    }
+
+    if (!liteUseCfEdge && !liteBackendBase) {
       throw new Error(
         lang === "zh"
           ? "当前无法完成分析，请稍后重试"
@@ -389,24 +384,22 @@ export default function AnalyzePage() {
       );
     }
 
-    const headers: Record<string, string> = { "X-Stellar-Idempotency-Key": rid };
     const token = localStorage.getItem("stellar_token");
-    if (token && token.includes(".")) headers["Authorization"] = `Bearer ${token}`;
+    const authHeaders: Record<string, string> = {};
+    if (token && token.includes(".")) authHeaders.Authorization = `Bearer ${token}`;
 
-    const liteAnalyzeUrl = `${liteBackendBase}/analyze/lite`;
     let res: Response;
     liteAnalyzeHttpIssuedRef.current = true;
     try {
-      if (isVideoFile(file as File, filename)) {
+      if (liteUseCfEdge) {
         const fd = new FormData();
-        fd.append("file", file as File, filename);
-        fd.append("request_id", rid);
+        fd.append("file", file as Blob, filename);
         const analyzeCtrl = new AbortController();
         const analyzeTimer = setTimeout(() => analyzeCtrl.abort(), 180_000);
         try {
-          res = await fetch(liteAnalyzeUrl, {
+          res = await fetch("/api/analyze", {
             method: "POST",
-            headers,
+            headers: authHeaders,
             body: fd,
             signal: analyzeCtrl.signal,
           });
@@ -414,19 +407,39 @@ export default function AnalyzePage() {
           clearTimeout(analyzeTimer);
         }
       } else {
-        const controller = new AbortController();
-        const timer = setTimeout(() => controller.abort(), 120_000);
-        try {
-          const fd = makeFormData(file as Blob, filename);
+        const headers: Record<string, string> = { "X-Stellar-Idempotency-Key": rid, ...authHeaders };
+        const liteAnalyzeUrl = `${liteBackendBase}/analyze/lite`;
+        if (isVideoFile(file as File, filename)) {
+          const fd = new FormData();
+          fd.append("file", file as File, filename);
           fd.append("request_id", rid);
-          res = await fetch(liteAnalyzeUrl, {
-            method: "POST",
-            headers,
-            body: fd,
-            signal: controller.signal,
-          });
-        } finally {
-          clearTimeout(timer);
+          const analyzeCtrl = new AbortController();
+          const analyzeTimer = setTimeout(() => analyzeCtrl.abort(), 180_000);
+          try {
+            res = await fetch(liteAnalyzeUrl, {
+              method: "POST",
+              headers,
+              body: fd,
+              signal: analyzeCtrl.signal,
+            });
+          } finally {
+            clearTimeout(analyzeTimer);
+          }
+        } else {
+          const controller = new AbortController();
+          const timer = setTimeout(() => controller.abort(), 120_000);
+          try {
+            const fd = makeFormData(file as Blob, filename);
+            fd.append("request_id", rid);
+            res = await fetch(liteAnalyzeUrl, {
+              method: "POST",
+              headers,
+              body: fd,
+              signal: controller.signal,
+            });
+          } finally {
+            clearTimeout(timer);
+          }
         }
       }
     } catch (e) {
@@ -457,17 +470,17 @@ export default function AnalyzePage() {
           : undefined;
       const detailStr = typeof detailRaw === "string" ? detailRaw : "";
 
-      if (res.status === 409 && code === "LITE_ANALYZE_ALREADY_RUNNING") {
+      if (!liteUseCfEdge && res.status === 409 && code === "LITE_ANALYZE_ALREADY_RUNNING") {
         throw new Error(
           lang === "zh" ? "已有分析正在进行，请稍候再试" : "An analysis is already running. Please wait.",
         );
       }
-      if (res.status === 400 && code === "LITE_IDEMPOTENCY_KEY_REQUIRED") {
+      if (!liteUseCfEdge && res.status === 400 && code === "LITE_IDEMPOTENCY_KEY_REQUIRED") {
         throw new Error(
           lang === "zh" ? "缺少请求标识，请刷新页面后重试" : "Missing request id. Refresh and try again.",
         );
       }
-      if (res.status === 400 && code === "LITE_IDEMPOTENCY_MISMATCH") {
+      if (!liteUseCfEdge && res.status === 400 && code === "LITE_IDEMPOTENCY_MISMATCH") {
         throw new Error(
           lang === "zh" ? "请求标识不一致，请刷新后重试" : "Request id mismatch. Refresh and try again.",
         );
@@ -477,7 +490,7 @@ export default function AnalyzePage() {
       }
       throw new Error(lang === "zh" ? "分析失败，请重试" : "Analysis failed. Please try again.");
     }
-    return res.json();
+    return res.json() as Promise<AnalysisResult>;
   }
 
   const RECALCULATE_TIMEOUT_MS = 10_000;
@@ -698,15 +711,17 @@ export default function AnalyzePage() {
       });
     }, 800);
 
-    detectClubFromBlob(sendBlob);
-
-    const clubFallbackTimer = setTimeout(() => {
-      if (!processingClubRef.current) {
-        const fallback: ClubDetection = { club_type: "UNKNOWN", club_group: "IRON", confidence: 0 };
-        setProcessingClub(fallback);
-        processingClubRef.current = fallback;
-      }
-    }, 6000);
+    let clubFallbackTimer: ReturnType<typeof setTimeout> | undefined;
+    if (modeForRun === "pro") {
+      detectClubFromBlob(sendBlob);
+      clubFallbackTimer = setTimeout(() => {
+        if (!processingClubRef.current) {
+          const fallback: ClubDetection = { club_type: "UNKNOWN", club_group: "IRON", confidence: 0 };
+          setProcessingClub(fallback);
+          processingClubRef.current = fallback;
+        }
+      }, 6000);
+    }
 
     const proAbort = modeForRun === "pro" ? new AbortController() : null;
     proAnalyzeAbortRef.current = proAbort;
@@ -721,11 +736,11 @@ export default function AnalyzePage() {
         modeForRun === "lite" ? liteIdempotencyKeyRef.current : null,
       );
       clearInterval(progressInterval);
-      clearTimeout(clubFallbackTimer);
+      if (clubFallbackTimer) clearTimeout(clubFallbackTimer);
 
-      const userClub = processingClubRef.current as ClubDetection | null;
-      if (userClub && data.prediction) {
-        if (userClub.club_type !== "UNKNOWN") {
+      if (modeForRun === "pro") {
+        const userClub = processingClubRef.current as ClubDetection | null;
+        if (userClub && data.prediction && userClub.club_type !== "UNKNOWN") {
           data.prediction.club_type = userClub.club_type;
           data.prediction.club_group = userClub.club_group;
           data.prediction.club_detection_confidence = userClub.confidence;
@@ -746,7 +761,10 @@ export default function AnalyzePage() {
       const clubKnown =
         Boolean(data.prediction?.club_type && data.prediction.club_type !== "UNKNOWN");
       const shouldBackgroundRecalc =
-        poseOk && data.prediction && (clubKnown || handWasConfirmed);
+        modeForRun === "pro" &&
+        poseOk &&
+        data.prediction &&
+        (clubKnown || handWasConfirmed);
 
       if (shouldBackgroundRecalc) {
         void (async () => {
@@ -760,7 +778,7 @@ export default function AnalyzePage() {
                 hand_confidence: handWasConfirmed ? 1.0 : (data.prediction.hand_confidence ?? 0),
                 preferred_ball_speed: data.prediction.fused_speed,
               },
-              modeForRun === "lite" && liteBackendBase ? liteBackendBase : undefined,
+              undefined,
             );
             if (recomputed) {
               setResult((prev) => {
@@ -782,7 +800,7 @@ export default function AnalyzePage() {
       }
     } catch (err: unknown) {
       clearInterval(progressInterval);
-      clearTimeout(clubFallbackTimer);
+      if (clubFallbackTimer) clearTimeout(clubFallbackTimer);
       setProgress(0);
       setProcessingProScreenMode(false);
       const msg = err instanceof Error ? err.message : "";
@@ -1386,8 +1404,12 @@ export default function AnalyzePage() {
               onCancel={analysisMode === "pro" ? stopProAnalysis : undefined}
             />
 
-            {/* Handedness confirmation popup — only when club was detected */}
-            {showHandPopup && detectedHand && !handConfirmed && processingClub?.club_type !== "UNKNOWN" && (
+            {/* Pro only: handedness confirmation during processing (Lite: backend resolves hand/club). */}
+            {analysisMode === "pro" &&
+              showHandPopup &&
+              detectedHand &&
+              !handConfirmed &&
+              processingClub?.club_type !== "UNKNOWN" && (
               <div className="fixed inset-0 z-[110] flex items-center justify-center bg-black/60 backdrop-blur-sm animate-fade-in">
                 <div className="mx-4 w-full max-w-sm rounded-2xl border border-brand-gold/30 bg-brand-dark/95 backdrop-blur-xl p-6 shadow-2xl">
                   <p className="mb-1 text-center text-lg font-bold text-white">
@@ -1426,8 +1448,8 @@ export default function AnalyzePage() {
               </div>
             )}
 
-            {/* Club detection banner — only when club was actually detected */}
-            {processingClub && processingClub.club_type !== "UNKNOWN" && (
+            {/* Pro only: live club banner during processing */}
+            {analysisMode === "pro" && processingClub && processingClub.club_type !== "UNKNOWN" && (
               <div className="fixed bottom-6 left-4 right-4 z-50 animate-fade-in">
                 <div className="mx-auto max-w-md rounded-2xl border border-brand-gold/30 bg-brand-dark/95 backdrop-blur-xl p-4 shadow-2xl">
                   <div className="flex items-center justify-between">
@@ -1469,8 +1491,8 @@ export default function AnalyzePage() {
               </div>
             )}
 
-            {/* Club Picker overlay during processing */}
-            {showClubPicker && (
+            {/* Pro only: club picker during processing */}
+            {analysisMode === "pro" && showClubPicker && (
               <div className="fixed inset-0 z-[100] flex items-end sm:items-center justify-center bg-black/60 backdrop-blur-sm" onClick={() => setShowClubPicker(false)}>
                 <div className="w-full max-w-md rounded-t-2xl sm:rounded-2xl bg-brand-dark border border-white/10 p-5 animate-fade-in" onClick={(e) => e.stopPropagation()}>
                   <div className="mb-4 flex items-center justify-between">

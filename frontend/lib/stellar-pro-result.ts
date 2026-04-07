@@ -67,6 +67,8 @@ function derivePhaseKeyframesFromStrip(
  */
 export function normalizeProResultKeyframeArraysForTrust(r: Record<string, unknown>): void {
   if (!r || typeof r !== "object") return;
+  /** Lite 只有顶层 ``keyframes``（base64），不得套用 Pro 低信任清空/迁移逻辑，否则历史页条带与分析页脱节。 */
+  if (String(r.type ?? "").toLowerCase() === "lite") return;
   const lowTrust = stellarProTrustIsLow(r);
   const keyframes = Array.isArray(r.keyframes) ? r.keyframes : [];
   const official = Array.isArray(r.official_phase_keyframes) ? r.official_phase_keyframes : [];
