@@ -38,9 +38,10 @@ def _stellar_modal_upload_echo(route: str, request: Request) -> None:
 
 router = APIRouter()
 
-# Wall-clock caps for CPU / IO stages (vision AI caps live in gemini_service).
-_PLUS_POSE_TIMEOUT_S = float(os.getenv("STELLAR_PLUS_POSE_TIMEOUT_S", "420"))
-_PLUS_PROV3_KEYFRAME_OUTER_S = float(os.getenv("STELLAR_PLUS_PROV3_OUTER_S", "600"))
+# Wall-clock cap for the single Prov3+Plus pipeline (pose-on-source + true240 + A/B + bridge).
+_PLUS_PROV3_PIPELINE_OUTER_S = float(
+    os.getenv("STELLAR_PLUS_PROV3_PIPELINE_OUTER_S", os.getenv("STELLAR_PLUS_PROV3_OUTER_S", "600"))
+)
 
 
 def _plus_keyframe_pack_block_reasons(
@@ -170,13 +171,6 @@ def _load_services():
     from services.hud_service import generate_hud_data
     from services.shot_predictor import predict_shot
     return analyze_swing_plus, generate_hud_data, predict_shot
-
-
-def _extract_pose_stream_plus(tmp_path: str, max_frames: int) -> dict:
-    """Single pose pass for Plus (avoid duplicate extract_pose_stream)."""
-    from services.pose_backend_service import extract_pose_stream
-
-    return extract_pose_stream(tmp_path, max_frames=max_frames)
 
 
 # ── Posture Practice Video Generation (Veo) ──
@@ -327,30 +321,6 @@ async def analyze_plus(
             if disconnected.is_set():
                 raise RuntimeError("plus_client_disconnected")
 
-        pose_stream_bundle = await _timed_plus_stage(
-            "pose_extraction",
-            loop.run_in_executor(_executor, _extract_pose_stream_plus, tmp_path, 45),
-            _PLUS_POSE_TIMEOUT_S,
-        )
-        poses = pose_stream_bundle.get("poses", [])
-        pose_quality_bundle = pose_stream_bundle.get("pose_quality_bundle", {})
-        pose_stream_meta = pose_stream_bundle
-        t1 = time.time()
-        logger.info(
-            "[PLUS] pose_only summary: wall_since_start=%.1fs poses=%d",
-            t1 - t0,
-            len(poses),
-        )
-
-        if not poses:
-            raise HTTPException(status_code=422, detail="No poses detected. Ensure the golfer is clearly visible.")
-
-        logger.info(
-            "[ROLE=POSE_BACKEND] active=%s requested=%s",
-            str((pose_stream_meta.get("provider_meta") or {}).get("active_backend") or "mediapipe"),
-            str((pose_stream_meta.get("provider_meta") or {}).get("requested_backend") or "mediapipe"),
-        )
-
         det_bundle = {
             "enabled": False,
             "yolo11_degraded": False,
@@ -377,7 +347,6 @@ async def analyze_plus(
             "yolo11_degraded": False,
             "yolo11_status": "skipped_plus_prov3_only",
         }
-        swing_phases = detect_swing_phases(poses)
         phase_c_prompt_ctx = {
             "phase_c_version": "1",
             "temporal_prior_strength": 0.0,
@@ -392,24 +361,28 @@ async def analyze_plus(
         os.makedirs(prov3_work, exist_ok=True)
         try:
             bridge_out = await _timed_plus_stage(
-                "plus_prov3_keyframe_chain",
+                "plus_prov3_pipeline",
                 loop.run_in_executor(
                     _executor,
                     partial(
                         run_plus_prov3_keyframe_bridge,
                         tmp_path,
                         prov3_work,
-                        poses,
                         screen_mode=False,
                         cancel_check=_plus_prov3_cancel_check,
                     ),
                 ),
-                _PLUS_PROV3_KEYFRAME_OUTER_S,
+                _PLUS_PROV3_PIPELINE_OUTER_S,
             )
         except RuntimeError as exc:
             msg = str(exc)
             if "plus_client_disconnected" in msg or "disconnected" in msg.lower():
                 raise HTTPException(status_code=503, detail=msg) from exc
+            if "no_poses_detected" in msg:
+                raise HTTPException(
+                    status_code=422,
+                    detail="No poses detected. Ensure the golfer is clearly visible.",
+                ) from exc
             raise HTTPException(status_code=422, detail=msg) from exc
         except FFmpegNotFoundError as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
@@ -420,6 +393,27 @@ async def analyze_plus(
                 await _dc_task
             except asyncio.CancelledError:
                 pass
+
+        poses = list(bridge_out.get("poses") or [])
+        pose_quality_bundle = dict(bridge_out.get("pose_quality_bundle") or {})
+        pose_stream_meta = dict(bridge_out.get("pose_stream_meta") or {})
+        if not poses:
+            raise HTTPException(
+                status_code=422,
+                detail="No poses detected. Ensure the golfer is clearly visible.",
+            )
+        t1 = time.time()
+        logger.info(
+            "[PLUS] plus_prov3_pipeline wall_since_start=%.1fs poses=%d",
+            t1 - t0,
+            len(poses),
+        )
+        logger.info(
+            "[ROLE=POSE_BACKEND] active=%s requested=%s",
+            str((pose_stream_meta.get("provider_meta") or {}).get("active_backend") or "mediapipe"),
+            str((pose_stream_meta.get("provider_meta") or {}).get("requested_backend") or "mediapipe"),
+        )
+        swing_phases = detect_swing_phases(poses)
 
         keyframes = list(bridge_out["plus_keyframes"])
         kf_validation = dict(bridge_out["kf_validation"])

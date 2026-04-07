@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import uuid
 from pathlib import Path
 from typing import Callable, Dict
@@ -8,8 +9,12 @@ from typing import Callable, Dict
 from lib.prov3.keyframes.types import PreprocessMeta, PreprocessResult
 from services.internal.frame_enhance_service import generate_analysis_frames
 from services.internal.video_240fps_service import run_prov3_cleanup_and_true240
+from services.pose_backend_service import extract_pose_stream
 
 logger = logging.getLogger(__name__)
+
+# Same default as legacy ``/plus`` pose pass (source video, not 240 analysis clip).
+_PROV3_PREPROCESS_POSE_MAX_FRAMES = int(os.getenv("STELLAR_PLUS_POSE_MAX_FRAMES", "45"))
 
 
 def run_preprocess(
@@ -35,9 +40,20 @@ def run_preprocess(
     local_dir = str(Path(work_dir) / analysis_id)
 
     logger.info(
-        "[prov3][preprocess] analysis_id=%s screen_mode=%s pipeline=cleanup_true240_merged->frames",
+        "[prov3][preprocess] analysis_id=%s screen_mode=%s pipeline=pose_source->cleanup_true240_merged->frames",
         analysis_id,
         screen_mode,
+    )
+    if cancel_check:
+        cancel_check()
+    pose_bundle = extract_pose_stream(str(input_video), max_frames=_PROV3_PREPROCESS_POSE_MAX_FRAMES)
+    poses = list(pose_bundle.get("poses") or [])
+    pose_quality = dict(pose_bundle.get("pose_quality_bundle") or {})
+    pose_meta = dict(pose_bundle)
+    logger.info(
+        "[prov3][preprocess] source_pose_stream poses=%d backend=%s",
+        len(poses),
+        str((pose_meta.get("provider_meta") or {}).get("active_backend") or "unknown"),
     )
     if cancel_check:
         cancel_check()
@@ -72,4 +88,7 @@ def run_preprocess(
         preprocess_meta=meta,
         analysis_frames=frames["analysis_frames"],
         enhanced_local_frames=frames["enhanced_local_frames"],
+        poses=poses,
+        pose_quality_bundle=pose_quality,
+        pose_stream_meta=pose_meta,
     )

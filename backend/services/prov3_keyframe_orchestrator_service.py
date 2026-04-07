@@ -5,7 +5,7 @@ from typing import Callable, Dict
 
 from lib.prov3.keyframes.constants import TRUST_HIGH, TRUST_LOW, TRUST_MEDIUM
 from lib.prov3.keyframes.scoring import per_event_confidence
-from lib.prov3.keyframes.types import AnalyzeResponse
+from lib.prov3.keyframes.types import AnalyzeResponse, PreprocessResult
 from services.internal.low_trust_service import build_low_trust_result
 from services.golfdb_swingnet_service import clear_swingnet_ctx
 from services.prov3_keyframe_a_extractor_service import run_a_extract
@@ -15,17 +15,12 @@ from services.prov3_keyframe_preprocess_service import run_preprocess
 logger = logging.getLogger(__name__)
 
 
-def run_keyframe_analyze(
-    input_video: str,
-    work_dir: str,
+def _run_ab_after_preprocess(
+    pre: PreprocessResult,
     *,
-    screen_mode: bool = False,
     cancel_check: Callable[[], None] | None = None,
     plus_fast_b: bool = False,
 ) -> AnalyzeResponse:
-    if cancel_check:
-        cancel_check()
-    pre = run_preprocess(input_video, work_dir, screen_mode=screen_mode, cancel_check=cancel_check)
     if int(pre.preprocess_meta.analysis_fps) != 240:
         raise RuntimeError(f"true240_required: analysis_fps={pre.preprocess_meta.analysis_fps}")
 
@@ -118,3 +113,33 @@ def run_keyframe_analyze(
         analysis_fps=int(pre.preprocess_meta.analysis_fps),
         source_fps=float(pre.preprocess_meta.source_fps),
     )
+
+
+def run_keyframe_analyze(
+    input_video: str,
+    work_dir: str,
+    *,
+    screen_mode: bool = False,
+    cancel_check: Callable[[], None] | None = None,
+    plus_fast_b: bool = False,
+) -> AnalyzeResponse:
+    if cancel_check:
+        cancel_check()
+    pre = run_preprocess(input_video, work_dir, screen_mode=screen_mode, cancel_check=cancel_check)
+    return _run_ab_after_preprocess(pre, cancel_check=cancel_check, plus_fast_b=plus_fast_b)
+
+
+def run_keyframe_analyze_with_preprocess(
+    input_video: str,
+    work_dir: str,
+    *,
+    screen_mode: bool = False,
+    cancel_check: Callable[[], None] | None = None,
+    plus_fast_b: bool = False,
+) -> tuple[AnalyzeResponse, PreprocessResult]:
+    """Single preprocess (source pose + true240 + frames) then A/B; returns both for Plus bridge."""
+    if cancel_check:
+        cancel_check()
+    pre = run_preprocess(input_video, work_dir, screen_mode=screen_mode, cancel_check=cancel_check)
+    resp = _run_ab_after_preprocess(pre, cancel_check=cancel_check, plus_fast_b=plus_fast_b)
+    return resp, pre

@@ -106,7 +106,9 @@ async def prov3_keyframes_preprocess(file: UploadFile = File(...), screen_mode: 
             raise HTTPException(status_code=503, detail=str(exc)) from exc
         except RuntimeError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
-        return result.model_dump()
+        return result.model_dump(
+            exclude={"poses", "pose_quality_bundle", "pose_stream_meta"},
+        )
 
 
 @router_keyframes.post("/extract")

@@ -33,6 +33,10 @@ class PreprocessResult(BaseModel):
     preprocess_meta: PreprocessMeta
     analysis_frames: List[Dict[str, Any]]
     enhanced_local_frames: List[Dict[str, Any]] = Field(default_factory=list)
+    # Pose on **source** upload (same semantics as legacy Plus ``extract_pose_stream`` on original file).
+    poses: List[Dict[str, Any]] = Field(default_factory=list)
+    pose_quality_bundle: Dict[str, Any] = Field(default_factory=dict)
+    pose_stream_meta: Dict[str, Any] = Field(default_factory=dict)
 
 
 class ExtractResult(BaseModel):

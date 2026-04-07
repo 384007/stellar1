@@ -1,8 +1,8 @@
 """Bridge: run the Prov3 true-240 A/B keyframe product chain for Plus (no HTTP to /pro-v3).
 
-Plus keeps its own pose/HUD/skeleton path; this module is the **authoritative** source for
-product keyframes, trust/semantic gate, and formal-score eligibility. The legacy Plus smart
-keyframe pipeline in ``keyframe_service`` is compatibility-only and must not drive formal output.
+Source pose runs inside ``run_preprocess`` (same pass as Pro); this module is the **authoritative**
+source for product keyframes, trust/semantic gate, and formal-score eligibility. The legacy Plus
+smart keyframe pipeline in ``keyframe_service`` is compatibility-only and must not drive formal output.
 """
 
 from __future__ import annotations
@@ -18,7 +18,7 @@ from services.pro_prov3_analyze_service import (
     _build_ui_keyframes,
     _semantic_acceptance_gate,
 )
-from services.prov3_keyframe_orchestrator_service import run_keyframe_analyze
+from services.prov3_keyframe_orchestrator_service import run_keyframe_analyze_with_preprocess
 
 logger = logging.getLogger(__name__)
 
@@ -113,23 +113,30 @@ def _span_timeline_frames(raw_kfs: list[dict[str, Any]], av_path: str) -> int:
 def run_plus_prov3_keyframe_bridge(
     input_video_path: str,
     work_dir: str,
-    poses: list[dict],
     *,
     screen_mode: bool = False,
     cancel_check: Callable[[], None] | None = None,
 ) -> dict[str, Any]:
-    """Sync: full Prov3 preprocess + A/B + true-240 thumbnails; normalize for Plus router."""
+    """Sync: one Prov3 pipeline — source pose + preprocess + A/B + true-240 thumbnails; Plus payload."""
     work_dir = str(work_dir).strip()
     if not work_dir:
         raise RuntimeError("plus_prov3_bridge:empty_work_dir")
 
-    prov3 = run_keyframe_analyze(
+    prov3, pre = run_keyframe_analyze_with_preprocess(
         input_video_path,
         work_dir,
         screen_mode=screen_mode,
         cancel_check=cancel_check,
         plus_fast_b=True,
     )
+    poses = list(pre.poses or [])
+    pose_quality_bundle = dict(pre.pose_quality_bundle or {})
+    pose_stream_meta = dict(pre.pose_stream_meta or {})
+    if not poses:
+        raise RuntimeError(
+            "no_poses_detected: Ensure the golfer is clearly visible in the source video."
+        )
+
     dumped = prov3.model_dump(exclude={"analysis_video", "analysis_fps", "source_fps"})
     raw_kfs = [dict(x) for x in (dumped.get("keyframes") or [])]
 
@@ -295,4 +302,7 @@ def run_plus_prov3_keyframe_bridge(
             "source_fps": float(prov3.source_fps or 30.0),
             "screen_mode": bool(screen_mode),
         },
+        "poses": poses,
+        "pose_quality_bundle": pose_quality_bundle,
+        "pose_stream_meta": pose_stream_meta,
     }
