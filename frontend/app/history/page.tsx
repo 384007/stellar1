@@ -20,6 +20,7 @@ import {
   deleteAnalysisVideo,
 } from "@/lib/video-store";
 import ShareButton from "@/components/ShareButton";
+import ClubHandSummaryBar from "@/components/ClubHandSummaryBar";
 import { normalizePoseFramesForOverlay } from "@/lib/analysis-pose-storage";
 import { rawBase64ImagePayload } from "@/lib/image-base64";
 import {
@@ -177,6 +178,7 @@ interface ParsedResult {
     trajectory: Array<{ t: number; x: number; y: number; lateral: number }>;
     club_type?: string;
     club_group?: string;
+    club_detection_confidence?: number;
     hand?: "R" | "L" | "UNKNOWN";
     hand_confidence?: number;
     fused_speed?: number;
@@ -1563,6 +1565,26 @@ export default function HistoryPage() {
                               </div>
                             ))}
                           </div>
+                          {(rec.type === "lite" || !rec.type) && (() => {
+                            const lp = parseResult(rec.result_json);
+                            const pred = lp.prediction;
+                            if (!pred) return null;
+                            const loadingLite =
+                              detailLoading[rec.id] === true &&
+                              (!pred.club_type || pred.club_type === "UNKNOWN") &&
+                              pred.hand === "UNKNOWN";
+                            return (
+                              <div className="mt-2" onClick={(e) => e.stopPropagation()}>
+                                <ClubHandSummaryBar
+                                  lang={lang}
+                                  clubType={pred.club_type}
+                                  clubConfidence={pred.club_detection_confidence}
+                                  hand={pred.hand}
+                                  pending={loadingLite}
+                                />
+                              </div>
+                            );
+                          })()}
                         </div>
 
                         <svg
@@ -1634,6 +1656,21 @@ export default function HistoryPage() {
                       };
                       return (
                       <div className="border-t border-white/5 p-4 animate-fade-in">
+                        {(rec.type === "lite" || !rec.type) && (
+                          <div className="mb-3">
+                            <ClubHandSummaryBar
+                              lang={lang}
+                              clubType={parsed.prediction?.club_type}
+                              clubConfidence={parsed.prediction?.club_detection_confidence}
+                              hand={parsed.prediction?.hand}
+                              pending={
+                                awaitingKeyframePayload ||
+                                waitingSkeletonDetail ||
+                                (Boolean(isLoadingData) && liteStripKeyframes.length === 0)
+                              }
+                            />
+                          </div>
+                        )}
                         <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
                           <button
                             type="button"

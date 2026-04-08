@@ -1,8 +1,9 @@
-"""Lite-only: light ffmpeg transcode (no true-240 / minterpolate). Local temp files only."""
+"""Lite-only: light ffmpeg transcode. Local temp only — no R2 / remote storage."""
 
 from __future__ import annotations
 
 import logging
+import os
 import shutil
 import subprocess
 from pathlib import Path
@@ -12,21 +13,32 @@ import cv2
 
 logger = logging.getLogger(__name__)
 
+def _lite_fake_analysis_fps() -> int:
+    raw = (os.getenv("STELLAR_LITE_FAKE_ANALYSIS_FPS", "240") or "240").strip() or "240"
+    try:
+        v = int(float(raw))
+    except (TypeError, ValueError):
+        v = 240
+    return max(1, min(480, v))
+
 
 def lite_light_clean_video(source_path: str, work_dir: str) -> dict[str, Any]:
     """
-    Scale + H.264 + fixed nominal fps (30). Strips audio.
-    Returns path, fps, total_frames for downstream single-chain timeline.
+    Scale + H.264 + constant fake analysis fps (default 240 CFR via ffmpeg ``fps=`` — duplicated frames,
+    not optical flow). Strips audio. Output stays under ``work_dir`` only.
+
+    ``STELLAR_LITE_FAKE_ANALYSIS_FPS`` overrides the target CFR (clamped 1–480).
     """
     Path(work_dir).mkdir(parents=True, exist_ok=True)
     out = str(Path(work_dir) / "lite_clean.mp4")
+    target_fps = _lite_fake_analysis_fps()
     cmd = [
         "ffmpeg",
         "-y",
         "-i",
         source_path,
         "-vf",
-        "scale='min(960,iw)':-2,fps=30",
+        f"scale='min(960,iw)':-2,fps={target_fps}",
         "-an",
         "-c:v",
         "libx264",
@@ -47,8 +59,9 @@ def lite_light_clean_video(source_path: str, work_dir: str) -> dict[str, Any]:
             timeout=600,
             text=True,
         )
+        logger.info("[lite] clean video -> fake CFR fps=%s (local temp, no R2)", target_fps)
     except (FileNotFoundError, subprocess.CalledProcessError, OSError) as exc:
-        logger.warning("[lite] ffmpeg cleanup failed (%s) — copying source", exc)
+        logger.warning("[lite] ffmpeg cleanup failed (%s) — copying source (no fake-%s CFR)", exc, target_fps)
         shutil.copy2(source_path, out)
     cap = cv2.VideoCapture(out)
     if not cap.isOpened():

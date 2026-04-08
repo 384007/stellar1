@@ -15,6 +15,7 @@ import Skeleton3DViewer from "@/components/Skeleton3DViewer";
 import ScreenModeCapture from "@/components/ScreenModeCapture";
 import { preloadPoseModel } from "@/lib/mediapipe-assets";
 import AnalysisWaiting from "@/components/AnalysisWaiting";
+import ClubHandSummaryBar from "@/components/ClubHandSummaryBar";
 import { saveAnalysisVideo } from "@/lib/video-store";
 import { makeFormData } from "@/lib/fetch-retry";
 import { isVideoFile } from "@/lib/upload-video";
@@ -197,6 +198,8 @@ export default function AnalyzePage() {
   const [handConfirmed, setHandConfirmed] = useState(false);
   const [showHandPopup, setShowHandPopup] = useState(false);
   const handRef = useRef<"R" | "L">("R");
+  /** User confirmed L/R during processing before ``result`` exists — apply to returned prediction. */
+  const handLockedDuringProcessingRef = useRef(false);
   const [processingProScreenMode, setProcessingProScreenMode] = useState(false);
   /** 防止重复提交 Pro / Lite 分析流程。 */
   const analysisInFlightRef = useRef(false);
@@ -660,6 +663,7 @@ export default function AnalyzePage() {
     processingClubRef.current = null;
     setDetectedHand(null);
     setHandConfirmed(false);
+    handLockedDuringProcessingRef.current = false;
     setShowHandPopup(false);
 
     let sendBlob: Blob = blob;
@@ -695,8 +699,11 @@ export default function AnalyzePage() {
     }, 800);
 
     let clubFallbackTimer: ReturnType<typeof setTimeout> | undefined;
-    if (modeForRun === "pro") {
-      detectClubFromBlob(sendBlob);
+    const wantsEarlyClubHand = modeForRun === "pro" || modeForRun === "lite";
+    const clubDetectPromise = wantsEarlyClubHand
+      ? detectClubFromBlob(sendBlob, { enableHandPopup: true })
+      : Promise.resolve();
+    if (wantsEarlyClubHand) {
       clubFallbackTimer = setTimeout(() => {
         if (!processingClubRef.current) {
           const fallback: ClubDetection = { club_type: "UNKNOWN", club_group: "IRON", confidence: 0 };
@@ -705,6 +712,11 @@ export default function AnalyzePage() {
         }
       }, 6000);
     }
+
+    await Promise.race([
+      clubDetectPromise,
+      new Promise<void>((resolve) => setTimeout(resolve, 2800)),
+    ]);
 
     const proAbort = modeForRun === "pro" ? new AbortController() : null;
     proAnalyzeAbortRef.current = proAbort;
@@ -721,18 +733,37 @@ export default function AnalyzePage() {
       clearInterval(progressInterval);
       if (clubFallbackTimer) clearTimeout(clubFallbackTimer);
 
-      if (modeForRun === "pro") {
+      if (wantsEarlyClubHand) {
         const userClub = processingClubRef.current as ClubDetection | null;
-        if (userClub && data.prediction && userClub.club_type !== "UNKNOWN") {
-          data.prediction.club_type = userClub.club_type;
-          data.prediction.club_group = userClub.club_group;
-          data.prediction.club_detection_confidence = userClub.confidence;
+        if (userClub && data.prediction) {
+          if (userClub.club_type !== "UNKNOWN") {
+            data.prediction.club_type = userClub.club_type;
+            data.prediction.club_group = userClub.club_group;
+            data.prediction.club_detection_confidence = userClub.confidence;
+          }
+          if (userClub.hand === "R" || userClub.hand === "L") {
+            data.prediction.hand = userClub.hand;
+            const hc = data.prediction.hand_confidence ?? 0;
+            data.prediction.hand_confidence = Math.max(
+              hc,
+              userClub.confidence > 0 ? Math.min(1, userClub.confidence + 0.05) : 0.72,
+            );
+          }
         }
       }
 
       if (data.prediction?.hand && data.prediction.hand !== "UNKNOWN") {
         setDetectedHand(data.prediction.hand);
         handRef.current = data.prediction.hand;
+      }
+
+      if (
+        handLockedDuringProcessingRef.current &&
+        data.prediction &&
+        (handRef.current === "R" || handRef.current === "L")
+      ) {
+        data.prediction.hand = handRef.current;
+        data.prediction.hand_confidence = 1.0;
       }
 
       const analysisId = data.analysis_id;
@@ -891,7 +922,11 @@ export default function AnalyzePage() {
     });
   }
 
-  async function detectClubFromBlob(blob: Blob) {
+  async function detectClubFromBlob(
+    blob: Blob,
+    options?: { enableHandPopup?: boolean },
+  ): Promise<void> {
+    const enableHandPopup = options?.enableHandPopup ?? true;
     try {
       const token = localStorage.getItem("stellar_token");
       const headers: Record<string, string> = {};
@@ -904,7 +939,10 @@ export default function AnalyzePage() {
         const single = await extractFrameFromBlob(blob);
         if (single) validFrames.push(single);
       }
-      if (validFrames.length === 0) { console.warn("[club-detect] no frames extracted"); return; }
+      if (validFrames.length === 0) {
+        console.warn("[club-detect] no frames extracted");
+        return;
+      }
 
       const results = await Promise.all(validFrames.map(async (frameBlob) => {
         try {
@@ -926,6 +964,11 @@ export default function AnalyzePage() {
         const fallback: ClubDetection = { club_type: "UNKNOWN", club_group: "IRON", confidence: 0, hand };
         setProcessingClub(fallback);
         processingClubRef.current = fallback;
+        if (!handConfirmed) {
+          setDetectedHand(hand);
+          handRef.current = hand;
+          if (enableHandPopup) setShowHandPopup(true);
+        }
         return;
       }
 
@@ -955,7 +998,11 @@ export default function AnalyzePage() {
       console.log("[club-detect] multi-frame result:", data, "votes:", votes);
       setProcessingClub(data);
       processingClubRef.current = data;
-      if (!handConfirmed) { setDetectedHand(hand); handRef.current = hand; setShowHandPopup(true); }
+      if (!handConfirmed) {
+        setDetectedHand(hand);
+        handRef.current = hand;
+        if (enableHandPopup) setShowHandPopup(true);
+      }
     } catch (e) {
       console.warn("[club-detect] error:", e);
     }
@@ -965,7 +1012,13 @@ export default function AnalyzePage() {
     setShowClubPicker(false);
     const groupMap: Record<string, string> = {};
     for (const g of CLUB_GROUPS) for (const c of g.clubs) groupMap[c] = g.id;
-    const newClub = { club_type: clubType, club_group: groupMap[clubType] || "IRON", confidence: 1.0 };
+    const prev = processingClubRef.current;
+    const newClub: ClubDetection = {
+      club_type: clubType,
+      club_group: groupMap[clubType] || "IRON",
+      confidence: 1.0,
+      hand: prev?.hand && (prev.hand === "L" || prev.hand === "R") ? prev.hand : handRef.current,
+    };
     setProcessingClub(newClub);
     processingClubRef.current = newClub;
   }
@@ -1007,7 +1060,10 @@ export default function AnalyzePage() {
   async function handleHandConfirm() {
     setHandConfirmed(true);
     setShowHandPopup(false);
-    if (!result) return;
+    if (!result) {
+      handLockedDuringProcessingRef.current = true;
+      return;
+    }
     const selectedHand = (detectedHand || handRef.current || "UNKNOWN") as "R" | "L" | "UNKNOWN";
     const next = {
       ...result,
@@ -1387,12 +1443,12 @@ export default function AnalyzePage() {
               onCancel={analysisMode === "pro" ? stopProAnalysis : undefined}
             />
 
-            {/* Pro only: handedness confirmation during processing (Lite: backend resolves hand/club). */}
-            {analysisMode === "pro" &&
+            {/* Pro / Lite: handedness confirmation during processing (after club detect when known). */}
+            {(analysisMode === "pro" || analysisMode === "lite") &&
               showHandPopup &&
               detectedHand &&
               !handConfirmed &&
-              processingClub?.club_type !== "UNKNOWN" && (
+              processingClub != null && (
               <div className="fixed inset-0 z-[110] flex items-center justify-center bg-black/60 backdrop-blur-sm animate-fade-in">
                 <div className="mx-4 w-full max-w-sm rounded-2xl border border-brand-gold/30 bg-brand-dark/95 backdrop-blur-xl p-6 shadow-2xl">
                   <p className="mb-1 text-center text-lg font-bold text-white">
@@ -1426,6 +1482,28 @@ export default function AnalyzePage() {
                     className="w-full rounded-xl bg-brand-gold py-3 text-sm font-bold text-black transition hover:bg-brand-gold/90"
                   >
                     {lang === "zh" ? "确认" : "Confirm"}
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* Lite: club + handedness first (same /api/club-detect as Pro); stays visible while analysis runs */}
+            {analysisMode === "lite" && (
+              <div className="fixed bottom-6 left-4 right-4 z-50 animate-fade-in space-y-2">
+                <ClubHandSummaryBar
+                  lang={lang}
+                  clubType={processingClub?.club_type}
+                  clubConfidence={processingClub?.confidence}
+                  hand={(processingClub?.hand as "R" | "L" | "UNKNOWN" | undefined) ?? detectedHand ?? "UNKNOWN"}
+                  pending={processingClub == null}
+                />
+                <div className="flex justify-center">
+                  <button
+                    type="button"
+                    onClick={() => setShowClubPicker(true)}
+                    className="rounded-xl border border-brand-purple/35 bg-brand-purple/15 px-4 py-2 text-xs font-medium text-brand-purple transition hover:bg-brand-purple/25"
+                  >
+                    {lang === "zh" ? "修改球杆" : "Change club"}
                   </button>
                 </div>
               </div>
@@ -1474,8 +1552,8 @@ export default function AnalyzePage() {
               </div>
             )}
 
-            {/* Pro only: club picker during processing */}
-            {analysisMode === "pro" && showClubPicker && (
+            {/* Pro / Lite: club picker during processing */}
+            {(analysisMode === "pro" || analysisMode === "lite") && showClubPicker && (
               <div className="fixed inset-0 z-[100] flex items-end sm:items-center justify-center bg-black/60 backdrop-blur-sm" onClick={() => setShowClubPicker(false)}>
                 <div className="w-full max-w-md rounded-t-2xl sm:rounded-2xl bg-brand-dark border border-white/10 p-5 animate-fade-in" onClick={(e) => e.stopPropagation()}>
                   <div className="mb-4 flex items-center justify-between">
@@ -1576,64 +1654,107 @@ export default function AnalyzePage() {
               </div>
             </div>
 
-            {/* Club Detection Banner + Picker — only when a club was detected */}
-            {result.prediction?.club_type && result.prediction.club_type !== "UNKNOWN" && (<>
-            <div className="glass-card flex items-center justify-between p-4">
-              <div className="flex items-center gap-3">
-                <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-brand-gold/10 text-lg">
-                  🏌️
-                </div>
-                <div>
-                  <p className="text-sm font-semibold text-white">
-                    {lang === "zh"
-                      ? `检测到：${CLUB_DISPLAY[result.prediction.club_type] || result.prediction.club_type}`
-                      : `Detected: ${result.prediction.club_type}`}
-                    {result.prediction.hand && result.prediction.hand !== "UNKNOWN" && (
-                      <span className="ml-2 text-brand-gold/80">
-                        · {result.prediction.hand === "R" ? (lang === "zh" ? "右手" : "R") : (lang === "zh" ? "左手" : "L")}
-                      </span>
-                    )}
-                  </p>
-                  {result.prediction.club_detection_confidence != null && (
-                    <p className="text-[10px] text-white/30">
-                      {lang === "zh" ? "AI 置信度" : "AI confidence"}: {Math.round(result.prediction.club_detection_confidence * 100)}%
-                      {result.prediction.club_detection_confidence < 0.7 && (
-                        <span className="ml-1 text-yellow-400">{lang === "zh" ? "· 建议手动确认" : "· please verify"}</span>
-                      )}
-                    </p>
-                  )}
-                </div>
+            {/* Lite: always show club + hand row when prediction exists (incl. unknown club + known hand) */}
+            {analysisMode === "lite" && result.prediction && (
+              <div className="space-y-2">
+                <ClubHandSummaryBar
+                  lang={lang}
+                  clubType={result.prediction.club_type}
+                  clubConfidence={result.prediction.club_detection_confidence}
+                  hand={result.prediction.hand}
+                  pending={false}
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowClubPicker(true)}
+                  className="w-full rounded-xl border border-brand-purple/35 bg-brand-purple/10 py-2.5 text-xs font-medium text-brand-purple transition hover:bg-brand-purple/20"
+                >
+                  {lang === "zh" ? "修改球杆" : "Change club"}
+                </button>
               </div>
-              <button
-                onClick={() => setShowClubPicker(true)}
-                className="rounded-lg border border-brand-gold/30 bg-brand-gold/10 px-3 py-1.5 text-xs font-medium text-brand-gold transition hover:bg-brand-gold/20"
-              >
-                {lang === "zh" ? "修改球杆 ▾" : "Change ▾"}
-              </button>
-            </div>
+            )}
 
-            {showClubPicker && (
-              <div className="fixed inset-0 z-[100] flex items-end sm:items-center justify-center bg-black/60 backdrop-blur-sm" onClick={() => setShowClubPicker(false)}>
-                <div className="w-full max-w-md rounded-t-2xl sm:rounded-2xl bg-brand-dark border border-white/10 p-5 animate-fade-in" onClick={(e) => e.stopPropagation()}>
+            {/* Pro: gold banner when club detected */}
+            {analysisMode === "pro" &&
+              result.prediction?.club_type &&
+              result.prediction.club_type !== "UNKNOWN" && (
+                <div className="glass-card flex items-center justify-between p-4">
+                  <div className="flex items-center gap-3">
+                    <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-brand-gold/10 text-lg">
+                      🏌️
+                    </div>
+                    <div>
+                      <p className="text-sm font-semibold text-white">
+                        {lang === "zh"
+                          ? `检测到：${CLUB_DISPLAY[result.prediction.club_type] || result.prediction.club_type}`
+                          : `Detected: ${result.prediction.club_type}`}
+                        {result.prediction.hand && result.prediction.hand !== "UNKNOWN" && (
+                          <span className="ml-2 text-brand-gold/80">
+                            · {result.prediction.hand === "R" ? (lang === "zh" ? "右手" : "R") : (lang === "zh" ? "左手" : "L")}
+                          </span>
+                        )}
+                      </p>
+                      {result.prediction.club_detection_confidence != null && (
+                        <p className="text-[10px] text-white/30">
+                          {lang === "zh" ? "AI 置信度" : "AI confidence"}:{" "}
+                          {Math.round(result.prediction.club_detection_confidence * 100)}%
+                          {result.prediction.club_detection_confidence < 0.7 && (
+                            <span className="ml-1 text-yellow-400">
+                              {lang === "zh" ? "· 建议手动确认" : "· please verify"}
+                            </span>
+                          )}
+                        </p>
+                      )}
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setShowClubPicker(true)}
+                    className="rounded-lg border border-brand-gold/30 bg-brand-gold/10 px-3 py-1.5 text-xs font-medium text-brand-gold transition hover:bg-brand-gold/20"
+                  >
+                    {lang === "zh" ? "修改球杆 ▾" : "Change ▾"}
+                  </button>
+                </div>
+              )}
+
+            {/* Results-stage club picker (Pro + Lite) */}
+            {showClubPicker && result && (
+              <div
+                className="fixed inset-0 z-[100] flex items-end justify-center bg-black/60 backdrop-blur-sm sm:items-center"
+                onClick={() => setShowClubPicker(false)}
+              >
+                <div
+                  className="w-full max-w-md animate-fade-in rounded-t-2xl border border-white/10 bg-brand-dark p-5 sm:rounded-2xl"
+                  onClick={(e) => e.stopPropagation()}
+                >
                   <div className="mb-4 flex items-center justify-between">
                     <h3 className="text-base font-bold text-white">{lang === "zh" ? "选择球杆" : "Select Club"}</h3>
-                    <button onClick={() => setShowClubPicker(false)} className="text-white/30 hover:text-white/60 text-lg">&times;</button>
+                    <button
+                      type="button"
+                      onClick={() => setShowClubPicker(false)}
+                      className="text-lg text-white/30 hover:text-white/60"
+                    >
+                      &times;
+                    </button>
                   </div>
                   <div className="space-y-3">
                     {CLUB_GROUPS.map((group) => (
                       <div key={group.id}>
-                        <p className="mb-1.5 text-[10px] font-semibold text-white/40 uppercase tracking-wider">
+                        <p className="mb-1.5 text-[10px] font-semibold uppercase tracking-wider text-white/40">
                           {lang === "zh" ? group.label_zh : group.label_en}
                         </p>
                         <div className="flex flex-wrap gap-1.5">
                           {group.clubs.map((club) => (
                             <button
                               key={club}
+                              type="button"
                               onClick={() => handleClubOverride(club)}
                               className={`rounded-lg border px-3 py-2 text-xs font-medium transition-all ${
-                                result?.prediction.club_type === club
-                                  ? "border-brand-gold/50 bg-brand-gold/20 text-brand-gold"
-                                  : "border-white/10 bg-white/5 text-white/60 hover:border-brand-gold/30 hover:text-white"
+                                result.prediction.club_type === club
+                                  ? analysisMode === "pro"
+                                    ? "border-brand-gold/50 bg-brand-gold/20 text-brand-gold"
+                                    : "border-brand-purple/50 bg-brand-purple/20 text-brand-purple"
+                                  : "border-white/10 bg-white/5 text-white/60 hover:border-white/20 hover:text-white"
                               }`}
                             >
                               {club}
@@ -1646,7 +1767,6 @@ export default function AnalyzePage() {
                 </div>
               </div>
             )}
-            </>)}
 
             {/* Speed Data Card — only when prediction has data */}
             {result.prediction && (result.prediction.ball_speed > 0 || result.prediction.fused_speed) && (
