@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { keyframeImageDataUrl } from "@/lib/image-base64";
 import { resolveProv3ProductMediaUrl } from "@/lib/prov3-media-url";
 import {
@@ -489,7 +490,7 @@ function KeyframeLightbox({
   if (!open || index < 0 || index >= keyframes.length) return null;
   const kf = keyframes[index];
 
-  return (
+  const layer = (
     <div
       className="fixed inset-0 z-[220] flex flex-col items-center justify-center bg-black/88 p-3 backdrop-blur-sm"
       role="dialog"
@@ -577,6 +578,9 @@ function KeyframeLightbox({
       </p>
     </div>
   );
+
+  if (typeof document === "undefined" || !document.body) return null;
+  return createPortal(layer, document.body);
 }
 
 export default function KeyframeStrip({

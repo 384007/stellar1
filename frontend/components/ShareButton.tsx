@@ -1,6 +1,7 @@
 "use client";
 
-import { useState, useCallback, useEffect, useRef } from "react";
+import { useState, useCallback, useEffect, useLayoutEffect, useRef } from "react";
+import { createPortal } from "react-dom";
 
 interface ShareButtonProps {
   analysisId: string;
@@ -34,6 +35,23 @@ function buildShareText(score: number | null, type: string, lang: "en" | "zh"): 
   return `I just got my golf swing analyzed by Stellar AI (${tier}) — scored ${score}. Check the full report:`;
 }
 
+function computeSharePopoverLayout(trigger: DOMRectReadOnly) {
+  const margin = 12;
+  const vw = typeof window !== "undefined" ? window.innerWidth : 400;
+  const vh = typeof window !== "undefined" ? window.innerHeight : 800;
+  const width = Math.min(384, vw - margin * 2);
+  let left = trigger.left + trigger.width / 2 - width / 2;
+  left = Math.max(margin, Math.min(left, vw - width - margin));
+  const estHeight = Math.min(vh * 0.88, 520);
+  let top = trigger.bottom + margin;
+  if (top + estHeight > vh - margin) {
+    top = trigger.top - estHeight - margin;
+  }
+  if (top < margin) top = margin;
+  const maxHeight = Math.max(200, vh - top - margin);
+  return { top, left, width, maxHeight };
+}
+
 export default function ShareButton({ analysisId, score, type, lang, className }: ShareButtonProps) {
   const [loading, setLoading] = useState(false);
   const [shareUrl, setShareUrl] = useState<string | null>(null);
@@ -41,16 +59,43 @@ export default function ShareButton({ analysisId, score, type, lang, className }
   const [showModal, setShowModal] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const modalRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const [popoverLayout, setPopoverLayout] = useState<{
+    top: number;
+    left: number;
+    width: number;
+    maxHeight: number;
+  } | null>(null);
 
   useEffect(() => {
     function handleOutsideClick(e: MouseEvent) {
-      if (modalRef.current && !modalRef.current.contains(e.target as Node)) {
-        setShowModal(false);
-      }
+      const t = e.target as Node;
+      if (modalRef.current?.contains(t)) return;
+      if (triggerRef.current?.contains(t)) return;
+      setShowModal(false);
     }
     if (showModal) document.addEventListener("mousedown", handleOutsideClick);
     return () => document.removeEventListener("mousedown", handleOutsideClick);
   }, [showModal]);
+
+  useLayoutEffect(() => {
+    if (!showModal || !shareUrl) {
+      setPopoverLayout(null);
+      return;
+    }
+    const update = () => {
+      const btn = triggerRef.current;
+      if (!btn) return;
+      setPopoverLayout(computeSharePopoverLayout(btn.getBoundingClientRect()));
+    };
+    update();
+    window.addEventListener("resize", update);
+    window.addEventListener("scroll", update, true);
+    return () => {
+      window.removeEventListener("resize", update);
+      window.removeEventListener("scroll", update, true);
+    };
+  }, [showModal, shareUrl]);
 
   const generateShare = useCallback(async () => {
     if (shareUrl) {
@@ -209,6 +254,8 @@ export default function ShareButton({ analysisId, score, type, lang, className }
     <>
       {/* Share trigger button */}
       <button
+        ref={triggerRef}
+        type="button"
         onClick={(e) => {
           e.stopPropagation();
           generateShare();
@@ -231,13 +278,27 @@ export default function ShareButton({ analysisId, score, type, lang, className }
         <p className="mt-1 text-[11px] text-red-400/70">{error}</p>
       )}
 
-      {/* Share modal */}
-      {showModal && shareUrl && (
-        <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/60 p-4 sm:items-center">
-          <div
-            ref={modalRef}
-            className="w-full max-w-sm rounded-2xl border border-white/10 bg-[#0f0a1e] p-5 shadow-2xl"
-          >
+      {/* Share modal — portal + anchor near trigger so history card backdrop-filter does not trap fixed */}
+      {showModal && shareUrl && popoverLayout && typeof document !== "undefined" && document.body
+        ? createPortal(
+            <>
+              <div
+                className="fixed inset-0 z-[210] bg-black/60"
+                aria-hidden
+                onClick={() => setShowModal(false)}
+              />
+              <div
+                ref={modalRef}
+                className="fixed z-[211] rounded-2xl border border-white/10 bg-[#0f0a1e] p-5 shadow-2xl"
+                style={{
+                  top: popoverLayout.top,
+                  left: popoverLayout.left,
+                  width: popoverLayout.width,
+                  maxHeight: popoverLayout.maxHeight,
+                  overflowY: "auto",
+                }}
+                onClick={(e) => e.stopPropagation()}
+              >
             {/* Header */}
             <div className="mb-4 flex items-center justify-between">
               <h3 className="text-sm font-semibold text-white">
@@ -308,9 +369,11 @@ export default function ShareButton({ analysisId, score, type, lang, className }
                 ? "⚠ 分享链接公开可见，请谨慎分享个人数据"
                 : "⚠ Share link is publicly accessible. Share with care."}
             </p>
-          </div>
-        </div>
-      )}
+              </div>
+            </>,
+            document.body,
+          )
+        : null}
     </>
   );
 }
