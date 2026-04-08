@@ -28,6 +28,7 @@ import { isProv3StrictMediaPolicyResult, type Prov3ResultLike } from "@/lib/prov
 import { resolveProv3ProductMediaUrl } from "@/lib/prov3-media-url";
 import { clientLikelyMainlandChinaUser } from "@/lib/client-region-hint";
 import { LITE_ANALYZE_FETCH_TIMEOUT_MS } from "@/lib/lite-analyze-timeout";
+import { readLiteAnalyzeResult } from "@/lib/read-lite-analyze-response";
 import { pruneLocalStellarHistoryRecords } from "@/lib/pro-history-retention";
 import {
   DEFAULT_PROV3_MODAL_URL,
@@ -472,6 +473,19 @@ export default function AnalyzePage() {
       liteAnalyzeHttpIssuedRef.current = false;
     }
 
+    const resCt = res.headers.get("content-type") || "";
+    if (res.ok && resCt.includes("text/event-stream")) {
+      try {
+        return (await readLiteAnalyzeResult(res)) as unknown as AnalysisResult;
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        throw new Error(
+          msg.trim() ||
+            (lang === "zh" ? "分析失败，请重试" : "Analysis failed. Please try again."),
+        );
+      }
+    }
+
     if (!res.ok) {
       // Cloudflare 524/522/523: edge gave up waiting on origin. CN Lite often hits ~100s proxy wall
       // while Modal still runs; body is usually HTML, not JSON.
@@ -536,7 +550,7 @@ export default function AnalyzePage() {
       }
       throw new Error(lang === "zh" ? "分析失败，请重试" : "Analysis failed. Please try again.");
     }
-    return res.json() as Promise<AnalysisResult>;
+    return (await readLiteAnalyzeResult(res)) as unknown as AnalysisResult;
   }
 
   const RECALCULATE_TIMEOUT_MS = 10_000;

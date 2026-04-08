@@ -11,9 +11,9 @@ export const runtime = "edge";
  * CN / same-origin Lite path: multipart in → forward ``POST {ModalBase}/analyze/lite`` (main Modal by default).
  * No Gemini/Qwen here — only JWT gate + transparent proxy (idempotency + request_id + Authorization + CF-IPCountry).
  *
- * **524:** Cloudflare’s wall-clock limit for this request (often ~100s) can fire before Modal finishes;
- * the browser sees HTTP 524 even if ``LITE_ANALYZE_FETCH_TIMEOUT_MS`` is 15m. Mitigations: shorter videos,
- * direct-to-Modal when reachable, or a Pro-style async Lite job (not implemented here).
+ * **524:** Cloudflare’s limit on the *client → Pages* request (often ~100s) can fire before Modal finishes;
+ * the browser sees HTTP 524 even though upstream ``AbortSignal`` allows 1h. Mitigations: direct-to-Modal when
+ * reachable, raise CF/proxy timeouts, or async Lite (not implemented here).
  *
  * Default upstream is **main Pro Modal** (same as ``MODAL_BACKEND_URL`` / fallbacks).
  * Optional override: ``LITE_BACKEND_URL`` = dedicated Lite-only origin, no trailing slash.
@@ -151,6 +151,17 @@ export async function POST(request: NextRequest) {
   }
 
   const ct = upstream.headers.get("content-type") || "application/json; charset=utf-8";
+  if (upstream.ok && ct.includes("text/event-stream") && upstream.body) {
+    return new NextResponse(upstream.body, {
+      status: upstream.status,
+      headers: {
+        "content-type": ct,
+        "cache-control": upstream.headers.get("cache-control") || "no-cache",
+        "x-accel-buffering": "no",
+      },
+    });
+  }
+
   const buf = await upstream.arrayBuffer();
   return new NextResponse(buf, {
     status: upstream.status,

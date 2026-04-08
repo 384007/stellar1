@@ -3,7 +3,7 @@ Stellar AI — **Lite-only** Modal worker.
 
 Deploy: ``modal deploy modal_app_lite.py``
 
-Resources: cpu=1, memory=4096 MiB, timeout=900s. Default Modal scaling: scale to zero when idle (cold start on next request; no keep_warm).
+Resources: cpu=1, memory=4096 MiB, timeout=3600s (aligned with frontend ``LITE_ANALYZE_FETCH_TIMEOUT_MS``). Default Modal scaling: scale to zero when idle (cold start on next request; no keep_warm).
 
 Uses **lite_image** (``backend/requirements-modal-lite.txt`` + CPU torch for SwingNet), not ``modal_app.image``.
 SwingNet weights are **baked** into ``/opt/stellar-weights/swingnet_1800.pth.tar`` at image build (same ``tools/modal_bake_swingnet.py`` as main Modal).
@@ -67,7 +67,7 @@ _STELLAR_SHA_SHORT = (
     _STELLAR_SHA_FULL[:7] if len(_STELLAR_SHA_FULL) >= 7 else _STELLAR_SHA_FULL
 )
 
-MODAL_LITE_FUNCTION_TIMEOUT_S = 900
+MODAL_LITE_FUNCTION_TIMEOUT_S = 3600
 # Slim image + deferred heavy imports; 4G default. No keep_warm — idle workers scale to zero (cold start).
 MODAL_LITE_MEMORY_MIB = 4096
 

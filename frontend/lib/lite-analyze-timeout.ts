@@ -1,10 +1,11 @@
 /**
- * Client / Edge subrequest abort budget. Must be >= Modal worker wall time where applicable.
+ * Browser ``fetch`` and Edge proxy upstream wait for ``POST /analyze/lite`` (one hour).
+ * Keep standalone Lite Modal ``timeout=`` (``modal_app_lite.py``) at least this high so the worker is not
+ * killed while the client still waits.
  *
- * **Cloudflare Pages / Workers:** the *incoming* request to ``/api/lite/analyze-proxy`` is still capped by
- * Cloudflare’s edge timeout (~100s typical) → HTTP **524** before this value matters for CN users.
+ * **Cloudflare Pages / Workers:** the *browser → Pages* leg for ``/api/lite/analyze-proxy`` may still hit CF’s
+ * own wall clock (~100s typical) → **524** regardless of this value (CN path).
  *
- * **Direct Modal / custom domains:** some proxies cut idle or total wait around **3–4 minutes** even when this
- * constant is 15m — shorten server work (see ``STELLAR_SWINGNET_LITE_MAX_FRAMES`` / ``STELLAR_LITE_B_SKIP_RECOVERY`` on Modal).
+ * **Other reverse proxies** may enforce their own caps (e.g. ~3–4m); raise origin read timeout there if needed.
  */
-export const LITE_ANALYZE_FETCH_TIMEOUT_MS = 900_000;
+export const LITE_ANALYZE_FETCH_TIMEOUT_MS = 3_600_000;

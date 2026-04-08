@@ -7,6 +7,7 @@ import AnalysisWaiting from "@/components/AnalysisWaiting";
 import ScreenModeCapture from "@/components/ScreenModeCapture";
 import { preloadPoseModel } from "@/lib/mediapipe-assets";
 import { fetchWithRetry, makeFormData } from "@/lib/fetch-retry";
+import { readLiteAnalyzeResult } from "@/lib/read-lite-analyze-response";
 import { isVideoFile, uploadVideoToGemini } from "@/lib/upload-video";
 import type {
   LabMetrics,
@@ -410,9 +411,12 @@ export default function ShotLabPage() {
       });
       clearTimeout(timeout);
       if (!res.ok) return null;
-      const data = await res.json();
-      if (!data?.prediction || typeof data.prediction.predicted_distance !== "number") return null;
-      return data.prediction as LabPrediction;
+      const data = (await readLiteAnalyzeResult(res)) as {
+        prediction?: LabPrediction & { predicted_distance?: number };
+      };
+      const pred = data.prediction;
+      if (!pred || typeof pred.predicted_distance !== "number") return null;
+      return pred as LabPrediction;
     } catch {
       return null;
     }

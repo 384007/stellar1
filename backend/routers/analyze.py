@@ -1,12 +1,16 @@
+import asyncio
+import base64
+import json
 import logging
 import os
 import tempfile
-import base64
 
 import httpx
 from fastapi import APIRouter, HTTPException, Depends, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
+from starlette.responses import StreamingResponse
+from collections.abc import AsyncIterator
 from typing import Any, Optional
 
 from routers.auth import get_current_user
@@ -21,6 +25,96 @@ router = APIRouter()
 logger = logging.getLogger(__name__)
 
 _ID_HEADER = "x-stellar-idempotency-key"
+
+# SSE comment lines every N seconds while Lite pipeline runs — keeps proxies from closing “idle” TCP during ~2–3m compute.
+LITE_SSE_KEEPALIVE_S = float(os.getenv("STELLAR_LITE_SSE_KEEPALIVE_S", "12"))
+
+
+async def _lite_analyze_sse_stream(tmp_path: str, region: str, request_id: str) -> AsyncIterator[bytes]:
+    from services.lite_api_pack_service import pack_lite_public_response
+    from services.lite_independent_pipeline import run_lite_independent_pipeline
+
+    completed_normally = False
+    last_exc: Optional[BaseException] = None
+    task: Optional[asyncio.Task] = None
+    try:
+        yield b": lite-start\n\n"
+        task = asyncio.create_task(run_lite_independent_pipeline(tmp_path, region=region))
+        while True:
+            try:
+                internal_result = await asyncio.wait_for(asyncio.shield(task), timeout=LITE_SSE_KEEPALIVE_S)
+                break
+            except asyncio.TimeoutError:
+                yield b": lite-analyze\n\n"
+
+        if len(internal_result.get("keyframes") or []) != 8:
+            body = {
+                "ok": False,
+                "status": 422,
+                "detail": "Lite analysis failed to produce complete keyframes",
+                "code": "LITE_KEYFRAMES_INCOMPLETE",
+                "request_id": request_id,
+            }
+            yield f"data: {json.dumps(body, ensure_ascii=False, separators=(',', ':'))}\n\n".encode("utf-8")
+            return
+
+        public_result = pack_lite_public_response(internal_result)
+        log_non_finite_if_any(logger, public_result, "analyze_lite")
+        out = sanitize_json_floats(public_result)
+        await complete_lite_analyze_success(request_id, out)
+        completed_normally = True
+        payload = {"ok": True, "result": out}
+        yield f"data: {json.dumps(payload, ensure_ascii=False, separators=(',', ':'))}\n\n".encode("utf-8")
+    except asyncio.CancelledError:
+        last_exc = asyncio.CancelledError()
+        if task is not None and not task.done():
+            task.cancel()
+            try:
+                await task
+            except Exception:
+                pass
+        raise
+    except Exception as e:
+        last_exc = e
+        logger.exception("[analyze_lite] stream pipeline_failed request_id=%r", request_id)
+        msg = str(e)
+        low = msg.lower()
+        is_quotaish = (
+            "429" in msg
+            or "resource exhausted" in low
+            or "resource_exhausted" in low
+            or "quota" in low
+            or "rate limit" in low
+            or "too many requests" in low
+        )
+        if is_quotaish:
+            body = {
+                "ok": False,
+                "status": 503,
+                "detail": msg[:4000],
+                "code": "LITE_AI_QUOTA_OR_RATE_LIMIT",
+                "request_id": request_id,
+            }
+        else:
+            body = {
+                "ok": False,
+                "status": 500,
+                "detail": f"Analysis failed: {msg}"[:4000],
+                "code": "LITE_PIPELINE_FAILED",
+                "request_id": request_id,
+            }
+        yield f"data: {json.dumps(body, ensure_ascii=False, separators=(',', ':'))}\n\n".encode("utf-8")
+    finally:
+        if tmp_path and os.path.exists(tmp_path):
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+        if request_id and not completed_normally:
+            try:
+                await complete_lite_analyze_failure(request_id, exc=last_exc)
+            except Exception:
+                pass
 
 
 def _coerce_idempotency_field(raw: object) -> str:
@@ -126,15 +220,9 @@ async def analyze_lite(
     request: Request,
     current_user: Optional[dict] = Depends(get_current_user),
 ):
-    """Lite API with backend-only pipeline internals and public response packing."""
-    from services.lite_api_pack_service import pack_lite_public_response
-    from services.lite_independent_pipeline import run_lite_independent_pipeline
-
+    """Lite API — long runs return ``text/event-stream`` with SSE keepalives, final ``data:`` JSON envelope."""
     tmp_path = None
     request_id: str | None = None
-    gate_acquired = False
-    completed_normally = False
-    last_exc: Optional[BaseException] = None
 
     def _lite_409(rid: str) -> JSONResponse:
         return JSONResponse(
@@ -168,7 +256,6 @@ async def analyze_lite(
                 return cached
             if status == "busy":
                 return _lite_409(request_id)
-            gate_acquired = True
 
             with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
                 tmp.write(file_bytes)
@@ -190,7 +277,6 @@ async def analyze_lite(
                 return cached
             if status == "busy":
                 return _lite_409(request_id)
-            gate_acquired = True
 
             async with httpx.AsyncClient(timeout=120.0) as client:
                 resp = await client.get(video_url)
@@ -202,60 +288,20 @@ async def analyze_lite(
                 tmp_path = tmp.name
 
         region = "CN" if request.headers.get("CF-IPCountry", "").upper() == "CN" else "global"
-        internal_result = await run_lite_independent_pipeline(tmp_path, region=region)
-        if len(internal_result.get("keyframes") or []) != 8:
-            raise HTTPException(status_code=422, detail="Lite analysis failed to produce complete keyframes")
-        public_result = pack_lite_public_response(internal_result)
-        log_non_finite_if_any(logger, public_result, "analyze_lite")
-        out = sanitize_json_floats(public_result)
-        await complete_lite_analyze_success(request_id, out)
-        completed_normally = True
-        return out
+        assert tmp_path is not None and request_id is not None
+        return StreamingResponse(
+            _lite_analyze_sse_stream(tmp_path, region, request_id),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no",
+            },
+        )
     except HTTPException as he:
         if he.status_code == 400 and isinstance(he.detail, dict):
             return JSONResponse(status_code=400, content=he.detail)
         raise
-    except Exception as e:
-        last_exc = e
-        logger.exception("[analyze_lite] request_id=%r pipeline_failed", request_id)
-        msg = str(e)
-        low = msg.lower()
-        is_quotaish = (
-            "429" in msg
-            or "resource exhausted" in low
-            or "resource_exhausted" in low
-            or "quota" in low
-            or "rate limit" in low
-            or "too many requests" in low
-        )
-        if is_quotaish:
-            return JSONResponse(
-                status_code=503,
-                content={
-                    "detail": msg[:4000],
-                    "code": "LITE_AI_QUOTA_OR_RATE_LIMIT",
-                    "request_id": request_id,
-                },
-            )
-        return JSONResponse(
-            status_code=500,
-            content={
-                "detail": f"Analysis failed: {msg}"[:4000],
-                "code": "LITE_PIPELINE_FAILED",
-                "request_id": request_id,
-            },
-        )
-    finally:
-        if tmp_path and os.path.exists(tmp_path):
-            try:
-                os.unlink(tmp_path)
-            except OSError:
-                pass
-        if gate_acquired and request_id and not completed_normally:
-            try:
-                await complete_lite_analyze_failure(request_id, exc=last_exc)
-            except Exception:
-                pass
 
 
 @router.post("/recalculate")
