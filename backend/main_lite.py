@@ -5,6 +5,7 @@ from dotenv import load_dotenv
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse
+from starlette.responses import Response
 
 load_dotenv()
 
@@ -39,6 +40,11 @@ _safe_load("routers.analyze", "/analyze", ["Analysis"])
 async def root():
     # 浏览器只打开 base URL 时默认无路由会 404；重定向到 /health 便于自检。
     return RedirectResponse(url="/health", status_code=307)
+
+
+@app.head("/health")
+async def health_check_head():
+    return Response(status_code=200)
 
 
 @app.get("/health")

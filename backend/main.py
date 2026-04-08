@@ -399,6 +399,12 @@ if not _MODAL_PRO_SLIM:
 _safe_load("routers.prov3_api", "", [])
 
 
+@app.head("/health")
+async def health_check_head():
+    # UptimeRobot 等探活常用 HEAD；部分边缘/代理不把 HEAD 映射到 GET，会 405。
+    return Response(status_code=200)
+
+
 @app.get("/health")
 async def health_check():
     from lib.prov3.r2_media import prov3_r2_media_fully_configured
