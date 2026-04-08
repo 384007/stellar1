@@ -2,7 +2,15 @@
 # 与「仅预览分支」不同：不使用 --branch，即发布到项目的 Production。
 #
 # Secrets：CLOUDFLARE_API_TOKEN（Account · Cloudflare Pages · Edit）
+#
+# 触发后请到 GitHub：Actions → 本 workflow → 最新 run（run 标题含短 SHA）。
+# 仓库远程应为 github.com/dytsui/stellar1（与本地文件夹名无关）。
 name: Deploy Cloudflare Pages (production)
+
+run-name: "CF Pages prod ${{ github.sha }}"
+
+permissions:
+  contents: read
 
 on:
   push:
@@ -23,8 +31,6 @@ jobs:
   deploy:
     name: Build and deploy Pages + Worker (production)
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
     steps:
       - name: Checkout
         uses: actions/checkout@v4
