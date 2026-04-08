@@ -487,11 +487,15 @@ def run_swingnet_extract(
     *,
     analysis_id: str,
     analysis_fps: float = 240.0,
+    max_extract_frames: int | None = None,
 ) -> list[dict[str, Any]] | None:
     """Return Pro v3 A-layer keyframe dicts, or None to signal fallback.
 
     ``frame_index`` values are **decode indices** in ``video_path`` (the 240fps analysis MP4).
     ``analysis_fps`` is accepted for API symmetry with preprocess; indices do not depend on OpenCV fps.
+
+    ``max_extract_frames`` caps SwingNet decode/LSTM length (default: env ``STELLAR_SWINGNET_EXTRACT_MAX_FRAMES`` or 1200).
+    Lite passes a lower cap via ``STELLAR_SWINGNET_LITE_MAX_FRAMES`` to finish before ~3–4m ingress cuts.
     """
     if not swingnet_enabled():
         return None
@@ -501,7 +505,11 @@ def run_swingnet_extract(
         role_log("[ROLE=LITE_PIPELINE] swingnet_true240_ok loading_model_if_needed")
         model, device = _load_model()
         role_log(f"[ROLE=LITE_PIPELINE] swingnet_model_ready device={device} building_frame_batch")
-        batch, sample_indices, fps, total = _video_to_batch(video_path)
+        cap = max_extract_frames
+        if cap is None:
+            cap = int(os.getenv("STELLAR_SWINGNET_EXTRACT_MAX_FRAMES", "1200"))
+        cap = max(64, min(int(cap), 2400))
+        batch, sample_indices, fps, total = _video_to_batch(video_path, max_frames=cap)
         role_log(
             f"[ROLE=LITE_PIPELINE] swingnet_batch_ready T={batch.shape[1]} samples "
             f"running_lstm_forward seq_cap=64"

@@ -376,9 +376,16 @@ def refine_with_lite_b_layer(
 
         out.append(cloned)
 
+    # Lite (non-plus): cap brute-force cartesian product — recovery+wide can exceed 7M tuples and
+    # stall long enough for browser/ingress timeouts (user sees "无法完成分析" while Modal still runs).
     max_tp: int | None = None
     if plus_fast:
         max_tp = int(os.getenv("STELLAR_PROV3_PLUS_B_MAX_TRIPLET", "250000"))
+    else:
+        if recovery_pass:
+            max_tp = int(os.getenv("STELLAR_LITE_B_RECOVERY_MAX_TRIPLET", "3_000_000"))
+        else:
+            max_tp = int(os.getenv("STELLAR_LITE_B_MAX_TRIPLET", "6_000_000"))
     out = _refine_core_triplet(
         out,
         available_frames,

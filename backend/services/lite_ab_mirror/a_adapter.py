@@ -36,10 +36,17 @@ def infer_lite_a_candidates(
             swingnet_checkpoint_path(),
         )
         afps = float((preprocess_meta or {}).get("analysis_fps") or 240)
+        lite_cap_raw = (os.getenv("STELLAR_SWINGNET_LITE_MAX_FRAMES") or "512").strip()
+        try:
+            lite_cap = int(lite_cap_raw)
+        except ValueError:
+            lite_cap = 512
+        lite_cap = max(64, min(lite_cap, 1200))
         kfs = run_swingnet_extract(
             analysis_video,
             analysis_id=analysis_id,
             analysis_fps=afps,
+            max_extract_frames=lite_cap,
         )
         if kfs:
             return kfs

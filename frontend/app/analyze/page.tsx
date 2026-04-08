@@ -473,6 +473,22 @@ export default function AnalyzePage() {
     }
 
     if (!res.ok) {
+      // Cloudflare 524/522/523: edge gave up waiting on origin. CN Lite often hits ~100s proxy wall
+      // while Modal still runs; body is usually HTML, not JSON.
+      if (res.status === 524) {
+        throw new Error(
+          lang === "zh"
+            ? "网关超时（524）：经 Cloudflare/Pages 代理时单次请求约 100 秒上限，慢速 Lite 分析会被提前断开。可试缩短视频、境外网络直连分析域名，或与 Pro 一样改为异步任务。"
+            : "Edge timeout (524): Cloudflare limits how long one proxied request may wait (~100s). Slow Lite analysis can hit this. Try a shorter video, a direct path to Modal if possible, or async jobs like Pro.",
+        );
+      }
+      if (res.status === 522 || res.status === 523) {
+        throw new Error(
+          lang === "zh"
+            ? `连接源站失败（HTTP ${res.status}）。请稍后重试或检查网络。`
+            : `Origin connection failed (HTTP ${res.status}). Retry or check your network.`,
+        );
+      }
       let errJson: unknown;
       try {
         errJson = await res.json();

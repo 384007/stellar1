@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass, field
 from typing import Dict, List
 
@@ -9,6 +10,19 @@ from services.golfdb_swingnet_service import clear_swingnet_ctx
 from services.lite_ab_mirror.b_gate import run_lite_b_gate
 from services.lite_ab_mirror.b_layer import refine_with_lite_b_layer
 from services.lite_ab_mirror.scoring import per_event_confidence
+
+
+def _lite_skip_b_recovery() -> bool:
+    """Second B pass (wide window + heavy triplet search) often pushes total wall time past ~3–4m ingress/proxy limits.
+
+    Explicit: ``STELLAR_LITE_B_SKIP_RECOVERY=1|0``. Unset on ``STELLAR_RUNTIME=modal`` defaults to skip (1).
+    """
+    raw = (os.getenv("STELLAR_LITE_B_SKIP_RECOVERY") or "").strip().lower()
+    if raw in ("1", "true", "yes"):
+        return True
+    if raw in ("0", "false", "no"):
+        return False
+    return (os.getenv("STELLAR_RUNTIME") or "").strip().lower() == "modal"
 
 
 def _recovery_eligible(fail_reasons: List[str]) -> bool:
@@ -68,6 +82,7 @@ def run_lite_b_refine(
             b_status != "pass"
             and _recovery_eligible(b_fail_reasons)
             and not plus_fast
+            and not _lite_skip_b_recovery()
         ):
             refined2 = refine_with_lite_b_layer(
                 refined,
