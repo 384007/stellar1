@@ -358,16 +358,22 @@ export default function AnalyzePage() {
 
     // Lite: CN → same-origin ``/api/lite/analyze-proxy`` (Edge forwards to ``LITE_BACKEND_URL/analyze/lite``); else direct ``NEXT_PUBLIC_LITE_BACKEND_URL/analyze/lite``.
     let liteUseCnProxy = false;
+    let liteGeoHintFailed = false;
     try {
       const nh = await fetch("/api/lite/network-hint", { method: "GET" });
       if (nh.ok) {
-        const j = (await nh.json()) as { network_hint?: string };
-        if (j.network_hint === "cn") liteUseCnProxy = true;
+        const j = (await nh.json()) as { network_hint?: string; lite_geo?: string };
+        if (j.network_hint === "cn" || j.lite_geo === "cn") liteUseCnProxy = true;
+        else if (j.lite_geo === "unknown" && clientLikelyMainlandChinaUser()) liteUseCnProxy = true;
+      } else {
+        liteGeoHintFailed = true;
       }
     } catch {
-      /* ignore */
+      liteGeoHintFailed = true;
     }
-    if (!liteUseCnProxy && clientLikelyMainlandChinaUser()) liteUseCnProxy = true;
+    if (liteGeoHintFailed && !liteUseCnProxy && clientLikelyMainlandChinaUser()) {
+      liteUseCnProxy = true;
+    }
 
     if (!liteUseCnProxy && !liteBackendBase) {
       throw new Error(

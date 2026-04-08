@@ -11,7 +11,24 @@ from typing import Any
 
 import cv2
 
+from services.video_utils import get_video_rotation
+
 logger = logging.getLogger(__name__)
+
+def _lite_ffmpeg_vf_rotation_prefix(rotation_deg: int) -> str:
+    """Match ``video_utils.apply_rotation`` using ffmpeg filters (storage pixels, no container tag).
+
+    Used with ``-noautorotate`` so behavior aligns with OpenCV + ``get_video_rotation`` on the source file.
+    """
+    r = int(rotation_deg) % 360
+    if r == 90:
+        return "transpose=1,"  # 90° CW — same sense as cv2.ROTATE_90_CLOCKWISE
+    if r == 180:
+        return "transpose=1,transpose=1,"
+    if r == 270:
+        return "transpose=2,"  # 90° CCW — same as cv2.ROTATE_90_COUNTERCLOCKWISE
+    return ""
+
 
 def _lite_fake_analysis_fps() -> int:
     raw = (os.getenv("STELLAR_LITE_FAKE_ANALYSIS_FPS", "240") or "240").strip() or "240"
@@ -32,13 +49,22 @@ def lite_light_clean_video(source_path: str, work_dir: str) -> dict[str, Any]:
     Path(work_dir).mkdir(parents=True, exist_ok=True)
     out = str(Path(work_dir) / "lite_clean.mp4")
     target_fps = _lite_fake_analysis_fps()
+    src_rot = int(get_video_rotation(source_path))
+    rot_prefix = _lite_ffmpeg_vf_rotation_prefix(src_rot)
+    if src_rot in (90, 180, 270):
+        logger.info(
+            "[lite] clean video: burning source rotation=%s° into pixels (-noautorotate + vf)",
+            src_rot,
+        )
+    vf = f"{rot_prefix}scale='min(960,iw)':-2,fps={target_fps}"
     cmd = [
         "ffmpeg",
         "-y",
+        "-noautorotate",
         "-i",
         source_path,
         "-vf",
-        f"scale='min(960,iw)':-2,fps={target_fps}",
+        vf,
         "-an",
         "-c:v",
         "libx264",

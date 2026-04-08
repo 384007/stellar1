@@ -1,4 +1,4 @@
-"""Lite orchestrator: preprocess → A → B? → export → AI → prediction → reliability (single entry)."""
+"""Lite orchestrator: fake-240 preprocess → SwingNet A/B (Lite mirror, no prov3) → export → AI → prediction."""
 
 from __future__ import annotations
 
@@ -6,20 +6,23 @@ import asyncio
 import base64
 import logging
 import os
-import tempfile
 import uuid
 from pathlib import Path
 from typing import Any
 
 from services.gemini_service import LITE_AI_TIMEOUT_S, analyze_swing_lite, cap_confidence
-from services.lite_a_extractor_service import run_lite_a_extract
-from services.lite_b_refiner_service import run_lite_b_refine
+from services.handedness_service import detect_handedness
+from services.lite_a_extractor_service import _club_from_previews
+from services.lite_ab_mirror.orchestrator import run_lite_ab_after_preprocess
 from services.lite_keyframe_export import lite_persist_keyframe_images
 from services.lite_preprocess_service import run_lite_preprocess
 from services.shot_predictor import calibrate_prediction, predict_shot
 
 logger = logging.getLogger(__name__)
 _LOG = "[lite_orch]"
+
+_MIN_HAND_CONF = 0.30
+_MIN_CLUB_CONF = 0.40
 
 _EVENT_TO_LITE_PHASE = {
     "Address": ("address", "Address", "准备"),
@@ -101,29 +104,34 @@ async def run_lite_orchestrator(video_path: str, *, region: str = "global") -> d
         analysis_video = str(pre["analysis_video_path"])
         poses = list(pre["poses"])
 
-        a_out = await run_lite_a_extract(pre, region=region)
+        final_rows, trust_tier, ab_phase_pass, ab_reasons = await asyncio.to_thread(
+            run_lite_ab_after_preprocess,
+            pre,
+        )
 
-        if a_out["a_pass"]:
-            final_rows = a_out["rows"]
-            trust_tier = "high"
-            phase_passed = True
+        if len(final_rows) < 8:
+            logger.error("%s incomplete keyframes count=%s reasons=%s", _LOG, len(final_rows), ab_reasons)
+            raise RuntimeError("lite_swingnet_keyframes_incomplete")
+
+        if ab_phase_pass and trust_tier == "high":
             logger.info("%s path=A_high_trust", _LOG)
+        elif ab_phase_pass and trust_tier == "medium":
+            logger.info("%s path=B_medium_trust ab_reasons=%s", _LOG, ab_reasons)
         else:
-            b_out = run_lite_b_refine(pre, a_out)
-            final_rows = b_out["rows"]
-            if b_out["b_pass"]:
-                trust_tier = "medium"
-                phase_passed = True
-                logger.info("%s path=B_medium_trust a_fail=%s", _LOG, a_out["fail_reasons"])
-            else:
-                trust_tier = "low"
-                phase_passed = False
-                logger.info(
-                    "%s path=B_low_trust a_fail=%s b_fail=%s",
-                    _LOG,
-                    a_out["fail_reasons"],
-                    b_out["fail_reasons"],
-                )
+            logger.info("%s path=B_low_trust ab_reasons=%s", _LOG, ab_reasons)
+
+        hand_info = detect_handedness(poses, None) if poses else {"hand": "UNKNOWN", "confidence": 0.0}
+        hand = str(hand_info.get("hand") or "UNKNOWN")
+        hconf = float(hand_info.get("confidence") or 0.0)
+        hand_ok = hand != "UNKNOWN" and hconf >= _MIN_HAND_CONF
+
+        club_info = await _club_from_previews(list(pre.get("preview_bgr") or []), region)
+        ct = str(club_info.get("club_type") or "UNKNOWN").upper()
+        cg = str(club_info.get("club_group") or "IRON").upper()
+        cconf = float(club_info.get("confidence") or 0.0)
+        club_ok = ct != "UNKNOWN" and cconf >= _MIN_CLUB_CONF
+
+        phase_passed_product = ab_phase_pass and hand_ok and club_ok
 
         out_dir = str(Path(work_dir) / "lite_keyframes")
         saved = await asyncio.to_thread(
@@ -141,13 +149,6 @@ async def run_lite_orchestrator(video_path: str, *, region: str = "global") -> d
 
         impact_fi = _impact_frame_index(final_rows)
         impact_pose_idx = _closest_pose_index(poses, impact_fi, vfps)
-
-        hand = str(a_out["hand"])
-        hand_info = a_out["hand_info"]
-        club_info = a_out["club_info"]
-        ct = str(club_info.get("club_type") or "UNKNOWN").upper()
-        cg = str(club_info.get("club_group") or "IRON").upper()
-        cconf = float(club_info.get("confidence") or 0.0)
 
         ai_result = await asyncio.wait_for(
             analyze_swing_lite(
@@ -189,7 +190,7 @@ async def run_lite_orchestrator(video_path: str, *, region: str = "global") -> d
         tracking_quality = 1.0 if len(poses) >= 30 else (0.65 if len(poses) >= 15 else 0.35)
         analysis_reliability = cap_confidence(
             ai_result,
-            phase_validation={"passed": phase_passed},
+            phase_validation={"passed": phase_passed_product},
             hand=hand,
             tracking_quality=tracking_quality,
             lite_trust_tier=trust_tier,
