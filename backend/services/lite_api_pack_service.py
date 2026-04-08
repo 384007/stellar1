@@ -15,6 +15,7 @@ _LITE_RELIABILITY_REASON_PUBLIC: dict[str, str] = {
     "club_assumed_7i": "A default club was assumed for distance estimates.",
     "club_assumed_7I": "A default club was assumed for distance estimates.",
     "limited_data": "Motion data was limited for this clip.",
+    "lite_trust_medium": "Evidence quality is moderate for this clip; results are still useful but less certain.",
 }
 
 _ALLOWED_TOP_LEVEL_FIELDS = {

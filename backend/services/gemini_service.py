@@ -1687,6 +1687,7 @@ def cap_confidence(
 
     Penalties:
       - phase_validation failed (soft): -30, reason ``phase_validation_soft_fail``
+      - Lite ``lite_trust_tier=medium`` (A fail, B pass): -14, reason ``lite_trust_medium``
       - hand unknown: -15
       - club unknown: -10
       - tracking weak (<0.5): -10
@@ -1702,6 +1703,11 @@ def cap_confidence(
     if phase_validation is not None and not phase_validation.get("passed", True):
         penalty += 30
         reasons.append("phase_validation_soft_fail")
+    # Lite orchestrator: medium trust tier (A fail, B pass) — product reasons sanitized in pack.
+    lt = kwargs.get("lite_trust_tier")
+    if lt == "medium":
+        penalty += 14
+        reasons.append("lite_trust_medium")
     if kwargs.get("phase_vision_reliable") is False:
         penalty += 20
         reasons.append("phase_vision_unreliable")
