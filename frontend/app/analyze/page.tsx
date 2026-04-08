@@ -27,6 +27,7 @@ import { displayKeyframesForResult } from "@/lib/analysis-display-keyframes";
 import { isProv3StrictMediaPolicyResult, type Prov3ResultLike } from "@/lib/prov3-keyframe-media";
 import { resolveProv3ProductMediaUrl } from "@/lib/prov3-media-url";
 import { clientLikelyMainlandChinaUser } from "@/lib/client-region-hint";
+import { LITE_ANALYZE_FETCH_TIMEOUT_MS } from "@/lib/lite-analyze-timeout";
 import { pruneLocalStellarHistoryRecords } from "@/lib/pro-history-retention";
 import {
   DEFAULT_PROV3_MODAL_URL,
@@ -401,7 +402,7 @@ export default function AnalyzePage() {
         fd.append("file", file as File, filename);
         fd.append("request_id", rid);
         const analyzeCtrl = new AbortController();
-        const analyzeTimer = setTimeout(() => analyzeCtrl.abort(), 180_000);
+        const analyzeTimer = setTimeout(() => analyzeCtrl.abort(), LITE_ANALYZE_FETCH_TIMEOUT_MS);
         try {
           res = await fetch(liteAnalyzeUrl, {
             method: "POST",
@@ -414,7 +415,7 @@ export default function AnalyzePage() {
         }
       } else {
         const controller = new AbortController();
-        const timer = setTimeout(() => controller.abort(), 120_000);
+        const timer = setTimeout(() => controller.abort(), LITE_ANALYZE_FETCH_TIMEOUT_MS);
         try {
           const fd = makeFormData(file as Blob, filename);
           fd.append("request_id", rid);
@@ -430,7 +431,11 @@ export default function AnalyzePage() {
       }
     } catch (e) {
       if (e instanceof DOMException && e.name === "AbortError") {
-        throw new Error(lang === "zh" ? "分析超时，请稍后重试" : "The analysis took too long. Please try again.");
+        throw new Error(
+          lang === "zh"
+            ? "分析等待超时。若网络较慢，服务端可能仍在处理，请稍后从历史记录查看是否已完成。"
+            : "This request timed out waiting for a response. The server may still be processing—check History shortly or try again.",
+        );
       }
       throw new Error(
         lang === "zh" ? "当前无法完成分析，请稍后重试" : "Analysis could not be completed. Please try again.",

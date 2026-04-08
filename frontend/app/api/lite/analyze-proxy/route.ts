@@ -2,6 +2,8 @@ import { NextRequest, NextResponse } from "next/server";
 import { getRequestContext } from "@cloudflare/next-on-pages";
 import { jwtVerify } from "jose";
 
+import { LITE_ANALYZE_FETCH_TIMEOUT_MS } from "@/lib/lite-analyze-timeout";
+
 export const runtime = "edge";
 
 /**
@@ -138,7 +140,7 @@ export async function POST(request: NextRequest) {
       method: "POST",
       headers: upstreamHeaders,
       body: out,
-      signal: AbortSignal.timeout(180_000),
+      signal: AbortSignal.timeout(LITE_ANALYZE_FETCH_TIMEOUT_MS),
     });
   } catch (e) {
     const msg = e instanceof Error ? e.message : "upstream fetch failed";
