@@ -1,8 +1,7 @@
-"""B-path refine — mirror of ``services.prov3_keyframe_b_refiner_service``."""
+"""Legacy B-style refine wrapper (single pass). Lite product path uses ``orchestrator.run_lite_ab_after_preprocess``."""
 
 from __future__ import annotations
 
-import os
 from dataclasses import dataclass, field
 from typing import Dict, List
 
@@ -10,33 +9,6 @@ from services.golfdb_swingnet_service import clear_swingnet_ctx
 from services.lite_ab_mirror.b_gate import run_lite_b_gate
 from services.lite_ab_mirror.b_layer import refine_with_lite_b_layer
 from services.lite_ab_mirror.scoring import per_event_confidence
-
-
-def _lite_skip_b_recovery() -> bool:
-    """Second B pass (wide window + heavy triplet search) often pushes total wall time past ~3–4m ingress/proxy limits.
-
-    Explicit: ``STELLAR_LITE_B_SKIP_RECOVERY=1|0``. Unset on ``STELLAR_RUNTIME=modal`` defaults to skip (1).
-    """
-    raw = (os.getenv("STELLAR_LITE_B_SKIP_RECOVERY") or "").strip().lower()
-    if raw in ("1", "true", "yes"):
-        return True
-    if raw in ("0", "false", "no"):
-        return False
-    return (os.getenv("STELLAR_RUNTIME") or "").strip().lower() == "modal"
-
-
-def _recovery_eligible(fail_reasons: List[str]) -> bool:
-    blob = "|".join(str(x).lower() for x in fail_reasons)
-    needles = (
-        "core_event_semantic",
-        "high_risk_event_spacing",
-        "top_impact_relation",
-        "event_order",
-        "top_not_reliable",
-        "impact_not_reliable",
-        "confidence_below_refine",
-    )
-    return any(n in blob for n in needles)
 
 
 @dataclass
@@ -78,33 +50,6 @@ def run_lite_b_refine(
                 fi = int(row.get("frame_index", 0))
                 row["frame_index"] = max(0, min(fi, max_idx))
         b_status, b_fail_reasons = run_lite_b_gate(refined, fail_reasons)
-        if (
-            b_status != "pass"
-            and _recovery_eligible(b_fail_reasons)
-            and not plus_fast
-            and not _lite_skip_b_recovery()
-        ):
-            refined2 = refine_with_lite_b_layer(
-                refined,
-                enhanced_local_frames,
-                analysis_id=analysis_id,
-                analysis_video=analysis_video,
-                preprocess_meta=preprocess_meta,
-                analysis_frames=analysis_frames,
-                confidence=confidence,
-                fail_reasons=fail_reasons,
-                recovery_pass=True,
-                plus_fast=False,
-            )
-            if max_idx >= 0:
-                for row in refined2:
-                    fi = int(row.get("frame_index", 0))
-                    row["frame_index"] = max(0, min(fi, max_idx))
-            b_status2, b_fail2 = run_lite_b_gate(refined2, fail_reasons)
-            if b_status2 == "pass" or len(b_fail2) < len(b_fail_reasons):
-                refined = refined2
-                b_status = b_status2
-                b_fail_reasons = b_fail2
         return LiteRefineResult(
             analysis_id=analysis_id,
             refined_keyframes=refined,

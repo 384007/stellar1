@@ -251,7 +251,7 @@ def _refine_core_triplet(
 
     _triplet_product = len(top_c) * len(mid_c) * len(imp_c)
     logger.info(
-        "[lite_ab][B] core_triplet brute-force sizes top=%d mid=%d imp=%d product=%d wide=%s",
+        "[lite_ab][refine] core_triplet brute-force sizes top=%d mid=%d imp=%d product=%d wide=%s",
         len(top_c),
         len(mid_c),
         len(imp_c),
@@ -261,7 +261,7 @@ def _refine_core_triplet(
     cap = max_triplet_product
     if cap is not None and _triplet_product > int(cap):
         logger.warning(
-            "[lite_ab][B] core_triplet product=%d exceeds max_triplet_product=%s — skip brute-force (return anchors)",
+            "[lite_ab][refine] core_triplet product=%d exceeds max_triplet_product=%s — skip brute-force (return anchors)",
             _triplet_product,
             cap,
         )
@@ -348,7 +348,7 @@ def refine_with_lite_b_layer(
         focus_events |= FOCUS_EVENTS_DEFAULT | {"Mid-backswing", "Mid-follow-through"}
 
     logger.info(
-        "[lite_ab][B] refine pass start recovery=%s swingnet_window=%d rows=%d avail_frame_idxs=%d focus_events=%d",
+        "[lite_ab][refine] refine pass start recovery=%s swingnet_window=%d rows=%d avail_frame_idxs=%d focus_events=%d",
         recovery_pass,
         sw_w,
         len(refined_in),
@@ -394,5 +394,5 @@ def refine_with_lite_b_layer(
     )
     out = _refine_finish_after_impact(out, available_frames)
     out = _enforce_event_spacing(out)
-    logger.info("[lite_ab][B] refine pass done recovery=%s", recovery_pass)
+    logger.info("[lite_ab][refine] refine pass done recovery=%s", recovery_pass)
     return out

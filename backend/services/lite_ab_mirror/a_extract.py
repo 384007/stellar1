@@ -20,6 +20,35 @@ class LiteExtractResult:
     fail_reasons: List[str] = field(default_factory=list)
 
 
+def run_lite_a_infer_only(
+    *,
+    analysis_id: str,
+    analysis_video: str,
+    preprocess_meta: Dict[str, object],
+    analysis_frames: List[dict],
+) -> LiteExtractResult:
+    """SwingNet infer + 8-event completeness only — quality gate runs after local refine."""
+    keyframes = infer_lite_a_candidates(
+        analysis_frames,
+        analysis_video=analysis_video,
+        analysis_id=analysis_id,
+        preprocess_meta=preprocess_meta,
+    )
+    if len(keyframes) != len(EVENT_SEQUENCE):
+        return LiteExtractResult(
+            analysis_id=analysis_id,
+            keyframes=keyframes,
+            a_status="fail",
+            fail_reasons=[_A_INCOMPLETE_REASON],
+        )
+    return LiteExtractResult(
+        analysis_id=analysis_id,
+        keyframes=keyframes,
+        a_status="infer_ok",
+        fail_reasons=[],
+    )
+
+
 def run_lite_a_extract(
     *,
     analysis_id: str,

@@ -3,9 +3,9 @@
 - **A-path:** full-sequence SwingNet logits → eight event keyframes (+ top-k).
 - **B-path:** local probability-peak refinement using A-path caches.
 
-**Timeline:** inference runs on ``analysis_240fps.mp4`` (constant **240fps** from ``build_analysis_timeline``).
-``frame_index`` on each keyframe is the **decoded frame number in that analysis file** (0 … N−1), same as
-``generate_analysis_frames`` / UI strips. Wall-clock time ≈ ``frame_index / 240``.
+**Timeline:** inference runs on the analysis clip (native or CFR timeline from preprocess).
+``frame_index`` on each keyframe is the **decoded frame number in that analysis file** (0 … N−1), aligned with
+``generate_analysis_frames`` when present. Wall-clock time ≈ ``frame_index / analysis_fps``.
 
 Weights: baked at ``/opt/stellar-weights`` on Modal image build; volume ``/models``; local ``backend/models/``.
 Non-Modal: auto-download from Google Drive on first model load unless ``STELLAR_SWINGNET_AUTO_DOWNLOAD=0``.
@@ -250,9 +250,8 @@ def _video_to_batch(
     return batch, sample_indices.astype(np.int64), fps, total
 
 
-def _validate_true240_timeline(video_path: str, analysis_fps: float) -> tuple[float, int]:
-    if abs(float(analysis_fps) - 240.0) > 0.5:
-        raise RuntimeError(f"true240_required: analysis_fps={analysis_fps}")
+def _validate_analysis_clip_readable(video_path: str, analysis_fps: float) -> tuple[float, int]:
+    _ = analysis_fps  # reserved for logging / future strict modes
     cap = cv2.VideoCapture(video_path)
     if not cap.isOpened():
         cap.release()
@@ -264,8 +263,6 @@ def _validate_true240_timeline(video_path: str, analysis_fps: float) -> tuple[fl
         raise RuntimeError(f"analysis_timeline_empty:{video_path}")
     if fps <= 0:
         raise RuntimeError("analysis_timeline_fps_unknown")
-    if abs(fps - 240.0) > 0.5:
-        raise RuntimeError(f"true240_required: video_fps={fps:.3f}")
     return fps, total
 
 
@@ -491,7 +488,7 @@ def run_swingnet_extract(
 ) -> list[dict[str, Any]] | None:
     """Return Pro v3 A-layer keyframe dicts, or None to signal fallback.
 
-    ``frame_index`` values are **decode indices** in ``video_path`` (the 240fps analysis MP4).
+    ``frame_index`` values are **decode indices** in ``video_path`` (the analysis MP4).
     ``analysis_fps`` is accepted for API symmetry with preprocess; indices do not depend on OpenCV fps.
 
     ``max_extract_frames`` caps SwingNet decode/LSTM length (default: env ``STELLAR_SWINGNET_EXTRACT_MAX_FRAMES`` or 1200).
@@ -501,8 +498,8 @@ def run_swingnet_extract(
         return None
     try:
         role_log(f"[ROLE=LITE_PIPELINE] swingnet_extract_start analysis_id={analysis_id}")
-        _validate_true240_timeline(video_path, analysis_fps)
-        role_log("[ROLE=LITE_PIPELINE] swingnet_true240_ok loading_model_if_needed")
+        _validate_analysis_clip_readable(video_path, analysis_fps)
+        role_log("[ROLE=LITE_PIPELINE] swingnet_analysis_clip_ok loading_model_if_needed")
         model, device = _load_model()
         role_log(f"[ROLE=LITE_PIPELINE] swingnet_model_ready device={device} building_frame_batch")
         cap = max_extract_frames

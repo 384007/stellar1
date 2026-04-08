@@ -5,8 +5,8 @@ Deploy: ``modal deploy modal_app_lite.py``
 
 Resources: cpu=1, memory=4096 MiB, timeout=3600s (aligned with frontend ``LITE_ANALYZE_FETCH_TIMEOUT_MS``). Default Modal scaling: scale to zero when idle (cold start on next request; no keep_warm).
 
-Uses **lite_image** (``backend/requirements-modal-lite.txt`` + CPU torch for SwingNet), not ``modal_app.image``.
-SwingNet weights are **baked** into ``/opt/stellar-weights/swingnet_1800.pth.tar`` at image build (same ``tools/modal_bake_swingnet.py`` as main Modal).
+Uses **lite_image** (``backend/requirements-modal-lite.txt`` + CPU torch for SwingNet), not the full-app Modal image.
+SwingNet weights are **baked** into ``/opt/stellar-weights/swingnet_1800.pth.tar`` at image build (see Modal image ``dockerfile`` in this file / your bake pipeline).
 ASGI: ``main_lite:app`` — no Plus / Pro v3 / stellar-pro routers.
 
 Logs: ``modal app logs stellar-ai-lite --follow``

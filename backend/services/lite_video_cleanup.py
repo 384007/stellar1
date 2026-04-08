@@ -30,25 +30,14 @@ def _lite_ffmpeg_vf_rotation_prefix(rotation_deg: int) -> str:
     return ""
 
 
-def _lite_fake_analysis_fps() -> int:
-    raw = (os.getenv("STELLAR_LITE_FAKE_ANALYSIS_FPS", "240") or "240").strip() or "240"
-    try:
-        v = int(float(raw))
-    except (TypeError, ValueError):
-        v = 240
-    return max(1, min(480, v))
-
-
 def lite_light_clean_video(source_path: str, work_dir: str) -> dict[str, Any]:
     """
-    Scale + H.264 + constant fake analysis fps (default 240 CFR via ffmpeg ``fps=`` — duplicated frames,
-    not optical flow). Strips audio. Output stays under ``work_dir`` only.
-
-    ``STELLAR_LITE_FAKE_ANALYSIS_FPS`` overrides the target CFR (clamped 1–480).
+    Scale + H.264 on native frame timing (no forced CFR upsample). Strips audio.
+    Output stays under ``work_dir`` only. Used with SwingNet + analysis lattice on the same timeline
+    as the decoded clip.
     """
     Path(work_dir).mkdir(parents=True, exist_ok=True)
     out = str(Path(work_dir) / "lite_clean.mp4")
-    target_fps = _lite_fake_analysis_fps()
     src_rot = int(get_video_rotation(source_path))
     rot_prefix = _lite_ffmpeg_vf_rotation_prefix(src_rot)
     if src_rot in (90, 180, 270):
@@ -56,7 +45,7 @@ def lite_light_clean_video(source_path: str, work_dir: str) -> dict[str, Any]:
             "[lite] clean video: burning source rotation=%s° into pixels (-noautorotate + vf)",
             src_rot,
         )
-    vf = f"{rot_prefix}scale='min(960,iw)':-2,fps={target_fps}"
+    vf = f"{rot_prefix}scale='min(960,iw)':-2"
     cmd = [
         "ffmpeg",
         "-y",
@@ -85,9 +74,9 @@ def lite_light_clean_video(source_path: str, work_dir: str) -> dict[str, Any]:
             timeout=600,
             text=True,
         )
-        logger.info("[lite] clean video -> fake CFR fps=%s (local temp, no R2)", target_fps)
+        logger.info("[lite] clean video -> native timing (local temp, no R2)")
     except (FileNotFoundError, subprocess.CalledProcessError, OSError) as exc:
-        logger.warning("[lite] ffmpeg cleanup failed (%s) — copying source (no fake-%s CFR)", exc, target_fps)
+        logger.warning("[lite] ffmpeg cleanup failed (%s) — copying source", exc)
         shutil.copy2(source_path, out)
     cap = cv2.VideoCapture(out)
     if not cap.isOpened():
@@ -97,6 +86,66 @@ def lite_light_clean_video(source_path: str, work_dir: str) -> dict[str, Any]:
     cap.release()
     if total <= 0:
         raise RuntimeError("lite_clean_video_empty")
+    if vfps <= 1e-6:
+        vfps = 30.0
+    return {"path": out, "fps": vfps, "total_frames": total, "duration_s": total / vfps}
+
+
+def lite_minimal_clean_video(source_path: str, work_dir: str) -> dict[str, Any]:
+    """
+    Motion-heuristic Lite path: rotation + scale + H.264 only.
+    Does **not** force CFR upsample (no fake-240 lattice) — keeps native frame timing for timeline/motion extractors.
+    """
+    Path(work_dir).mkdir(parents=True, exist_ok=True)
+    out = str(Path(work_dir) / "lite_motion_clip.mp4")
+    src_rot = int(get_video_rotation(source_path))
+    rot_prefix = _lite_ffmpeg_vf_rotation_prefix(src_rot)
+    if src_rot in (90, 180, 270):
+        logger.info(
+            "[lite] minimal clean: burning source rotation=%s° into pixels (-noautorotate + vf)",
+            src_rot,
+        )
+    vf = f"{rot_prefix}scale='min(960,iw)':-2"
+    cmd = [
+        "ffmpeg",
+        "-y",
+        "-noautorotate",
+        "-i",
+        source_path,
+        "-vf",
+        vf,
+        "-an",
+        "-c:v",
+        "libx264",
+        "-preset",
+        "veryfast",
+        "-crf",
+        "23",
+        "-movflags",
+        "+faststart",
+        out,
+    ]
+    try:
+        subprocess.run(
+            cmd,
+            check=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            timeout=600,
+            text=True,
+        )
+        logger.info("[lite] minimal clean video -> native timing (no forced CFR upsample)")
+    except (FileNotFoundError, subprocess.CalledProcessError, OSError) as exc:
+        logger.warning("[lite] minimal ffmpeg failed (%s) — copying source", exc)
+        shutil.copy2(source_path, out)
+    cap = cv2.VideoCapture(out)
+    if not cap.isOpened():
+        raise RuntimeError("lite_minimal_clean_video_unreadable")
+    vfps = float(cap.get(cv2.CAP_PROP_FPS) or 30.0)
+    total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+    cap.release()
+    if total <= 0:
+        raise RuntimeError("lite_minimal_clean_video_empty")
     if vfps <= 1e-6:
         vfps = 30.0
     return {"path": out, "fps": vfps, "total_frames": total, "duration_s": total / vfps}
