@@ -5,6 +5,7 @@
 #
 # 触发后请到 GitHub：Actions → 本 workflow → 最新 run（run 标题含短 SHA）。
 # 仓库远程应为 github.com/dytsui/stellar1（与本地文件夹名无关）。
+# Deploy bump: main 已含 d0e4dd95b7d39391ef1e7b782a0fcb47da93512c；本注释用于触发新的生产构建（非空提交）。
 name: Deploy Cloudflare Pages (production)
 
 run-name: "CF Pages prod ${{ github.sha }}"
