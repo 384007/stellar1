@@ -6,6 +6,7 @@ Deploy: ``modal deploy modal_app_lite.py``
 Resources: cpu=1, memory=4096 MiB, timeout=900s. Default Modal scaling: scale to zero when idle (cold start on next request; no keep_warm).
 
 Uses **lite_image** (``backend/requirements-modal-lite.txt`` + CPU torch for SwingNet), not ``modal_app.image``.
+SwingNet weights are **baked** into ``/opt/stellar-weights/swingnet_1800.pth.tar`` at image build (same ``tools/modal_bake_swingnet.py`` as main Modal).
 ASGI: ``main_lite:app`` — no Plus / Pro v3 / stellar-pro routers.
 
 Logs: ``modal app logs stellar-ai-lite --follow``
@@ -75,7 +76,7 @@ stellar_models_volume = modal.Volume.from_name("stellar-models", create_if_missi
 
 
 def _wire_stellar_model_paths() -> None:
-    """Map volume + baked weights to STELLAR_* env (lite: no YOLO/SwingNet bake in image — volume may still supply)."""
+    """Map volume + baked weights to STELLAR_* env (YOLO/MotionBERT; SwingNet via bake + optional volume override)."""
     baked_yolo = Path("/opt/stellar-weights/yolo11n.pt")
     vol_yolo = Path("/models/yolo11n.pt")
     if vol_yolo.is_file():
@@ -96,6 +97,27 @@ def _wire_stellar_model_paths() -> None:
             os.environ["STELLAR_MOTIONBERT_CHECKPOINT"] = p
             print(f"[modal-lite] STELLAR_MOTIONBERT_CHECKPOINT={p}", flush=True)
             return
+
+
+def _wire_swingnet_paths_lite() -> None:
+    """Volume ``/models`` overrides image-baked ``/opt/stellar-weights`` SwingNet (same as main Modal)."""
+    if (os.getenv("STELLAR_SWINGNET_CHECKPOINT") or "").strip():
+        return
+    for base in (Path("/models"), Path("/opt/stellar-weights")):
+        for name in ("swingnet_1800.pth.tar", "swingnet_1800.pth"):
+            p = base / name
+            if p.is_file() and p.stat().st_size > 50_000_000:
+                os.environ["STELLAR_SWINGNET_CHECKPOINT"] = str(p)
+                print(
+                    f"[modal-lite] SwingNet checkpoint={p} bytes={p.stat().st_size}",
+                    flush=True,
+                )
+                return
+            if p.is_file():
+                print(
+                    f"[modal-lite] SwingNet skip too-small file={p} bytes={p.stat().st_size}",
+                    flush=True,
+                )
 
 
 lite_image = (
@@ -123,6 +145,14 @@ lite_image = (
     .run_commands(
         "python -m pip install --no-cache-dir --no-deps 'numpy==1.26.4' --force-reinstall"
     )
+    # SwingNet (golfdb) for Lite A/B — bake ~63MB into /opt/stellar-weights (same script as modal_app.py).
+    .run_commands("python -m pip install --no-cache-dir 'gdown>=5.2,<6'")
+    .add_local_file(
+        local_path=str(Path(__file__).resolve().parent / "tools" / "modal_bake_swingnet.py"),
+        remote_path="/root/modal_bake_swingnet.py",
+        copy=True,
+    )
+    .run_commands("python /root/modal_bake_swingnet.py")
     .env(
         {
             **_MODAL_BUILD,
@@ -161,8 +191,7 @@ def fastapi_app_lite():
     # Intentionally do **not** set STELLAR_MODAL_PRO_V3_ONLY or Pro v3 ffmpeg overrides — lite worker is separate.
 
     _wire_stellar_model_paths()
-    # Lite: do not enable MMAction2 or set SwingNet env here; checkpoint still resolves via
-    # services.golfdb_swingnet_paths (e.g. /models/swingnet_1800.pth.tar on the volume).
+    _wire_swingnet_paths_lite()
 
     _sha = os.environ.get("STELLAR_GIT_SHA", "unknown")
     print(
