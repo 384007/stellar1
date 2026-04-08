@@ -174,9 +174,8 @@ def _load_model() -> tuple[EventDetector, torch.device]:
         return model, dev
 
 
-def _read_letterbox_rgb(cap: cv2.VideoCapture, input_size: int) -> np.ndarray | None:
-    ok, img = cap.read()
-    if not ok or img is None:
+def _bgr_to_letterbox_rgb(img: np.ndarray, input_size: int) -> np.ndarray | None:
+    if img is None or img.size == 0:
         return None
     h, w = img.shape[:2]
     ratio = input_size / max(h, w)
@@ -191,6 +190,13 @@ def _read_letterbox_rgb(cap: cv2.VideoCapture, input_size: int) -> np.ndarray | 
         resized, top, bottom, left, right, cv2.BORDER_CONSTANT, value=border
     )
     return cv2.cvtColor(b_img, cv2.COLOR_BGR2RGB)
+
+
+def _read_letterbox_rgb(cap: cv2.VideoCapture, input_size: int) -> np.ndarray | None:
+    ok, img = cap.read()
+    if not ok or img is None:
+        return None
+    return _bgr_to_letterbox_rgb(img, input_size)
 
 
 def _video_to_batch(
@@ -221,22 +227,59 @@ def _video_to_batch(
     sample_indices = np.unique(np.linspace(0, total - 1, num=n_target, dtype=np.int64))
 
     frames: list[np.ndarray] = []
+    collected_indices: list[int] = []
     n_samp = len(sample_indices)
     log_step = max(1, min(150, n_samp // 6 or 1))
-    for i, idx in enumerate(sample_indices):
-        if i == 0 or (i + 1) % log_step == 0 or i == n_samp - 1:
-            role_log(
-                f"[ROLE=LITE_PIPELINE] swingnet_frame_decode {i + 1}/{n_samp} "
-                f"target_idx={int(idx)} ok_frames={len(frames)}"
-            )
-        cap.set(cv2.CAP_PROP_POS_FRAMES, float(int(idx)))
-        rgb = _read_letterbox_rgb(cap, input_size)
-        if rgb is None:
-            continue
-        frames.append(rgb)
-    cap.release()
-    if len(frames) < 8:
-        raise ValueError("swingnet_too_few_frames")
+
+    # Sequential decode (one pass): same frames as random seek, much faster on H.264/MP4.
+    use_seq = (os.getenv("STELLAR_SWINGNET_SEQUENTIAL_DECODE") or "1").strip().lower() not in (
+        "0",
+        "false",
+        "no",
+    )
+    if use_seq:
+        targets = [int(x) for x in sample_indices.tolist()]
+        ti = 0
+        fi = 0
+        while fi < total and ti < len(targets):
+            ok, bgr = cap.read()
+            if not ok or bgr is None:
+                break
+            if fi == targets[ti]:
+                rgb = _bgr_to_letterbox_rgb(bgr, input_size)
+                if rgb is not None:
+                    frames.append(rgb)
+                    collected_indices.append(fi)
+                    nf = len(frames)
+                    if nf == 1 or nf % log_step == 0 or nf == n_samp:
+                        role_log(
+                            f"[ROLE=LITE_PIPELINE] swingnet_frame_decode {nf}/{n_samp} "
+                            f"seq_idx={fi} ok_frames={nf}"
+                        )
+                ti += 1
+            fi += 1
+        cap.release()
+        if len(frames) < 8:
+            raise ValueError("swingnet_too_few_frames")
+        sample_out = np.array(collected_indices, dtype=np.int64)
+    else:
+        for i, idx in enumerate(sample_indices):
+            if i == 0 or (i + 1) % log_step == 0 or i == n_samp - 1:
+                role_log(
+                    f"[ROLE=LITE_PIPELINE] swingnet_frame_decode {i + 1}/{n_samp} "
+                    f"target_idx={int(idx)} ok_frames={len(frames)}"
+                )
+            cap.set(cv2.CAP_PROP_POS_FRAMES, float(int(idx)))
+            rgb = _read_letterbox_rgb(cap, input_size)
+            if rgb is None:
+                continue
+            frames.append(rgb)
+        cap.release()
+        if len(frames) < 8:
+            raise ValueError("swingnet_too_few_frames")
+        sample_out = sample_indices.astype(np.int64)
+        if len(frames) != len(sample_out):
+            sample_out = sample_out[: len(frames)]
 
     stack = np.stack(frames, axis=0).astype(np.float32) / 255.0
     t = torch.from_numpy(stack).permute(0, 3, 1, 2)
@@ -244,10 +287,7 @@ def _video_to_batch(
     std = torch.tensor([0.229, 0.224, 0.225]).view(1, 3, 1, 1)
     t = (t - mean) / std
     batch = t.unsqueeze(0)
-    # Rebuild sample_indices aligned with successfully read frames — assume 1:1 if none skipped
-    if len(frames) != len(sample_indices):
-        sample_indices = sample_indices[: len(frames)]
-    return batch, sample_indices.astype(np.int64), fps, total
+    return batch, sample_out, fps, total
 
 
 def _validate_true240_timeline(video_path: str, analysis_fps: float) -> tuple[float, int]:
