@@ -13,10 +13,8 @@ run-name: "CF Pages prod ${{ github.sha }}"
 permissions:
   contents: read
 
+# 不再在 push main 时自动跑生产发布；需要时在 Actions 里手动 Run workflow。
 on:
-  push:
-    branches:
-      - main
   workflow_dispatch:
 
 concurrency:
