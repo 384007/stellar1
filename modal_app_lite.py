@@ -153,11 +153,13 @@ lite_image = (
         copy=True,
     )
     .run_commands("python /root/modal_bake_swingnet.py")
+    # Default checkpoint path after bake; Modal Secret ``STELLAR_SWINGNET_CHECKPOINT`` overrides at runtime.
     .env(
         {
             **_MODAL_BUILD,
             "MEDIAPIPE_DISABLE_GPU": "1",
             "GLOG_minloglevel": "3",
+            "STELLAR_SWINGNET_CHECKPOINT": "/opt/stellar-weights/swingnet_1800.pth.tar",
         }
     )
     .run_commands(
