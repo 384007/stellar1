@@ -9,7 +9,7 @@ from typing import Any
 
 import cv2
 
-from lib.prov3.keyframes.constants import EVENT_SEQUENCE
+from services.lite_keyframe_constants import LITE_EVENT_SEQUENCE
 
 _EVENT_FILE_NAMES: dict[str, str] = {
     "Address": "address.jpg",
@@ -41,7 +41,7 @@ def lite_persist_keyframe_images(
             by_event[ev] = row
 
     if len(by_event) != 8:
-        missing = [e for e in EVENT_SEQUENCE if e not in by_event]
+        missing = [e for e in LITE_EVENT_SEQUENCE if e not in by_event]
         raise RuntimeError(
             f"lite_keyframe_export: expected 8 events, got {len(by_event)}, missing={missing}"
         )
@@ -59,7 +59,7 @@ def lite_persist_keyframe_images(
     saved: list[dict[str, Any]] = []
 
     try:
-        for event_name in EVENT_SEQUENCE:
+        for event_name in LITE_EVENT_SEQUENCE:
             row = by_event[event_name]
             fi_raw = int(row.get("frame_index") or 0)
             fi = max(0, min(fi_raw, max_fi))

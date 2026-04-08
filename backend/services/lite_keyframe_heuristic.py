@@ -1,59 +1,10 @@
-"""Lite-only: eight phase rows from the <=400-frame timeline + motion (no Pro A/B engines)."""
+"""Lite shared helpers: impact snap + monotonic enforcement (candidates live in ``lite_keyframe_candidate_*``)."""
 
 from __future__ import annotations
 
 from typing import Any
 
-from lib.prov3.keyframes.constants import EVENT_SEQUENCE
-
-
-def lite_build_eight_keyframe_rows(
-    frame_indices: list[int],
-    motions: list[float],
-) -> list[dict[str, Any]]:
-    """
-    Pick monotonic decode indices for EVENT_SEQUENCE using motion peak as impact anchor.
-    All indices refer to the same lite timeline (decode indices in cleaned video).
-    """
-    n = len(frame_indices)
-    if n < 8:
-        raise RuntimeError("lite_timeline_too_short")
-    m = motions[1:] if len(motions) > 1 else [0.0]
-    if m:
-        impact_offset = 1 + int(max(range(len(m)), key=lambda i: m[i]))
-    else:
-        impact_offset = n // 2
-    impact_k = max(3, min(n - 3, impact_offset))
-    impact_k = max(n // 4, min(3 * n // 4, impact_k))
-
-    p = [
-        0,
-        max(1, n // 12),
-        max(2, n // 6),
-        max(3, min(int(impact_k * 0.52), impact_k - 8)),
-        max(4, impact_k - max(2, n // 24)),
-        impact_k,
-        min(n - 2, impact_k + max(1, n // 11)),
-        n - 1,
-    ]
-    for j in range(1, 8):
-        if p[j] <= p[j - 1]:
-            p[j] = min(n - 1, p[j - 1] + 1)
-    p[0] = 0
-    p[7] = n - 1
-
-    rows: list[dict[str, Any]] = []
-    for ev, pos in zip(EVENT_SEQUENCE, p):
-        fi = int(frame_indices[pos])
-        rows.append(
-            {
-                "event_name": ev,
-                "frame_index": fi,
-                "confidence": 0.72,
-                "top_k_candidates": [{"frame_index": fi, "confidence": 0.72}],
-            }
-        )
-    return rows
+from services.lite_keyframe_constants import LITE_EVENT_SEQUENCE
 
 
 def lite_refine_impact_row(rows: list[dict[str, Any]], hint_fi: int) -> list[dict[str, Any]]:
@@ -78,17 +29,17 @@ def lite_refine_impact_row(rows: list[dict[str, Any]], hint_fi: int) -> list[dic
             d["confidence"] = float(d.get("confidence", 0.72))
             d["top_k_candidates"] = [{"frame_index": best, "confidence": d["confidence"]}]
         out.append(d)
-    order = {name: i for i, name in enumerate(EVENT_SEQUENCE)}
+    order = {name: i for i, name in enumerate(LITE_EVENT_SEQUENCE)}
     out.sort(key=lambda x: order.get(str(x.get("event_name")), 99))
     return out
 
 
 def lite_enforce_monotonic_frame_indices(rows: list[dict[str, Any]], max_fi: int) -> list[dict[str, Any]]:
-    """Ensure Address→Finish decode indices are strictly increasing (EVENT_SEQUENCE order)."""
+    """Ensure Address→Finish decode indices are strictly increasing (canonical phase order)."""
     by_name = {str(r.get("event_name")): dict(r) for r in rows}
     prev = -1
     out: list[dict[str, Any]] = []
-    for name in EVENT_SEQUENCE:
+    for name in LITE_EVENT_SEQUENCE:
         r = by_name.get(name)
         if not r:
             continue

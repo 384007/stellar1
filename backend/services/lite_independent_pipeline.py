@@ -11,10 +11,13 @@ from typing import Any
 
 from services.gemini_service import LITE_AI_TIMEOUT_S, analyze_swing_lite, cap_confidence
 from services.handedness_service import detect_handedness
-from services.internal.a_gate_service import run_a_gate
+from services.lite_ab_select_service import select_lite_ab_final_rows
+from services.lite_a_gate_service import run_lite_a_gate
+from services.lite_b_gate_service import run_lite_b_gate
+from services.lite_keyframe_candidate_a import lite_build_candidate_a_rows
+from services.lite_keyframe_candidate_b import lite_build_candidate_b_rows
 from services.lite_keyframe_export import lite_persist_keyframe_images
 from services.lite_keyframe_heuristic import (
-    lite_build_eight_keyframe_rows,
     lite_enforce_monotonic_frame_indices,
     lite_refine_impact_row,
 )
@@ -29,6 +32,7 @@ from services.pose_backend_service import extract_pose_stream
 from services.shot_predictor import calibrate_prediction, predict_shot
 
 logger = logging.getLogger(__name__)
+_LOG_AB = "[lite_ab]"
 
 _EVENT_TO_LITE_PHASE = {
     "Address": ("address", "Address", "准备"),
@@ -113,8 +117,32 @@ def _build_public_keyframes(
     return out
 
 
+def _closest_pose_index(poses: list[dict[str, Any]], impact_fi: int, vfps: float) -> int:
+    if not poses:
+        return 0
+    target_t = float(impact_fi) / max(float(vfps), 1e-6)
+    best_i = 0
+    best_d = 1e9
+    for i, p in enumerate(poses):
+        if not isinstance(p, dict):
+            continue
+        t = float(p.get("timestamp", 0))
+        d = abs(t - target_t)
+        if d < best_d:
+            best_d = d
+            best_i = i
+    return best_i
+
+
+def _impact_frame_index(rows: list[dict[str, Any]]) -> int:
+    for r in rows:
+        if str(r.get("event_name")) == "Impact":
+            return int(r.get("frame_index", 0))
+    return 0
+
+
 async def run_lite_independent_pipeline(video_path: str, *, region: str = "global") -> dict[str, Any]:
-    """Single-chain lite pipeline: clean → preview/club → pose → hand → ≤400 timeline → motion → 8 KF → AI → predict."""
+    """Mobile-first Lite: normalize → dual internal candidates → gates → select → export → AI → predict."""
     with tempfile.TemporaryDirectory(prefix="lite_pipeline_") as work_dir:
         clean_meta = await asyncio.to_thread(lite_light_clean_video, video_path, work_dir)
         cleaned_path = str(clean_meta["path"])
@@ -149,24 +177,51 @@ async def run_lite_independent_pipeline(video_path: str, *, region: str = "globa
         preloc = lite_impact_hint_from_timeline(indices, motions, vfps, duration_s)
         hint_fi = int(round(float(preloc.get("impact_hint_s") or 0.0) * vfps))
 
-        rows = lite_build_eight_keyframe_rows(indices, motions)
-        rows = lite_refine_impact_row(rows, hint_fi)
-        rows = lite_enforce_monotonic_frame_indices(rows, max(0, total_frames - 1))
-        a_status, _fail_reasons = run_a_gate(rows)
-        phase_ok = a_status == "pass"
+        max_fi = max(0, total_frames - 1)
+
+        rows_a0 = lite_build_candidate_a_rows(indices, motions)
+        rows_a0 = lite_refine_impact_row(rows_a0, hint_fi)
+        rows_a = lite_enforce_monotonic_frame_indices(rows_a0, max_fi)
+        status_a, reasons_a = run_lite_a_gate(rows_a, impact_hint_frame_index=hint_fi)
+        logger.info("%s candidate A built frames=%d", _LOG_AB, len(rows_a))
+        logger.info("%s candidate A gate result status=%s reasons=%s", _LOG_AB, status_a, reasons_a)
+
+        rows_b0 = lite_build_candidate_b_rows(indices, motions)
+        rows_b0 = lite_refine_impact_row(rows_b0, hint_fi)
+        rows_b = lite_enforce_monotonic_frame_indices(rows_b0, max_fi)
+        status_b, reasons_b = run_lite_b_gate(
+            rows_b,
+            impact_hint_frame_index=hint_fi,
+            frame_indices=indices,
+            motions=motions,
+        )
+        logger.info("%s candidate B built frames=%d", _LOG_AB, len(rows_b))
+        logger.info("%s candidate B gate result status=%s reasons=%s", _LOG_AB, status_b, reasons_b)
+
+        final_rows, phase_ok, path_tag = select_lite_ab_final_rows(
+            rows_a,
+            rows_b,
+            status_a=status_a,
+            reasons_a=reasons_a,
+            status_b=status_b,
+            reasons_b=reasons_b,
+            impact_hint_frame_index=hint_fi,
+            logger=logger,
+        )
+        logger.info("%s final phase validation passed=%s path=%s", _LOG_AB, phase_ok, path_tag)
 
         out_dir = str(Path(work_dir) / "lite_keyframes")
-        saved = await asyncio.to_thread(lite_persist_keyframe_images, cleaned_path, rows, out_dir)
-        keyframes = _build_public_keyframes(rows, saved, vfps)
+        saved = await asyncio.to_thread(lite_persist_keyframe_images, cleaned_path, final_rows, out_dir)
+        keyframes = _build_public_keyframes(final_rows, saved, vfps)
         if len(keyframes) != 8:
             raise RuntimeError("lite_keyframe_export_incomplete")
 
         keyframe_images = [k["image_base64"] for k in keyframes]
         rep_pose = poses[len(poses) // 2] if poses else {"angles": {}}
 
-        # Always ask for full Lite JSON (scores / issues / summaries). Keyframe gate state is surfaced
-        # only via analysis_reliability.phase_validation — not by switching to the "unreliable strip" prompt,
-        # which tends to produce thin or overly cautious copy while users still expect a normal report.
+        impact_fi = _impact_frame_index(final_rows)
+        impact_pose_idx = _closest_pose_index(poses, impact_fi, vfps)
+
         ai_result = await asyncio.wait_for(
             analyze_swing_lite(
                 pose_data={
@@ -193,7 +248,7 @@ async def run_lite_independent_pipeline(video_path: str, *, region: str = "globa
             hand=hand,
             hand_confidence=float(hand_info.get("confidence") or 0.0),
             poses=poses,
-            impact_pose_idx=max(0, len(poses) // 2),
+            impact_pose_idx=impact_pose_idx,
         )
         if ct != "UNKNOWN":
             prediction["club_type"] = ct
@@ -205,7 +260,6 @@ async def run_lite_independent_pipeline(video_path: str, *, region: str = "globa
             prediction.setdefault("club_group", "IRON")
 
         tracking_quality = 1.0 if len(poses) >= 30 else (0.65 if len(poses) >= 15 else 0.35)
-        # Single soft-fail signal for keyframe gate (avoid stacking phase_vision_unreliable on top of it).
         analysis_reliability = cap_confidence(
             ai_result,
             phase_validation={"passed": phase_ok},
