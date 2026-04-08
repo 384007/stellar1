@@ -10,6 +10,7 @@ from services.lite_ab_mirror.a_extract import run_lite_a_extract
 from services.lite_ab_mirror.b_refine import run_lite_b_refine
 from services.lite_ab_mirror.constants import TRUST_HIGH, TRUST_LOW, TRUST_MEDIUM
 from services.lite_ab_mirror.scoring import per_event_confidence
+from services.provider_registry import role_log
 
 logger = logging.getLogger(__name__)
 _LOG = "[lite_ab]"
@@ -45,6 +46,7 @@ def run_lite_ab_after_preprocess(
     if cancel_check:
         cancel_check()
 
+    role_log("[ROLE=LITE_PIPELINE] lite_ab_A_extract_start (SwingNet infer + gate)")
     a_result = run_lite_a_extract(
         analysis_id=analysis_id,
         analysis_video=analysis_video,
@@ -60,6 +62,7 @@ def run_lite_ab_after_preprocess(
     if cancel_check:
         cancel_check()
 
+    role_log("[ROLE=LITE_PIPELINE] lite_ab_A_need_B_refine starting_B_path")
     conf = per_event_confidence(a_result.keyframes)
     b_result = run_lite_b_refine(
         analysis_id=analysis_id,

@@ -237,7 +237,14 @@ async def analyze_lite(
                     "request_id": request_id,
                 },
             )
-        raise HTTPException(status_code=500, detail=f"Analysis failed: {msg}")
+        return JSONResponse(
+            status_code=500,
+            content={
+                "detail": f"Analysis failed: {msg}"[:4000],
+                "code": "LITE_PIPELINE_FAILED",
+                "request_id": request_id,
+            },
+        )
     finally:
         if tmp_path and os.path.exists(tmp_path):
             try:

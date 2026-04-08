@@ -14,6 +14,7 @@ from services.internal.frame_enhance_service import generate_analysis_frames
 from services.lite_preview_sample import lite_sample_preview_bgr
 from services.lite_video_cleanup import lite_light_clean_video
 from services.pose_backend_service import extract_pose_stream
+from services.provider_registry import role_log
 
 logger = logging.getLogger(__name__)
 _LOG = "[lite_pre]"
@@ -38,12 +39,17 @@ def run_lite_preprocess(source_video_path: str, work_dir: str) -> dict[str, Any]
     3. ``extract_pose_stream`` on analysis clip.
     4. Preview BGR samples for club vision.
     """
+    role_log(f"[ROLE=LITE_PIPELINE] preprocess_start src={os.path.basename(source_video_path)!r}")
     source_fps = _probe_source_fps(source_video_path)
     clean = lite_light_clean_video(source_video_path, work_dir)
     analysis_path = str(clean["path"])
     analysis_fps = float(clean["fps"])
     total_frames = int(clean["total_frames"])
     duration_s = float(clean.get("duration_s") or (total_frames / max(analysis_fps, 1e-6)))
+    role_log(
+        f"[ROLE=LITE_PIPELINE] after_ffmpeg_clean fps={analysis_fps:.1f} total_frames={total_frames} "
+        f"duration_s={duration_s:.2f}"
+    )
 
     analysis_id = f"lite_{uuid.uuid4().hex[:12]}"
     local_dir = str(Path(work_dir) / analysis_id)
@@ -57,7 +63,12 @@ def run_lite_preprocess(source_video_path: str, work_dir: str) -> dict[str, Any]
     )
     analysis_frames = list(frames_bundle.get("analysis_frames") or [])
     enhanced_local_frames = list(frames_bundle.get("enhanced_local_frames") or [])
+    role_log(
+        f"[ROLE=LITE_PIPELINE] after_generate_analysis_frames "
+        f"analysis_points={len(analysis_frames)} enhanced={len(enhanced_local_frames)}"
+    )
 
+    role_log("[ROLE=LITE_PIPELINE] pose_extract_start (dense sampling up to ~180 poses on analysis clip)")
     pose_bundle = extract_pose_stream(analysis_path, _LITE_POSE_FRAMES)
     poses = list(pose_bundle.get("poses") or [])
 
@@ -71,6 +82,10 @@ def run_lite_preprocess(source_video_path: str, work_dir: str) -> dict[str, Any]
         len(poses),
         len(analysis_frames),
         len(enhanced_local_frames),
+    )
+    role_log(
+        f"[ROLE=LITE_PIPELINE] preprocess_done poses={len(poses)} analysis_id={analysis_id} "
+        f"next=swingnet_or_heuristic_ab"
     )
 
     return {

@@ -31,6 +31,7 @@ import torch.nn.functional as F
 from lib.prov3.keyframes.constants import EVENT_SEQUENCE, TOP_K
 from lib.golfdb_swingnet.event_detector import EventDetector
 from services.golfdb_swingnet_paths import resolve_swingnet_checkpoint_path
+from services.provider_registry import role_log
 
 logger = logging.getLogger(__name__)
 
@@ -220,7 +221,14 @@ def _video_to_batch(
     sample_indices = np.unique(np.linspace(0, total - 1, num=n_target, dtype=np.int64))
 
     frames: list[np.ndarray] = []
-    for idx in sample_indices:
+    n_samp = len(sample_indices)
+    log_step = max(1, min(150, n_samp // 6 or 1))
+    for i, idx in enumerate(sample_indices):
+        if i == 0 or (i + 1) % log_step == 0 or i == n_samp - 1:
+            role_log(
+                f"[ROLE=LITE_PIPELINE] swingnet_frame_decode {i + 1}/{n_samp} "
+                f"target_idx={int(idx)} ok_frames={len(frames)}"
+            )
         cap.set(cv2.CAP_PROP_POS_FRAMES, float(int(idx)))
         rgb = _read_letterbox_rgb(cap, input_size)
         if rgb is None:
@@ -488,9 +496,16 @@ def run_swingnet_extract(
     if not swingnet_enabled():
         return None
     try:
+        role_log(f"[ROLE=LITE_PIPELINE] swingnet_extract_start analysis_id={analysis_id}")
         _validate_true240_timeline(video_path, analysis_fps)
+        role_log("[ROLE=LITE_PIPELINE] swingnet_true240_ok loading_model_if_needed")
         model, device = _load_model()
+        role_log(f"[ROLE=LITE_PIPELINE] swingnet_model_ready device={device} building_frame_batch")
         batch, sample_indices, fps, total = _video_to_batch(video_path)
+        role_log(
+            f"[ROLE=LITE_PIPELINE] swingnet_batch_ready T={batch.shape[1]} samples "
+            f"running_lstm_forward seq_cap=64"
+        )
         probs = _run_forward(model, batch, device, seq_len=64)
         if probs.shape[0] != len(sample_indices):
             logger.warning(

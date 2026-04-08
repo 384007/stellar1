@@ -19,6 +19,7 @@ from services.lite_ab_mirror.orchestrator import run_lite_ab_after_preprocess
 from services.lite_b_refiner_service import run_lite_b_refine as run_lite_heuristic_b_refine
 from services.lite_keyframe_export import lite_persist_keyframe_images
 from services.lite_preprocess_service import run_lite_preprocess
+from services.provider_registry import role_log
 from services.lite_timeline_motion import lite_build_uniform_timeline
 from services.shot_predictor import calibrate_prediction, predict_shot
 
@@ -109,11 +110,13 @@ async def run_lite_orchestrator(video_path: str, *, region: str = "global") -> d
         poses = list(pre["poses"])
 
         if swingnet_weights_configured():
+            role_log("[ROLE=LITE_PIPELINE] swingnet_checkpoint_ok entering_ab_path (decode+infer may take minutes on CPU)")
             final_rows, trust_tier, ab_phase_pass, ab_reasons = await asyncio.to_thread(
                 run_lite_ab_after_preprocess,
                 pre,
             )
         else:
+            role_log("[ROLE=LITE_PIPELINE] swingnet_disabled using_heuristic_ab")
             logger.warning(
                 "%s SwingNet disabled (no checkpoint) — heuristic Lite A/B fallback",
                 _LOG,
@@ -152,6 +155,10 @@ async def run_lite_orchestrator(video_path: str, *, region: str = "global") -> d
             logger.info("%s path=B_medium_trust ab_reasons=%s", _LOG, ab_reasons)
         else:
             logger.info("%s path=B_low_trust ab_reasons=%s", _LOG, ab_reasons)
+        role_log(
+            f"[ROLE=LITE_PIPELINE] ab_done rows={len(final_rows)} trust={trust_tier} "
+            f"phase_pass={ab_phase_pass} next=club_vision_then_gemini"
+        )
 
         hand_info = detect_handedness(poses, None) if poses else {"hand": "UNKNOWN", "confidence": 0.0}
         hand = str(hand_info.get("hand") or "UNKNOWN")
@@ -183,6 +190,7 @@ async def run_lite_orchestrator(video_path: str, *, region: str = "global") -> d
         impact_fi = _impact_frame_index(final_rows)
         impact_pose_idx = _closest_pose_index(poses, impact_fi, vfps)
 
+        role_log("[ROLE=LITE_PIPELINE] gemini_lite_start (may take 30–120s)")
         ai_result = await asyncio.wait_for(
             analyze_swing_lite(
                 pose_data={

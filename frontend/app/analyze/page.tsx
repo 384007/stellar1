@@ -33,6 +33,7 @@ import {
   DEFAULT_PROV3_MODAL_URL,
   normalizeProv3UrlListsFromPrecheck,
   PRO_V3_EDGE_PRECHECK_PATH,
+  resolveLiteAnalyzeClientOrigin,
   requestProv3AnalyzeCancel,
   runProv3AnalyzeMultipart,
   yieldUiBeforeHeavyParse,
@@ -47,6 +48,27 @@ import {
   reanalyzeHistoryFilename,
   reanalyzePayloadProv3ScreenMode,
 } from "@/lib/reanalyze-from-history";
+
+/** FastAPI may return ``detail`` as string, object, or validation error array. */
+function stringifyFastApiDetail(detail: unknown): string {
+  if (detail == null) return "";
+  if (typeof detail === "string") return detail.trim();
+  if (Array.isArray(detail)) {
+    const parts = detail.map((item) => {
+      if (item && typeof item === "object" && "msg" in item) {
+        const m = (item as { msg?: unknown }).msg;
+        return typeof m === "string" ? m : String(m ?? "");
+      }
+      return typeof item === "string" ? item : "";
+    });
+    return parts.filter(Boolean).join(" ").trim();
+  }
+  if (typeof detail === "object" && detail !== null && "msg" in detail) {
+    const m = (detail as { msg?: unknown }).msg;
+    return typeof m === "string" ? m.trim() : String(m ?? "").trim();
+  }
+  return "";
+}
 
 interface AnalysisResult {
   analysis_id: string;
@@ -186,7 +208,7 @@ export default function AnalyzePage() {
     [result],
   );
   const liteBackendBase = useMemo(
-    () => trimBackendOrigin(process.env.NEXT_PUBLIC_LITE_BACKEND_URL || ""),
+    () => trimBackendOrigin(resolveLiteAnalyzeClientOrigin()),
     [],
   );
   const backendBaseRef = useRef<string>(process.env.NEXT_PUBLIC_BACKEND_URL || "https://stellar1-backend.onrender.com");
@@ -356,7 +378,7 @@ export default function AnalyzePage() {
       return expandStellarProForUi(rawPro) as AnalysisResult;
     }
 
-    // Lite: CN → same-origin ``/api/lite/analyze-proxy`` (Edge forwards to ``LITE_BACKEND_URL/analyze/lite``); else direct ``NEXT_PUBLIC_LITE_BACKEND_URL/analyze/lite``.
+    // Lite: CN → ``/api/lite/analyze-proxy`` → main Modal (``MODAL_BACKEND_URL``) /analyze/lite; else browser → same base as Pro (``NEXT_PUBLIC_MODAL_BACKEND_URL`` or default).
     let liteUseCnProxy = false;
     let liteGeoHintFailed = false;
     try {
@@ -465,7 +487,18 @@ export default function AnalyzePage() {
         errJson && typeof errJson === "object" && errJson !== null && "detail" in errJson
           ? (errJson as { detail?: unknown }).detail
           : undefined;
-      const detailStr = typeof detailRaw === "string" ? detailRaw : "";
+      let detailStr = stringifyFastApiDetail(detailRaw);
+      if (!detailStr && res.status >= 400) {
+        const st = (res.statusText || "").trim();
+        detailStr =
+          lang === "zh"
+            ? st
+              ? `服务端返回 ${res.status}（${st}），无详细说明。请查 Modal 日志或稍后重试。`
+              : `服务端返回 ${res.status}，无详细说明。请查 Modal 日志或稍后重试。`
+            : st
+              ? `Server returned ${res.status} (${st}) with no error body. Check Modal logs or retry.`
+              : `Server returned ${res.status} with no error body. Check Modal logs or retry.`;
+      }
 
       if (res.status === 409 && code === "LITE_ANALYZE_ALREADY_RUNNING") {
         throw new Error(

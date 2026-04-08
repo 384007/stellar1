@@ -14,6 +14,10 @@
  * - NEXT_PUBLIC_BACKEND_URL     — primary Render (or other) API base
  * - BACKEND_URL_FALLBACKS       — comma-separated extra Render/API bases
  * - BACKEND_URL_CN_EXTRA        — CN-only, prepended before primary + global fallbacks
+ *
+ * **Lite** ``POST /analyze/lite`` uses the same Modal base as Pro unless ``LITE_BACKEND_URL`` (Edge) or
+ * ``NEXT_PUBLIC_LITE_BACKEND_URL`` (legacy) overrides — see ``resolveLiteAnalyzeClientOrigin`` /
+ * ``resolveLiteAnalyzeUpstreamBase``.
  */
 
 /** Next.js Edge route: Pro JWT + Modal/Render URL lists (see ``app/api/prov3/precheck``). */
@@ -135,6 +139,45 @@ export function normalizeProv3UrlListsFromPrecheck(data: {
     backendUrls = [DEFAULT_RENDER];
   }
   return { modalUrls, backendUrls };
+}
+
+/**
+ * Browser origin for ``POST {origin}/analyze/lite``.
+ * Priority: ``NEXT_PUBLIC_MODAL_BACKEND_URL`` (same as Pro) → legacy ``NEXT_PUBLIC_LITE_BACKEND_URL`` → shipped default Modal base.
+ */
+export function resolveLiteAnalyzeClientOrigin(
+  processEnv: Record<string, string | undefined> = process.env,
+): string {
+  const modalPub = normalizeProHttpApiBase(processEnv.NEXT_PUBLIC_MODAL_BACKEND_URL || "");
+  if (modalPub) return modalPub;
+  const litePub = normalizeProHttpApiBase(processEnv.NEXT_PUBLIC_LITE_BACKEND_URL || "");
+  if (litePub) return litePub;
+  return normalizeProHttpApiBase(DEFAULT_PROV3_MODAL_URL);
+}
+
+/**
+ * Edge / server origin for Lite analyze upstream (CN proxy or ops).
+ * Priority: ``LITE_BACKEND_URL`` (dedicated override) → Pro Modal list (``MODAL_BACKEND_URL`` + fallbacks) → same public env order as client → default.
+ */
+export function resolveLiteAnalyzeUpstreamBase(
+  getCfEnv: (key: string) => string,
+  options?: { clientCountryCode?: string },
+  processEnv: Record<string, string | undefined> = process.env,
+): string {
+  const secretLite = (getCfEnv("LITE_BACKEND_URL") || processEnv.LITE_BACKEND_URL || "").trim();
+  if (secretLite) {
+    return normalizeProHttpApiBase(secretLite);
+  }
+  const cn = (options?.clientCountryCode || "").trim().toUpperCase() === "CN";
+  const modalPrimary = buildProv3ModalUrlList(getCfEnv, cn, processEnv)[0];
+  if (modalPrimary) {
+    return modalPrimary;
+  }
+  const modalPub = normalizeProHttpApiBase(processEnv.NEXT_PUBLIC_MODAL_BACKEND_URL || "");
+  if (modalPub) return modalPub;
+  const litePub = normalizeProHttpApiBase(processEnv.NEXT_PUBLIC_LITE_BACKEND_URL || "");
+  if (litePub) return litePub;
+  return normalizeProHttpApiBase(DEFAULT_PROV3_MODAL_URL);
 }
 
 /** Full URL for ``POST /pro-v3/analyze`` given an API origin (Modal or Render). */

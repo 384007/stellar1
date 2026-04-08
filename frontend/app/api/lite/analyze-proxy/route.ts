@@ -3,15 +3,16 @@ import { getRequestContext } from "@cloudflare/next-on-pages";
 import { jwtVerify } from "jose";
 
 import { LITE_ANALYZE_FETCH_TIMEOUT_MS } from "@/lib/lite-analyze-timeout";
+import { resolveLiteAnalyzeUpstreamBase } from "@/lib/prov3-endpoints";
 
 export const runtime = "edge";
 
 /**
- * CN / same-origin Lite path: multipart in → forward to real ``POST {LITE_BACKEND_URL}/analyze/lite`` → JSON out.
+ * CN / same-origin Lite path: multipart in → forward ``POST {ModalBase}/analyze/lite`` (main Modal by default).
  * No Gemini/Qwen here — only JWT gate + transparent proxy (idempotency + request_id + Authorization + CF-IPCountry).
  *
- * Configure on Pages: ``LITE_BACKEND_URL`` (secret) = lite Modal/FastAPI origin, no trailing slash.
- * Falls back to ``NEXT_PUBLIC_LITE_BACKEND_URL`` in dev when unset.
+ * Default upstream is **main Pro Modal** (same as ``MODAL_BACKEND_URL`` / fallbacks).
+ * Optional override: ``LITE_BACKEND_URL`` = dedicated Lite-only origin, no trailing slash.
  */
 
 function getCfEnv(key: string): string {
@@ -76,16 +77,15 @@ export async function POST(request: NextRequest) {
   const authErr = await requireAuth(request);
   if (authErr) return authErr;
 
+  const cfCountryHdr =
+    (request.headers.get("cf-ipcountry") || request.headers.get("CF-IPCountry") || "").trim() || undefined;
   const base = trimLiteBase(
-    getCfEnv("LITE_BACKEND_URL") ||
-      process.env.LITE_BACKEND_URL ||
-      process.env.NEXT_PUBLIC_LITE_BACKEND_URL ||
-      "",
+    resolveLiteAnalyzeUpstreamBase(getCfEnv, { clientCountryCode: cfCountryHdr }),
   );
   if (!base) {
     return NextResponse.json(
       {
-        detail: "Lite backend URL not configured (set LITE_BACKEND_URL on Pages)",
+        detail: "Lite analyze upstream URL could not be resolved (set MODAL_BACKEND_URL or LITE_BACKEND_URL on Pages)",
         code: "LITE_PROXY_NO_BACKEND",
       },
       { status: 503 },
@@ -130,8 +130,7 @@ export async function POST(request: NextRequest) {
   };
   const authz = request.headers.get("authorization");
   if (authz) upstreamHeaders.Authorization = authz;
-  const cfCountry = request.headers.get("cf-ipcountry") || request.headers.get("CF-IPCountry");
-  if (cfCountry) upstreamHeaders["CF-IPCountry"] = cfCountry;
+  if (cfCountryHdr) upstreamHeaders["CF-IPCountry"] = cfCountryHdr;
 
   const url = `${base}/analyze/lite`;
   let upstream: Response;
