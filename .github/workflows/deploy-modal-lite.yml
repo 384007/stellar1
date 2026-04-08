@@ -6,11 +6,10 @@ on:
   push:
     branches:
       - main
-      - "feat/**"
   workflow_dispatch:
 
 concurrency:
-  group: deploy-modal-lite-${{ github.ref_name }}
+  group: deploy-modal-lite
   cancel-in-progress: true
 
 jobs:

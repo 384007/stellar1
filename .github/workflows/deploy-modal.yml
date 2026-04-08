@@ -4,11 +4,10 @@ on:
   push:
     branches:
       - main
-      - "feat/**"
   workflow_dispatch:
 
 concurrency:
-  group: deploy-modal-${{ github.ref_name }}
+  group: deploy-modal-main
   cancel-in-progress: true
 
 jobs:

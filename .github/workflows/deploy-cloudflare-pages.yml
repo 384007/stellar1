@@ -8,13 +8,7 @@ on:
   push:
     branches:
       - main
-      - "feat/**"
   workflow_dispatch:
-    inputs:
-      force_production:
-        description: "Deploy to Pages production (same as push)"
-        type: boolean
-        default: true
 
 concurrency:
   # 同一时刻只保留最后一次生产发布，避免并行写乱序
@@ -55,5 +49,5 @@ jobs:
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
         run: |
-          echo "[pages] ref=${GITHUB_REF_NAME} sha=${GITHUB_SHA} → production (no --branch)"
+          echo "[pages] ref=${GITHUB_REF_NAME} sha=${GITHUB_SHA} → production"
           npm run pages:deploy
