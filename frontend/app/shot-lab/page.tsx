@@ -8,7 +8,7 @@ import ScreenModeCapture from "@/components/ScreenModeCapture";
 import { preloadPoseModel } from "@/lib/mediapipe-assets";
 import { fetchWithRetry, makeFormData } from "@/lib/fetch-retry";
 import { readLiteAnalyzeResult } from "@/lib/read-lite-analyze-response";
-import { isVideoFile, uploadVideoToGemini } from "@/lib/upload-video";
+import { isVideoFile, uploadVideoForAnalysis } from "@/lib/upload-video";
 import type {
   LabMetrics,
   LabIssue,
@@ -25,7 +25,6 @@ import {
   fetchLabVideoBlobForReanalyze,
   reanalyzeHistoryFilename,
 } from "@/lib/reanalyze-from-history";
-import { resolveLiteAnalyzeClientOrigin } from "@/lib/prov3-endpoints";
 
 type Stage = "upload" | "processing" | "results";
 type Lang = "en" | "zh";
@@ -396,14 +395,16 @@ export default function ShotLabPage() {
     signal: AbortSignal,
   ): Promise<LabPrediction | null> => {
     try {
-      const backendUrl = resolveLiteAnalyzeClientOrigin().replace(/\/+$/, "");
+      const rid = crypto.randomUUID();
+      const headersWithIdem = { ...headers, "X-Stellar-Idempotency-Key": rid };
       const fd = makeFormData(file, file.name);
+      fd.append("request_id", rid);
       const ctrl = new AbortController();
       const timeout = setTimeout(() => ctrl.abort(), 90_000);
       signal.addEventListener("abort", () => ctrl.abort());
-      const res = await fetchWithRetry(`${backendUrl}/analyze/lite`, {
+      const res = await fetchWithRetry("/api/lite/analyze-proxy", {
         method: "POST",
-        headers,
+        headers: headersWithIdem,
         body: fd,
         signal: ctrl.signal,
         retries: 0,
@@ -450,7 +451,7 @@ export default function ShotLabPage() {
       let res: Response;
       try {
         if (video) {
-          const up = await uploadVideoToGemini(
+          const up = await uploadVideoForAnalysis(
             file, file.name, headers,
             (pct) => { phaseTarget = pct; },
             controller.signal,
@@ -458,12 +459,9 @@ export default function ShotLabPage() {
           phaseTarget = 95;
           const unifiedPrediction = await unifiedPromise;
           const fd = new FormData();
-          fd.append("file_uri", up.file_uri);
+          fd.append("upload_token", up.upload_token);
           fd.append("mime_type", up.mime_type);
           fd.append("file", file, file.name);
-          if (typeof up.gemini_key_index === "number") {
-            fd.append("gemini_key_index", String(up.gemini_key_index));
-          }
           fd.append("job_id", jobId);
           if (unifiedPrediction) fd.append("unified_prediction", JSON.stringify(unifiedPrediction));
           res = await fetch("/api/lab", { method: "POST", headers, body: fd, signal: controller.signal });

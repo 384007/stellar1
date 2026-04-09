@@ -20,8 +20,7 @@ export default function NewsCarousel() {
   const scrollRef = useRef<HTMLDivElement>(null);
   const timerRef = useRef<NodeJS.Timeout | null>(null);
 
-  const FALLBACK_IMAGE =
-    "https://images.unsplash.com/photo-1535131749006-b7f58c99034b?w=600&h=400&fit=crop";
+  const FALLBACK_IMAGE = "/logo.svg";
 
   const fetchNews = useCallback(async () => {
     try {
@@ -37,10 +36,10 @@ export default function NewsCarousel() {
       }
     } catch {
       setNews([
-        { id: "f1", title: "Master Your Grip: The Foundation of Every Great Swing", summary: "", image: "", source: "Stellar AI", category: "Tips", published_at: new Date().toISOString(), url: "https://www.golf.com/instruction/" },
-        { id: "f2", title: "PGA Tour 2026: Season Highlights and Key Takeaways", summary: "", image: "", source: "Golf Digest", category: "Tour", published_at: new Date().toISOString(), url: "https://www.pgatour.com/news" },
-        { id: "f3", title: "How AI is Revolutionizing Golf Coaching", summary: "", image: "", source: "Stellar AI", category: "Tech", published_at: new Date().toISOString(), url: "https://www.golfdigest.com/" },
-        { id: "f4", title: "5 Drills to Improve Your Weight Transfer", summary: "", image: "", source: "Stellar AI", category: "Training", published_at: new Date().toISOString(), url: "https://www.golf.com/instruction/" },
+        { id: "f1", title: "Master Your Grip: The Foundation of Every Great Swing", summary: "", image: "", source: "Stellar AI", category: "Tips", published_at: new Date().toISOString(), url: "#" },
+        { id: "f2", title: "PGA Tour 2026: Season Highlights and Key Takeaways", summary: "", image: "", source: "Golf Digest", category: "Tour", published_at: new Date().toISOString(), url: "#" },
+        { id: "f3", title: "How AI is Revolutionizing Golf Coaching", summary: "", image: "", source: "Stellar AI", category: "Tech", published_at: new Date().toISOString(), url: "#" },
+        { id: "f4", title: "5 Drills to Improve Your Weight Transfer", summary: "", image: "", source: "Stellar AI", category: "Training", published_at: new Date().toISOString(), url: "#" },
       ]);
     } finally {
       setLoading(false);

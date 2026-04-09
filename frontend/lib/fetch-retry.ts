@@ -1,3 +1,5 @@
+import { devError, devWarn } from "@/lib/dev-only-log";
+
 /**
  * Fetch wrapper with automatic retry on transient network failures.
  *
@@ -21,7 +23,7 @@ export async function fetchWithRetry(
       // AbortError means intentional cancel — don't retry
       if (err instanceof DOMException && err.name === "AbortError") throw err;
       if (attempt < retries) {
-        console.warn(
+        devWarn(
           `[fetchWithRetry] attempt ${attempt + 1} failed: ${err instanceof Error ? err.message : err}, retrying in ${retryDelay}ms…`,
         );
         await new Promise((r) => setTimeout(r, retryDelay));
@@ -30,9 +32,7 @@ export async function fetchWithRetry(
         // fresh AbortController for the retry so the timeout resets.
         // We can't reuse a consumed body though — caller must handle that.
       } else {
-        console.error(
-          `[fetchWithRetry] all ${retries + 1} attempts failed`,
-        );
+        devError(`[fetchWithRetry] all ${retries + 1} attempts failed`);
       }
     }
   }

@@ -1,6 +1,7 @@
 "use client";
 
 import React, { Component, type ErrorInfo, type ReactNode } from "react";
+import { devError } from "@/lib/dev-only-log";
 
 const DETAILS_MAX = 4000;
 const STACK_MAX = 8000;
@@ -34,7 +35,7 @@ export default class FrontErrorBoundary extends Component<Props, State> {
 
   componentDidCatch(error: Error, info: ErrorInfo): void {
     this.setState({ componentStack: info.componentStack ?? null });
-    console.error("[FrontErrorBoundary]", this.props.label, error, info);
+    devError("[FrontErrorBoundary]", this.props.label, error, info);
   }
 
   private reset = (): void => {
@@ -47,6 +48,26 @@ export default class FrontErrorBoundary extends Component<Props, State> {
     const { error, componentStack } = this.state;
 
     if (!error) return children;
+
+    const isProd = process.env.NODE_ENV === "production";
+
+    if (isProd) {
+      return (
+        <div
+          role="alert"
+          className="rounded-xl border border-red-500/45 bg-black/75 p-4 text-left shadow-lg backdrop-blur-sm"
+        >
+          <p className="text-[12px] font-medium text-red-100/95">显示出现问题，请刷新页面后重试。</p>
+          <button
+            type="button"
+            onClick={this.reset}
+            className="mt-3 w-full rounded-lg border border-red-400/40 bg-red-500/15 py-2 text-center text-[11px] font-medium text-red-100 active:scale-[0.99]"
+          >
+            刷新页面
+          </button>
+        </div>
+      );
+    }
 
     let detailsStr = "";
     try {
@@ -63,7 +84,7 @@ export default class FrontErrorBoundary extends Component<Props, State> {
         className="rounded-xl border border-red-500/45 bg-black/75 p-3 text-left shadow-lg backdrop-blur-sm"
       >
         <p className="text-[11px] font-semibold uppercase tracking-wide text-red-300/95">
-          Prov3 result renderer crashed
+          Result renderer crashed (dev)
         </p>
         <p className="mt-1 text-[10px] text-white/50">Area: {label}</p>
         <div className="mt-2 space-y-1.5 text-[11px] leading-snug text-red-100/90">

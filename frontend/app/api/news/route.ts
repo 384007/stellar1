@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { sanitizeProductJson } from "@/lib/chains/sanitize";
 
 export const runtime = "edge";
 export const dynamic = "force-dynamic";
@@ -17,7 +18,7 @@ export async function GET(request: Request) {
     if (!res.ok) throw new Error("Backend news fetch failed");
 
     const data = await res.json();
-    return NextResponse.json(data, {
+    return NextResponse.json(sanitizeProductJson(data, "generic"), {
       headers: {
         "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
       },

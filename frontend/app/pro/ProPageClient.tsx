@@ -6,6 +6,7 @@ import UploadZone from "@/components/UploadZone";
 import PlusResultView from "@/components/PlusResultView";
 import FrontErrorBoundary from "@/components/debug/FrontErrorBoundary";
 import ScreenModeCapture from "@/components/ScreenModeCapture";
+import { devError, devInfo, devWarn } from "@/lib/dev-only-log";
 import { preloadPoseModel } from "@/lib/mediapipe-assets";
 import AnalysisWaiting from "@/components/AnalysisWaiting";
 import type { PoseSnapshot } from "@/components/KeyframeStrip";
@@ -289,7 +290,7 @@ export default function ProPageClient({ deepLinkAnalysisId }: { deepLinkAnalysis
             // Session had payload but we skipped UI (e.g. analyze still marked in-flight, or Strict Mode
             // cancelled the first run). Fall through to history/API so the results page is not blank.
           } catch (e) {
-            console.warn("[pro] session result restore failed", e);
+            devWarn("[pro] session result restore failed", e);
           }
         }
 
@@ -393,7 +394,7 @@ export default function ProPageClient({ deepLinkAnalysisId }: { deepLinkAnalysis
         if (sm) setInputMode("screen");
         await processBlob(blob, reanalyzeHistoryFilename(blob), sm);
       } catch (e) {
-        console.warn("[pro] reanalyze pipeline error:", e);
+        devWarn("[pro] reanalyze pipeline error:", e);
       }
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -443,7 +444,7 @@ export default function ProPageClient({ deepLinkAnalysisId }: { deepLinkAnalysis
         writeEntry(minimalProHistoryPayload(data));
         pruneLocalStellarHistoryRecords();
       } catch (e2) {
-        console.warn("[pro] local history save failed (quota or storage):", e2, e1);
+        devWarn("[pro] local history save failed (quota or storage):", e2, e1);
       }
     }
   }
@@ -487,7 +488,7 @@ export default function ProPageClient({ deepLinkAnalysisId }: { deepLinkAnalysis
         resultForApi = slimAnalysisResultForServerHistory(data) as Record<string, unknown>;
         JSON.stringify(resultForApi);
       } catch (e) {
-        console.warn("[pro] history API payload slim failed, using minimal fields:", e);
+        devWarn("[pro] history API payload slim failed, using minimal fields:", e);
         resultForApi = minimalProHistoryPayload(data);
       }
 
@@ -510,14 +511,14 @@ export default function ProPageClient({ deepLinkAnalysisId }: { deepLinkAnalysis
         if (saved.success !== false) {
           markLocalRecordSynced(data.analysis_id);
         } else {
-          console.warn("[history] pro save rejected:", saved.detail || saved);
+          devWarn("[history] pro save rejected:", saved.detail || saved);
         }
       } else {
         const errText = await res.text().catch(() => "");
-        console.warn("[history] pro save failed:", res.status, errText.slice(0, 400));
+        devWarn("[history] pro save failed:", res.status, errText.slice(0, 400));
       }
     } catch (e) {
-      console.warn("[history] pro save error:", e);
+      devWarn("[history] pro save error:", e);
     }
   }
 
@@ -538,7 +539,7 @@ export default function ProPageClient({ deepLinkAnalysisId }: { deepLinkAnalysis
       return;
     }
     if (analysisInFlightRef.current) {
-      console.warn("[pro] analyze already in flight, ignoring duplicate trigger");
+      devWarn("[pro] analyze already in flight, ignoring duplicate trigger");
       return;
     }
     analysisInFlightRef.current = true;
@@ -572,7 +573,7 @@ export default function ProPageClient({ deepLinkAnalysisId }: { deepLinkAnalysis
         uploadBlob = mp4File;
         uploadFilename = mp4File.name;
       } catch (e) {
-        console.warn("[pro] screen WebM→MP4 failed, using original container", e);
+        devWarn("[pro] screen WebM→MP4 failed, using original container", e);
       }
       setProWaitSubline("");
     }
@@ -646,12 +647,12 @@ export default function ProPageClient({ deepLinkAnalysisId }: { deepLinkAnalysis
         return;
       }
 
-      console.info("[pro] Pro v3 edge-job completed");
+      devInfo("[pro] Pro v3 edge-job completed");
       setProgress(96);
       setProWaitSubline("");
       setStage("rendering");
       await yieldUiBeforeHeavyParse();
-      console.info("[pro] result payload keys:", Object.keys(raw).length);
+      devInfo("[pro] result payload keys:", Object.keys(raw).length);
       let data: ProAnalysisResult;
       try {
         data = expandStellarProForUi(raw) as ProAnalysisResult;
@@ -670,14 +671,14 @@ export default function ProPageClient({ deepLinkAnalysisId }: { deepLinkAnalysis
         const previewCount = Array.isArray((raw as { preview_keyframes?: unknown[] }).preview_keyframes)
           ? (raw as { preview_keyframes?: unknown[] }).preview_keyframes?.length ?? 0
           : 0;
-        console.info("[pro] parsed final_status/trust:", { finalStatus, trustLevel });
-        console.info("[pro] display/official/preview keyframes:", {
+        devInfo("[pro] parsed final_status/trust:", { finalStatus, trustLevel });
+        devInfo("[pro] display/official/preview keyframes:", {
           displayCount,
           officialCount,
           previewCount,
         });
       } catch (parseErr) {
-        console.error("[pro] expand result failed:", parseErr, {
+        devError("[pro] expand result failed:", parseErr, {
           analysis_id: String((raw as { analysis_id?: unknown }).analysis_id ?? ""),
           final_status: String((raw as { final_status?: unknown }).final_status ?? ""),
           trust_level: String(
@@ -708,7 +709,7 @@ export default function ProPageClient({ deepLinkAnalysisId }: { deepLinkAnalysis
         try {
           sessionStorage.setItem(proSessionResultKey(data.analysis_id), JSON.stringify(data));
         } catch (e) {
-          console.warn("[pro] session snapshot before /pro/[id] navigation failed", e);
+          devWarn("[pro] session snapshot before /pro/[id] navigation failed", e);
         }
       }
       if (isVideoBlobForOverlay(uploadBlob, uploadFilename) && uploadBlob.size > 0) {
@@ -730,11 +731,11 @@ export default function ProPageClient({ deepLinkAnalysisId }: { deepLinkAnalysis
         try {
           saveToLocalHistory(data);
         } catch (e) {
-          console.warn("[pro] deferred local history:", e);
+          devWarn("[pro] deferred local history:", e);
         }
         void saveAnalysisVideo(data.analysis_id, uploadBlob, uploadFilename).catch(() => {});
         void saveAnalysisToHistory(data, uploadBlob, uploadFilename).catch((e) => {
-          console.warn("[pro] history save failed:", e);
+          devWarn("[pro] history save failed:", e);
         });
       }, 0);
     } catch (err: unknown) {
@@ -1078,7 +1079,7 @@ export default function ProPageClient({ deepLinkAnalysisId }: { deepLinkAnalysis
           <div className="mx-auto max-w-xl rounded-xl border border-brand-gold/20 bg-white/[0.03] p-6 text-center">
             <div className="mx-auto h-8 w-8 animate-spin rounded-full border-2 border-white/15 border-t-brand-gold/70" />
             <p className="mt-4 text-sm text-white/70">
-              {lang === "zh" ? "后端已返回，正在渲染结果…" : "Backend finished. Rendering results…"}
+              {lang === "zh" ? "分析已完成，正在展示结果…" : "Analysis finished. Preparing your results…"}
             </p>
           </div>
         )}

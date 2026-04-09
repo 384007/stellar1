@@ -27,11 +27,11 @@ import { displayKeyframesForResult } from "@/lib/analysis-display-keyframes";
 import { isProv3StrictMediaPolicyResult, type Prov3ResultLike } from "@/lib/prov3-keyframe-media";
 import { resolveProv3ProductMediaUrl } from "@/lib/prov3-media-url";
 import { clientLikelyMainlandChinaUser } from "@/lib/client-region-hint";
+import { devLog, devWarn } from "@/lib/dev-only-log";
 import { LITE_ANALYZE_FETCH_TIMEOUT_MS } from "@/lib/lite-analyze-timeout";
 import { readLiteAnalyzeResult } from "@/lib/read-lite-analyze-response";
 import { pruneLocalStellarHistoryRecords } from "@/lib/pro-history-retention";
 import {
-  resolveLiteAnalyzeClientOrigin,
   requestProv3AnalyzeCancel,
   runProv3AnalyzeMultipart,
   yieldUiBeforeHeavyParse,
@@ -47,7 +47,7 @@ import {
   reanalyzePayloadProv3ScreenMode,
 } from "@/lib/reanalyze-from-history";
 
-/** FastAPI may return ``detail`` as string, object, or validation error array. */
+/** Upstream may return ``detail`` as string, object, or validation error array. */
 function stringifyFastApiDetail(detail: unknown): string {
   if (detail == null) return "";
   if (typeof detail === "string") return detail.trim();
@@ -165,10 +165,6 @@ type Stage = "upload" | "processing" | "results";
 type InputMode = "upload" | "capture" | "screen";
 type AnalysisMode = "lite" | "pro";
 
-function trimBackendOrigin(raw: string): string {
-  return raw.trim().replace(/\/+$/, "");
-}
-
 export default function AnalyzePage() {
   const router = useRouter();
   const [stage, setStage] = useState<Stage>("upload");
@@ -204,10 +200,6 @@ export default function AnalyzePage() {
   const analyzePageIsProv3Product = useMemo(
     () => Boolean(result && isProv3StrictMediaPolicyResult(result as Prov3ResultLike)),
     [result],
-  );
-  const liteBackendBase = useMemo(
-    () => trimBackendOrigin(resolveLiteAnalyzeClientOrigin()),
-    [],
   );
   const lastBlobRef = useRef<{ blob: Blob; filename: string } | null>(null);
   /** Pro v3 对屏路径：在打开实拍前标记来源为拍屏 tab。 */
@@ -294,7 +286,7 @@ export default function AnalyzePage() {
         if (screenTag) setInputMode("screen");
         await processBlob(blob, reanalyzeHistoryFilename(blob), screenTag, mode);
       } catch (e) {
-        console.warn("[analyze] reanalyze pipeline error:", e);
+        devWarn("[analyze] reanalyze pipeline error:", e);
       }
     })();
     // processBlob 为稳定闭包即可；仅依赖登录就绪与语言（错误文案）
@@ -361,38 +353,12 @@ export default function AnalyzePage() {
         },
       );
 
-      console.log(`[stellar-pro] Pro job completed (route=${proServedBy})`);
+      devLog(`[stellar-pro] Pro job completed (route=${proServedBy})`);
       await yieldUiBeforeHeavyParse();
       return expandStellarProForUi(rawPro) as AnalysisResult;
     }
 
-    // Lite: CN → ``/api/lite/analyze-proxy`` → main Modal (``MODAL_BACKEND_URL``) /analyze/lite; else browser → same base as Pro (``NEXT_PUBLIC_MODAL_BACKEND_URL`` or default).
-    let liteUseCnProxy = false;
-    let liteGeoHintFailed = false;
-    try {
-      const nh = await fetch("/api/lite/network-hint", { method: "GET" });
-      if (nh.ok) {
-        const j = (await nh.json()) as { network_hint?: string; lite_geo?: string };
-        if (j.network_hint === "cn" || j.lite_geo === "cn") liteUseCnProxy = true;
-        else if (j.lite_geo === "unknown" && clientLikelyMainlandChinaUser()) liteUseCnProxy = true;
-      } else {
-        liteGeoHintFailed = true;
-      }
-    } catch {
-      liteGeoHintFailed = true;
-    }
-    if (liteGeoHintFailed && !liteUseCnProxy && clientLikelyMainlandChinaUser()) {
-      liteUseCnProxy = true;
-    }
-
-    if (!liteUseCnProxy && !liteBackendBase) {
-      throw new Error(
-        lang === "zh"
-          ? "当前无法完成分析，请稍后重试"
-          : "Analysis is unavailable right now. Please try again later.",
-      );
-    }
-
+    // Lite: always same-origin proxy → Edge resolves Modal/Lite upstream (no browser-direct analyze host).
     const rid = (liteIdempotencyKey || "").trim();
     if (!rid) {
       throw new Error(
@@ -409,7 +375,7 @@ export default function AnalyzePage() {
     const token = localStorage.getItem("stellar_token");
     if (token && token.includes(".")) headers.Authorization = `Bearer ${token}`;
 
-    const liteAnalyzeUrl = liteUseCnProxy ? "/api/lite/analyze-proxy" : `${liteBackendBase}/analyze/lite`;
+    const liteAnalyzeUrl = "/api/lite/analyze-proxy";
     let res: Response;
     liteAnalyzeHttpIssuedRef.current = true;
     try {
@@ -474,20 +440,18 @@ export default function AnalyzePage() {
     }
 
     if (!res.ok) {
-      // Cloudflare 524/522/523: edge gave up waiting on origin. CN Lite often hits ~100s proxy wall
-      // while Modal still runs; body is usually HTML, not JSON.
       if (res.status === 524) {
         throw new Error(
           lang === "zh"
-            ? "网关超时（524）：经 Cloudflare/Pages 代理时单次请求约 100 秒上限，慢速 Lite 分析会被提前断开。可试缩短视频、境外网络直连分析域名，或与 Pro 一样改为异步任务。"
-            : "Edge timeout (524): Cloudflare limits how long one proxied request may wait (~100s). Slow Lite analysis can hit this. Try a shorter video, a direct path to Modal if possible, or async jobs like Pro.",
+            ? "分析用时较长，连接已中断。请缩短视频或稍后重试。"
+            : "The connection timed out while analysis was running. Try a shorter video or try again later.",
         );
       }
       if (res.status === 522 || res.status === 523) {
         throw new Error(
           lang === "zh"
-            ? `连接源站失败（HTTP ${res.status}）。请稍后重试或检查网络。`
-            : `Origin connection failed (HTTP ${res.status}). Retry or check your network.`,
+            ? "暂时无法连接到分析服务，请稍后重试或检查网络。"
+            : "Could not reach the analysis service. Retry or check your network.",
         );
       }
       let errJson: unknown;
@@ -510,11 +474,11 @@ export default function AnalyzePage() {
         detailStr =
           lang === "zh"
             ? st
-              ? `服务端返回 ${res.status}（${st}），无详细说明。请查 Modal 日志或稍后重试。`
-              : `服务端返回 ${res.status}，无详细说明。请查 Modal 日志或稍后重试。`
+              ? `服务返回异常（${res.status}）。请稍后重试。`
+              : `服务返回异常（${res.status}）。请稍后重试。`
             : st
-              ? `Server returned ${res.status} (${st}) with no error body. Check Modal logs or retry.`
-              : `Server returned ${res.status} with no error body. Check Modal logs or retry.`;
+              ? `Something went wrong (${res.status}). Please try again.`
+              : `Something went wrong (${res.status}). Please try again.`;
       }
 
       if (res.status === 409 && code === "LITE_ANALYZE_ALREADY_RUNNING") {
@@ -579,7 +543,7 @@ export default function AnalyzePage() {
         });
       } catch (e) {
         if ((e as Error)?.name !== "AbortError") {
-          console.warn("[analyze] recalculate request failed");
+          devWarn("[analyze] recalculate request failed");
         }
         return null;
       } finally {
@@ -591,7 +555,7 @@ export default function AnalyzePage() {
       const payload = await res.json();
       return payload?.prediction ?? null;
     } catch {
-      console.warn("[analyze] recalculate failed");
+      devWarn("[analyze] recalculate failed");
       return null;
     }
   }
@@ -677,10 +641,10 @@ export default function AnalyzePage() {
           markLocalRecordSynced(data.analysis_id);
         }
       } else {
-        console.warn("[history] server save failed:", res.status);
+        devWarn("[history] server save failed:", res.status);
       }
     } catch (e) {
-      console.warn("[history] server save error:", e);
+      devWarn("[history] server save error:", e);
     }
   }
 
@@ -691,7 +655,7 @@ export default function AnalyzePage() {
     analysisModeOverride?: AnalysisMode,
   ) {
     if (analysisInFlightRef.current) {
-      console.warn("[analyze] analyze already in flight, ignoring duplicate trigger");
+      devWarn("[analyze] analyze already in flight, ignoring duplicate trigger");
       return;
     }
     analysisInFlightRef.current = true;
@@ -731,7 +695,7 @@ export default function AnalyzePage() {
         sendBlob = mp4File;
         sendFilename = mp4File.name;
       } catch (e) {
-        console.warn("[analyze] screen WebM→MP4 failed, uploading original container", e);
+        devWarn("[analyze] screen WebM→MP4 failed, uploading original container", e);
       }
     }
     lastBlobRef.current = { blob: sendBlob, filename: sendFilename };
@@ -851,7 +815,7 @@ export default function AnalyzePage() {
               });
             }
           } catch {
-            console.warn("[analyze] background recalculate failed");
+            devWarn("[analyze] background recalculate failed");
           }
         })();
       }
@@ -860,7 +824,7 @@ export default function AnalyzePage() {
       try {
         await saveAnalysisToHistory(data, sendBlob, sendFilename, modeForRun);
       } catch (e) {
-        console.warn("[analyze] history save failed:", e);
+        devWarn("[analyze] history save failed:", e);
       }
     } catch (err: unknown) {
       clearInterval(progressInterval);
@@ -903,7 +867,7 @@ export default function AnalyzePage() {
       let resolved = false;
       const cleanup = () => { try { URL.revokeObjectURL(url); } catch { /* */ } };
       const done = (b: Blob | null) => { if (resolved) return; resolved = true; cleanup(); resolve(b); };
-      const timer = setTimeout(() => { console.warn("[club-detect] frame extraction timeout"); done(null); }, 10000);
+      const timer = setTimeout(() => { devWarn("[club-detect] frame extraction timeout"); done(null); }, 10000);
 
       const captureFrame = () => {
         clearTimeout(timer);
@@ -929,7 +893,7 @@ export default function AnalyzePage() {
           captureFrame();
         }
       };
-      video.onerror = () => { console.warn("[club-detect] video load error"); clearTimeout(timer); done(null); };
+      video.onerror = () => { devWarn("[club-detect] video load error"); clearTimeout(timer); done(null); };
       video.load();
     });
   }
@@ -990,7 +954,7 @@ export default function AnalyzePage() {
         if (single) validFrames.push(single);
       }
       if (validFrames.length === 0) {
-        console.warn("[club-detect] no frames extracted");
+        devWarn("[club-detect] no frames extracted");
         return;
       }
 
@@ -1045,7 +1009,7 @@ export default function AnalyzePage() {
         confidence: Math.round(avgConf * 100) / 100,
         hand,
       };
-      console.log("[club-detect] multi-frame result:", data, "votes:", votes);
+      devLog("[club-detect] multi-frame result:", data, "votes:", votes);
       setProcessingClub(data);
       processingClubRef.current = data;
       if (!handConfirmed) {
@@ -1054,7 +1018,7 @@ export default function AnalyzePage() {
         if (enableHandPopup) setShowHandPopup(true);
       }
     } catch (e) {
-      console.warn("[club-detect] error:", e);
+      devWarn("[club-detect] error:", e);
     }
   }
 
@@ -1919,7 +1883,7 @@ export default function AnalyzePage() {
                 {analyzePageIsProv3Product ? (
                   <div className="w-full bg-black px-1 pb-2 pt-1">
                     <FrontErrorBoundary
-                      label="AnalyzePage prov3 timeline (Prov3PlusVideoRenderer)"
+                      label="analyze-video-timeline"
                       details={{
                         hasVideoSrc: Boolean(String(proVideoTimelineUrl ?? "").trim()),
                         poseFramesCount: result.pose_frames?.length ?? 0,
@@ -1990,7 +1954,7 @@ export default function AnalyzePage() {
                 {stripKeyframesForResult.length > 0 ? (
                   analyzePageIsProv3Product ? (
                     <FrontErrorBoundary
-                      label="AnalyzePage prov3 KeyframeStrip"
+                      label="analyze-keyframe-strip"
                       details={{
                         hasVideoSrc: Boolean(String(proVideoTimelineUrl ?? "").trim()),
                         poseFramesCount: result.pose_frames?.length ?? 0,

@@ -4,7 +4,7 @@
  * Streams the raw request body directly to Google without buffering,
  * so 100 MB videos don't OOM the Worker (128 MB memory limit).
  *
- * GET /api/upload-video?name=files/xxx — Poll Gemini file processing status.
+ * GET /api/upload-video?session=<JWE> — Poll Gemini file processing status (opaque session).
  */
 
 import { NextRequest, NextResponse } from "next/server";
@@ -16,6 +16,8 @@ import {
   rewriteGoogleUrl,
   shouldRetryNextGeminiKey,
 } from "@/lib/gemini-proxy";
+import { getEdgeJwtSecret } from "@/lib/chains/jwt-secret";
+import { sealUploadSession, unsealUploadSession } from "@/lib/chains/upload-session";
 
 export const runtime = "edge";
 
@@ -59,7 +61,7 @@ export async function POST(request: NextRequest) {
 
     const keys = getGeminiKeys(getCfEnv);
     if (keys.length === 0) {
-      return NextResponse.json({ detail: "AI服务未配置 (GEMINI_API_KEY)" }, { status: 503 });
+      return NextResponse.json({ detail: "文件上传服务暂未就绪，请稍后重试。" }, { status: 503 });
     }
 
     const mimeType =
@@ -104,11 +106,8 @@ export async function POST(request: NextRequest) {
             continue;
           }
           if (initRes.status < 500) {
-            const err = await initRes.text().catch(() => "");
-            return NextResponse.json(
-              { detail: `${lastErr}: ${err.substring(0, 200)}` },
-              { status: 502 },
-            );
+            await initRes.text().catch(() => "");
+            return NextResponse.json({ detail: "上传初始化失败，请稍后重试。" }, { status: 502 });
           }
           break; // 5xx → next host
         }
@@ -129,21 +128,30 @@ export async function POST(request: NextRequest) {
         });
 
         if (!uploadRes.ok) {
-          const err = await uploadRes.text().catch(() => "");
-          return NextResponse.json(
-            { detail: `视频上传失败 [${uploadRes.status}]: ${err.substring(0, 200)}` },
-            { status: 502 },
-          );
+          await uploadRes.text().catch(() => "");
+          return NextResponse.json({ detail: "视频上传失败，请稍后重试。" }, { status: 502 });
         }
 
         const data = await uploadRes.json();
-        return NextResponse.json({
-          file_uri: data.file?.uri || null,
-          file_name: data.file?.name || null,
-          mime_type: mimeType,
-          /** 0-based index into ordered keys (GEMINI_API_KEY, _2, _3, …). Analyze must use this for file_uri. */
-          gemini_key_index: keyIndex,
-        });
+        const file_uri = data.file?.uri as string | null;
+        const file_name = (data.file?.name as string | null) || null;
+        if (!file_uri) {
+          return NextResponse.json({ detail: "文件上传成功但未返回标识" }, { status: 502 });
+        }
+        const jwtSecret = getEdgeJwtSecret();
+        if (!jwtSecret) {
+          return NextResponse.json({ detail: "服务暂未就绪，请稍后再试。" }, { status: 503 });
+        }
+        const upload_token = await sealUploadSession(
+          {
+            file_uri,
+            mime_type: mimeType,
+            file_name,
+            gemini_key_index: keyIndex,
+          },
+          jwtSecret,
+        );
+        return NextResponse.json({ upload_token, mime_type: mimeType });
       } catch (e) {
         lastErr = e instanceof Error ? e.message : "网络错误";
         console.log(`[upload-video] ${host} failed: ${lastErr}`);
@@ -151,12 +159,9 @@ export async function POST(request: NextRequest) {
       }
      } // end key loop
     } // end host loop
-    return NextResponse.json({ detail: `视频上传失败: ${lastErr}` }, { status: 502 });
-  } catch (err) {
-    return NextResponse.json(
-      { detail: err instanceof Error ? err.message : "上传错误" },
-      { status: 500 },
-    );
+    return NextResponse.json({ detail: "视频上传失败，请稍后重试。" }, { status: 502 });
+  } catch {
+    return NextResponse.json({ detail: "上传异常，请稍后重试。" }, { status: 500 });
   }
 }
 
@@ -171,17 +176,41 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ detail: "AI服务未配置" }, { status: 503 });
     }
 
-    const fileName = request.nextUrl.searchParams.get("name");
-    if (!fileName) {
-      return NextResponse.json({ detail: "缺少 name 参数" }, { status: 400 });
+    const sessionToken = request.nextUrl.searchParams.get("session");
+    let fileName: string | null = null;
+    let keysOrdered = keys;
+
+    if (sessionToken) {
+      const jwtSecret = getEdgeJwtSecret();
+      if (!jwtSecret) {
+        return NextResponse.json({ detail: "服务暂未就绪，请稍后再试。" }, { status: 503 });
+      }
+      const sess = await unsealUploadSession(sessionToken, jwtSecret);
+      if (!sess) {
+        return NextResponse.json({ detail: "无效的上传会话" }, { status: 400 });
+      }
+      if (!sess.file_name) {
+        return NextResponse.json({ state: "ACTIVE" });
+      }
+      fileName = sess.file_name;
+      const keyHint = sess.gemini_key_index;
+      keysOrdered =
+        !Number.isNaN(keyHint) && keyHint >= 0 && keyHint < keys.length
+          ? [...keys.slice(keyHint), ...keys.slice(0, keyHint)]
+          : keys;
+    } else {
+      fileName = request.nextUrl.searchParams.get("name");
+      const keyHintRaw = request.nextUrl.searchParams.get("key_index");
+      const keyHint = keyHintRaw !== null ? parseInt(keyHintRaw, 10) : NaN;
+      keysOrdered =
+        !Number.isNaN(keyHint) && keyHint >= 0 && keyHint < keys.length
+          ? [...keys.slice(keyHint), ...keys.slice(0, keyHint)]
+          : keys;
     }
 
-    const keyHintRaw = request.nextUrl.searchParams.get("key_index");
-    const keyHint = keyHintRaw !== null ? parseInt(keyHintRaw, 10) : NaN;
-    const keysOrdered =
-      !Number.isNaN(keyHint) && keyHint >= 0 && keyHint < keys.length
-        ? [...keys.slice(keyHint), ...keys.slice(0, keyHint)]
-        : keys;
+    if (!fileName) {
+      return NextResponse.json({ detail: "缺少 session 或 name 参数" }, { status: 400 });
+    }
 
     const countryGet = (request.headers.get("cf-ipcountry") || "").toUpperCase();
     const hostsGet = getGeminiHosts(getCfEnv, countryGet === "CN");
@@ -196,7 +225,6 @@ export async function GET(request: NextRequest) {
             const info = await res.json();
             return NextResponse.json({
               state: info.state || "UNKNOWN",
-              uri: info.uri || null,
             });
           }
           if (
@@ -208,11 +236,8 @@ export async function GET(request: NextRequest) {
         } catch { break; }
       }
     }
-    return NextResponse.json({ state: "UNKNOWN", uri: null });
-  } catch (err) {
-    return NextResponse.json(
-      { detail: err instanceof Error ? err.message : "状态查询错误" },
-      { status: 500 },
-    );
+    return NextResponse.json({ state: "UNKNOWN" });
+  } catch {
+    return NextResponse.json({ detail: "状态查询失败，请稍后重试。" }, { status: 500 });
   }
 }

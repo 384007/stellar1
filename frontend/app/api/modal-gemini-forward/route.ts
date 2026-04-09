@@ -97,5 +97,5 @@ export async function POST(request: NextRequest) {
     }
   }
 
-  return NextResponse.json({ detail: "All Gemini hosts/keys failed" }, { status: 502 });
+  return NextResponse.json({ detail: "上游接口不可用，请稍后重试。" }, { status: 502 });
 }

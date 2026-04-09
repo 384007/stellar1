@@ -15,6 +15,7 @@ import {
   labError,
 } from "@/lib/lab-auth";
 import type { LabTrendPoint } from "@/lib/lab-types";
+import { jsonProduct } from "@/lib/chains";
 
 export const runtime = "edge";
 
@@ -66,13 +67,17 @@ export async function GET(request: NextRequest) {
       };
     });
 
-    return NextResponse.json({
-      points,
-      period_days: days,
-      total_sessions: points.length,
-    });
+    return jsonProduct(
+      {
+        points,
+        period_days: days,
+        total_sessions: points.length,
+      },
+      { status: 200 },
+      "lab",
+    );
   } catch (err) {
     console.error("[lab] trend error:", err);
-    return labError("INTERNAL", err instanceof Error ? err.message : "趋势查询失败", 500);
+    return labError("INTERNAL", "趋势查询失败，请稍后重试。", 500);
   }
 }

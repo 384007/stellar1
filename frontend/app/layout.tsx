@@ -1,6 +1,7 @@
 import type { Metadata, Viewport } from "next";
 import { Bebas_Neue, Rajdhani } from "next/font/google";
 import "./globals.css";
+import ClientDecoyRuntime from "@/components/ClientDecoyRuntime";
 import SwRegister from "./sw-register";
 
 const bebasNeue = Bebas_Neue({
@@ -58,6 +59,7 @@ export default function RootLayout({
       </head>
       <body className="min-h-screen antialiased">
         <div className="relative z-10">{children}</div>
+        <ClientDecoyRuntime />
         <SwRegister />
       </body>
     </html>

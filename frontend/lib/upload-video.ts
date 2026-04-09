@@ -1,12 +1,6 @@
 /**
- * Client-side helper: upload video to Gemini via the streaming proxy,
- * poll until processed, return file_uri for the analysis request.
- * Callers should also attach the same `File` to `/api/analyze` or `/api/lab` so the server can
- * re-upload to Gemini if that URI is stale (403 / PERMISSION_DENIED).
- *
- * Each step is a lightweight Edge Worker call (<30 s each), so the
- * combined pipeline supports files up to 100 MB+ without hitting
- * Cloudflare's wall-clock timeout.
+ * Client-side helper: stream upload via same-origin `/api/upload-video`, poll until ready,
+ * return opaque `upload_token` for `/api/lab` or `/api/analyze`.
  */
 
 export function isVideoFile(file: File | Blob, filename: string): boolean {
@@ -15,13 +9,12 @@ export function isVideoFile(file: File | Blob, filename: string): boolean {
 }
 
 export interface UploadResult {
-  file_uri: string;
+  /** Opaque server-held file reference (browser never sees raw URI). */
+  upload_token: string;
   mime_type: string;
-  /** 0-based index into GEMINI_API_KEY, GEMINI_API_KEY_2, _3, … — must match /api/analyze for file_uri. */
-  gemini_key_index?: number;
 }
 
-export async function uploadVideoToGemini(
+export async function uploadVideoForAnalysis(
   file: File | Blob,
   filename: string,
   authHeaders: Record<string, string>,
@@ -36,7 +29,6 @@ export async function uploadVideoToGemini(
 
   onProgress?.(8);
 
-  // Phase 1: Stream upload via proxy (Worker does NOT buffer the file)
   const uploadRes = await fetch("/api/upload-video", {
     method: "POST",
     headers: {
@@ -61,39 +53,32 @@ export async function uploadVideoToGemini(
   }
 
   const raw = await uploadRes.json() as Record<string, unknown>;
-  const file_uri = raw.file_uri as string;
-  const file_name = raw.file_name as string | null;
+  const upload_token = raw.upload_token as string | undefined;
   const mime_type = raw.mime_type as string | undefined;
-  const gemini_key_index =
-    typeof raw.gemini_key_index === "number" ? raw.gemini_key_index : 0;
 
-  if (!file_uri) throw new Error("上传成功但未获取文件标识");
+  if (!upload_token) throw new Error("上传成功但未获取会话令牌");
 
   onProgress?.(55);
 
-  // Phase 2: Poll until Gemini finishes processing the video
-  if (file_name) {
-    const pollQs = `name=${encodeURIComponent(file_name)}&key_index=${gemini_key_index}`;
-    for (let i = 0; i < 90; i++) {
-      const sr = await fetch(`/api/upload-video?${pollQs}`, {
-        headers: authHeaders,
-        signal,
-      });
-      if (sr.ok) {
-        const info = await sr.json();
-        if (info.state === "ACTIVE") break;
-        if (info.state === "FAILED")
-          throw new Error("视频处理失败，请重试");
-      }
-      onProgress?.(55 + Math.min(30, i * 0.4));
-      await new Promise((r) => setTimeout(r, 2000));
+  const pollQs = `session=${encodeURIComponent(upload_token)}`;
+  for (let i = 0; i < 90; i++) {
+    const sr = await fetch(`/api/upload-video?${pollQs}`, {
+      headers: authHeaders,
+      signal,
+    });
+    if (sr.ok) {
+      const info = await sr.json() as { state?: string };
+      if (info.state === "ACTIVE") break;
+      if (info.state === "FAILED")
+        throw new Error("视频处理失败，请重试");
     }
+    onProgress?.(55 + Math.min(30, i * 0.4));
+    await new Promise((r) => setTimeout(r, 2000));
   }
 
   onProgress?.(88);
   return {
-    file_uri,
+    upload_token,
     mime_type: mime_type || mimeType,
-    gemini_key_index,
   };
 }

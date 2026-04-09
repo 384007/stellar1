@@ -354,6 +354,84 @@ async def analyze_club_detect_multipart(
     )
 
 
+@router.post("/vision-classic")
+async def vision_classic_multipart(
+    request: Request,
+    current_user: Optional[dict] = Depends(get_current_user),
+):
+    """Classic Lite vision (Gemini Files + Qwen fallback) — product JSON only."""
+    from services.vision_classic_lite_service import VisionClassicLiteError, run_vision_classic_lite_sync
+
+    tmp_path: Optional[str] = None
+    try:
+        ct = (request.headers.get("content-type") or "").lower()
+        if "multipart" not in ct:
+            raise HTTPException(status_code=400, detail="Expected multipart form data")
+        form = await request.form()
+        uploaded = form.get("file")
+        file_uri_raw = form.get("file_uri")
+        mime_raw = form.get("mime_type")
+        key_raw = form.get("gemini_key_index")
+
+        file_uri = str(file_uri_raw).strip() if file_uri_raw else None
+        if file_uri == "":
+            file_uri = None
+        mime_type = str(mime_raw or "video/mp4") or "video/mp4"
+        key_hint: Optional[int] = None
+        if key_raw is not None and str(key_raw).strip() != "":
+            try:
+                key_hint = int(str(key_raw))
+            except ValueError:
+                key_hint = None
+
+        file_bytes: Optional[bytes] = None
+        filename = "video.mp4"
+        if uploaded is not None and hasattr(uploaded, "read"):
+            raw = await uploaded.read()
+            if raw:
+                file_bytes = raw
+                filename = getattr(uploaded, "filename", None) or "video.mp4"
+
+        if file_bytes:
+            suffix = ".mp4"
+            low = filename.lower()
+            if ".mov" in low:
+                suffix = ".mov"
+            if ".webm" in low:
+                suffix = ".webm"
+            fd, tmp_path = tempfile.mkstemp(suffix=suffix)
+            try:
+                os.write(fd, file_bytes)
+            finally:
+                os.close(fd)
+
+        region_cn = (request.headers.get("CF-IPCountry") or "").upper() == "CN"
+        out = await asyncio.to_thread(
+            run_vision_classic_lite_sync,
+            tmp_path,
+            file_uri,
+            mime_type,
+            filename,
+            region_cn,
+            key_hint,
+        )
+        log_non_finite_if_any(logger, out, "vision_classic")
+        return JSONResponse(content=sanitize_json_floats(out))
+    except VisionClassicLiteError as e:
+        return JSONResponse(status_code=e.status_code, content={"detail": e.message})
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("[vision-classic] failed")
+        raise HTTPException(status_code=500, detail=str(e)) from e
+    finally:
+        if tmp_path and os.path.exists(tmp_path):
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+
+
 @router.post("/recalculate")
 async def recalculate_prediction(
     payload: RecalculatePredictionRequest,

@@ -9,7 +9,7 @@
  * Loading order:
  *   1. /mp/…            (same-origin static, CF Pages CDN — primary)
  *   2. R2 direct        (optional NEXT_PUBLIC_MEDIAPIPE_CDN_BASE)
- *   3. jsdelivr / npmmirror — on by default (no env); set NEXT_PUBLIC_MEDIAPIPE_ALLOW_FOREIGN_FALLBACK=0 to disable
+ *   3. Same-origin ``/api/mp-ext/…`` Edge proxy (jsdelivr + npmmirror server-side only — browser never hits them)
  */
 
 export const MEDIAPIPE_TASKS_VISION_VERSION = "0.10.33";
@@ -54,18 +54,13 @@ export function getMediaPipeAllowForeignFallback(): boolean {
   return true;
 }
 
-const v = MEDIAPIPE_TASKS_VISION_VERSION;
-
 export function getMediaPipeBundleUrls(effectiveSelf?: string | null): string[] {
   const self = effectiveSelfBase(effectiveSelf);
   const urls: string[] = [
     "/mp/vision_bundle.mjs",
   ];
   if (self) urls.push(`${self}/vision_bundle.mjs`);
-  urls.push(
-    `https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@${v}/vision_bundle.mjs`,
-    `https://registry.npmmirror.com/@mediapipe/tasks-vision/${v}/files/vision_bundle.mjs`,
-  );
+  urls.push("/api/mp-ext/vision_bundle.mjs");
   return urls;
 }
 
@@ -75,17 +70,9 @@ export function getMediaPipeWasmBases(effectiveSelf?: string | null): string[] {
     "/mp/wasm",
   ];
   if (self) bases.push(`${self}/wasm`);
-  bases.push(
-    `https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@${v}/wasm`,
-    `https://registry.npmmirror.com/@mediapipe/tasks-vision/${v}/files/wasm`,
-  );
+  bases.push("/api/mp-ext/wasm");
   return bases;
 }
-
-const GOOGLE_FULL =
-  "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_full/float16/latest/pose_landmarker_full.task";
-const GOOGLE_LITE =
-  "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/latest/pose_landmarker_lite.task";
 
 const PROXY_FULL = "/api/mp-model?m=pose_landmarker_full";
 const PROXY_LITE = "/api/mp-model?m=pose_landmarker_lite";
@@ -98,8 +85,6 @@ export function getPoseModelUrls(effectiveSelf?: string | null): { full: string[
     liteList.push(`${self}/models/pose_landmarker_lite.task`);
     fullList.push(`${self}/models/pose_landmarker_full.task`);
   }
-  liteList.push(GOOGLE_LITE);
-  fullList.push(GOOGLE_FULL);
   return { full: fullList, lite: liteList };
 }
 

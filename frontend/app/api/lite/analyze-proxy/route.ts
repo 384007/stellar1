@@ -4,6 +4,8 @@ import { jwtVerify } from "jose";
 
 import { LITE_ANALYZE_FETCH_TIMEOUT_MS } from "@/lib/lite-analyze-timeout";
 import { resolveLiteAnalyzeUpstreamBase } from "@/lib/prov3-endpoints";
+import { sanitizeLiteSseStream } from "@/lib/chains";
+import { sanitizeProductJson } from "@/lib/chains/sanitize";
 
 export const runtime = "edge";
 
@@ -11,9 +13,9 @@ export const runtime = "edge";
  * CN / same-origin Lite path: multipart in → forward ``POST {ModalBase}/analyze/lite`` (main Modal by default).
  * No Gemini/Qwen here — only JWT gate + transparent proxy (idempotency + request_id + Authorization + CF-IPCountry).
  *
- * **524:** Cloudflare’s limit on the *client → Pages* request (often ~100s) can fire before Modal finishes;
- * the browser sees HTTP 524 even though upstream ``AbortSignal`` allows 1h. Mitigations: direct-to-Modal when
- * reachable, raise CF/proxy timeouts, or async Lite (not implemented here).
+ * **524:** Cloudflare’s limit on the *client → Pages* request (often ~100s) can fire before upstream finishes;
+ * the browser sees HTTP 524 even though upstream ``AbortSignal`` allows 1h. Mitigations: raise CF/proxy
+ * timeouts or async Lite (not implemented here).
  *
  * Default upstream is **main Pro Modal** (same as ``MODAL_BACKEND_URL`` / fallbacks).
  * Optional override: ``LITE_BACKEND_URL`` = dedicated Lite-only origin, no trailing slash.
@@ -89,7 +91,7 @@ export async function POST(request: NextRequest) {
   if (!base) {
     return NextResponse.json(
       {
-        detail: "Lite analyze upstream URL could not be resolved (set MODAL_BACKEND_URL or LITE_BACKEND_URL on Pages)",
+        detail: "分析服务暂时不可用，请稍后重试。",
         code: "LITE_PROXY_NO_BACKEND",
       },
       { status: 503 },
@@ -145,14 +147,17 @@ export async function POST(request: NextRequest) {
       body: out,
       signal: AbortSignal.timeout(LITE_ANALYZE_FETCH_TIMEOUT_MS),
     });
-  } catch (e) {
-    const msg = e instanceof Error ? e.message : "upstream fetch failed";
-    return NextResponse.json({ detail: msg, code: "LITE_PROXY_UPSTREAM_FAILED" }, { status: 502 });
+  } catch {
+    return NextResponse.json(
+      { detail: "分析服务连接失败，请稍后重试。", code: "LITE_PROXY_UPSTREAM_FAILED" },
+      { status: 502 },
+    );
   }
 
   const ct = upstream.headers.get("content-type") || "application/json; charset=utf-8";
   if (upstream.ok && ct.includes("text/event-stream") && upstream.body) {
-    return new NextResponse(upstream.body, {
+    const outBody = sanitizeLiteSseStream(upstream.body, "analysis");
+    return new NextResponse(outBody, {
       status: upstream.status,
       headers: {
         "content-type": ct,
@@ -163,6 +168,18 @@ export async function POST(request: NextRequest) {
   }
 
   const buf = await upstream.arrayBuffer();
+  if (upstream.ok && ct.includes("application/json")) {
+    try {
+      const text = new TextDecoder().decode(buf);
+      const data = JSON.parse(text) as unknown;
+      return NextResponse.json(sanitizeProductJson(data, "analysis"), {
+        status: upstream.status,
+        headers: { "content-type": "application/json; charset=utf-8" },
+      });
+    } catch {
+      /* fall through */
+    }
+  }
   return new NextResponse(buf, {
     status: upstream.status,
     headers: { "content-type": ct },

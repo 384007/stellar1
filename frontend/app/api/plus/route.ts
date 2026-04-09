@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { jwtVerify } from "jose";
 import { getRequestContext } from "@cloudflare/next-on-pages";
+import { jsonProduct } from "@/lib/chains";
 
 export const runtime = "edge";
 
@@ -183,32 +184,32 @@ export async function POST(request: NextRequest) {
       if (e instanceof DOMException && e.name === "AbortError") {
         return NextResponse.json({ detail: "Plus 分析超时，请压缩视频后重试" }, { status: 504 });
       }
-      return NextResponse.json({ detail: `Modal 不可达: ${e instanceof Error ? e.message : "网络错误"}` }, { status: 502 });
+      return NextResponse.json({ detail: "网络异常，请稍后重试。" }, { status: 502 });
     }
 
     if (!res.ok) {
-      const errBody = await res.text().catch(() => "");
       return NextResponse.json(
-        { detail: `Plus 分析失败 [${res.status}]: ${errBody.substring(0, 200)}` },
-        { status: res.status >= 400 && res.status < 500 ? res.status : 502 }
+        { detail: "Plus 分析失败，请稍后重试。" },
+        { status: res.status >= 400 && res.status < 500 ? res.status : 502 },
       );
     }
 
     const result = await res.json();
 
-    return NextResponse.json({
-      ...result,
-      _plus_usage: {
-        used: usage.used,
-        remaining: usage.remaining,
-        limit: is_pro ? null : PLUS_FREE_DAILY_LIMIT,
-        is_pro,
+    return jsonProduct(
+      {
+        ...result,
+        _plus_usage: {
+          used: usage.used,
+          remaining: usage.remaining,
+          limit: is_pro ? null : PLUS_FREE_DAILY_LIMIT,
+          is_pro,
+        },
       },
-    });
-  } catch (err) {
-    return NextResponse.json(
-      { detail: err instanceof Error ? err.message : "Plus 分析错误" },
-      { status: 500 }
+      { status: 200 },
+      "plus",
     );
+  } catch {
+    return NextResponse.json({ detail: "Plus 分析异常，请稍后重试。" }, { status: 500 });
   }
 }

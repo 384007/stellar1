@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getRequestContext } from "@cloudflare/next-on-pages";
 import { resolveLiteAnalyzeUpstreamBase } from "@/lib/prov3-endpoints";
+import { sanitizeProductJson } from "@/lib/chains/sanitize";
 
 export const runtime = "edge";
 
@@ -22,7 +23,7 @@ export async function POST(request: NextRequest) {
   const cfRaw = (request.headers.get("cf-ipcountry") || request.headers.get("CF-IPCountry") || "").trim();
   const base = resolveLiteAnalyzeUpstreamBase(getCfEnv, { clientCountryCode: cfRaw }).replace(/\/+$/, "");
   if (!base) {
-    return NextResponse.json({ detail: "Modal backend URL not configured" }, { status: 503 });
+    return NextResponse.json({ detail: "分析服务暂时不可用，请稍后重试。" }, { status: 503 });
   }
 
   let bodyText: string;
@@ -46,12 +47,23 @@ export async function POST(request: NextRequest) {
       signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS),
     });
     const text = await res.text();
+    const ct = res.headers.get("content-type") || "";
+    if (res.ok && ct.includes("application/json")) {
+      try {
+        const data = JSON.parse(text) as unknown;
+        return NextResponse.json(sanitizeProductJson(data, "plus"), {
+          status: res.status,
+          headers: { "content-type": "application/json; charset=utf-8" },
+        });
+      } catch {
+        /* raw fallback */
+      }
+    }
     return new NextResponse(text, {
       status: res.status,
-      headers: { "content-type": res.headers.get("content-type") || "application/json" },
+      headers: { "content-type": ct || "application/json" },
     });
-  } catch (e) {
-    const msg = e instanceof Error ? e.message : "upstream error";
-    return NextResponse.json({ detail: `Posture video upstream failed: ${msg}` }, { status: 502 });
+  } catch {
+    return NextResponse.json({ detail: "姿态视频生成失败，请稍后重试。" }, { status: 502 });
   }
 }

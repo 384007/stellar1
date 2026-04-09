@@ -80,7 +80,7 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ success: true, video_r2_key: key });
     } catch (e) {
       return NextResponse.json(
-        { detail: `上传失败: ${e instanceof Error ? e.message : "未知错误"}` },
+        { detail: "上传失败，请稍后重试。" },
         { status: 500 },
       );
     }
@@ -107,7 +107,7 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ success: true, video_r2_key: key });
   } catch (e) {
     return NextResponse.json(
-      { detail: `上传失败: ${e instanceof Error ? e.message : "未知错误"}` },
+      { detail: "上传失败，请稍后重试。" },
       { status: 500 }
     );
   }

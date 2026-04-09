@@ -14,6 +14,7 @@ import {
   requirePro,
   labError,
 } from "@/lib/lab-auth";
+import { jsonProduct } from "@/lib/chains";
 
 export const runtime = "edge";
 
@@ -88,9 +89,9 @@ export async function GET(request: NextRequest) {
       };
     }
 
-    return NextResponse.json({ shots: results, diff });
+    return jsonProduct({ shots: results, diff }, { status: 200 }, "lab");
   } catch (err) {
     console.error("[lab] compare error:", err);
-    return labError("INTERNAL", err instanceof Error ? err.message : "对比失败", 500);
+    return labError("INTERNAL", "对比失败，请稍后重试。", 500);
   }
 }

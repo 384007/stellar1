@@ -83,7 +83,7 @@ export async function GET(request: NextRequest) {
     });
   } catch (e) {
     return NextResponse.json(
-      { detail: `查询失败: ${e instanceof Error ? e.message : "未知错误"}` },
+      { detail: "查询失败，请稍后重试。" },
       { status: 500 }
     );
   }

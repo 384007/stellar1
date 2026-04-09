@@ -4,8 +4,13 @@
  */
 
 const OUT_NAME = "pro-screen.mp4";
-const CORE_VER = "0.12.10";
-const CORE_BASE = `https://cdn.jsdelivr.net/npm/@ffmpeg/core@${CORE_VER}/dist/umd`;
+
+function ffmpegCoreOrigin(): string {
+  if (typeof window !== "undefined" && window.location?.origin) {
+    return `${window.location.origin}/api/ffmpeg-core`;
+  }
+  return "/api/ffmpeg-core";
+}
 
 /** Avoid static `@ffmpeg/ffmpeg` imports so Edge/server bundles never pull UMD code that touches `document`. */
 type FfmpegLike = {
@@ -24,9 +29,10 @@ async function getFFmpeg(): Promise<FfmpegLike> {
     const { FFmpeg } = await import("@ffmpeg/ffmpeg");
     const { toBlobURL } = await import("@ffmpeg/util");
     const ffmpeg = new FFmpeg();
+    const base = ffmpegCoreOrigin();
     await ffmpeg.load({
-      coreURL: await toBlobURL(`${CORE_BASE}/ffmpeg-core.js`, "text/javascript"),
-      wasmURL: await toBlobURL(`${CORE_BASE}/ffmpeg-core.wasm`, "application/wasm"),
+      coreURL: await toBlobURL(`${base}/ffmpeg-core.js`, "text/javascript"),
+      wasmURL: await toBlobURL(`${base}/ffmpeg-core.wasm`, "application/wasm"),
     });
     return ffmpeg as unknown as FfmpegLike;
   })();

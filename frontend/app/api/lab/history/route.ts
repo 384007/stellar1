@@ -20,6 +20,7 @@ import {
   buildQuota,
   labError,
 } from "@/lib/lab-auth";
+import { jsonProduct } from "@/lib/chains";
 
 export const runtime = "edge";
 
@@ -35,14 +36,27 @@ export async function GET(request: NextRequest) {
 
     const db = getDB();
     if (!db) {
-      return NextResponse.json({
-        items: [],
-        total: 0,
-        retention: { policy: "limited", max_items: LAB_FREE_HISTORY_MAX_ITEMS, max_days: LAB_FREE_HISTORY_DAYS },
-        quota: { used: 0, limit: is_pro ? null : LAB_FREE_DAILY_LIMIT, remaining: is_pro ? -1 : LAB_FREE_DAILY_LIMIT, is_pro },
-        tier: is_pro ? "pro" : "free",
-        db_available: false,
-      });
+      return jsonProduct(
+        {
+          items: [],
+          total: 0,
+          retention: {
+            policy: "limited",
+            max_items: LAB_FREE_HISTORY_MAX_ITEMS,
+            max_days: LAB_FREE_HISTORY_DAYS,
+          },
+          quota: {
+            used: 0,
+            limit: is_pro ? null : LAB_FREE_DAILY_LIMIT,
+            remaining: is_pro ? -1 : LAB_FREE_DAILY_LIMIT,
+            is_pro,
+          },
+          tier: is_pro ? "pro" : "free",
+          db_available: false,
+        },
+        undefined,
+        "lab",
+      );
     }
 
     await ensureLabSchema(db);
@@ -54,17 +68,25 @@ export async function GET(request: NextRequest) {
 
     const usage = await getLabUsageToday(db, user_id);
 
-    return NextResponse.json({
-      items,
-      total: items.length,
-      retention: is_pro
-        ? { policy: "long_term", max_items: LAB_PRO_HISTORY_MAX_ITEMS }
-        : { policy: "limited", max_items: LAB_FREE_HISTORY_MAX_ITEMS, max_days: LAB_FREE_HISTORY_DAYS },
-      quota: buildQuota(usage, is_pro),
-      tier: is_pro ? "pro" : "free",
-    });
+    return jsonProduct(
+      {
+        items,
+        total: items.length,
+        retention: is_pro
+          ? { policy: "long_term", max_items: LAB_PRO_HISTORY_MAX_ITEMS }
+          : {
+              policy: "limited",
+              max_items: LAB_FREE_HISTORY_MAX_ITEMS,
+              max_days: LAB_FREE_HISTORY_DAYS,
+            },
+        quota: buildQuota(usage, is_pro),
+        tier: is_pro ? "pro" : "free",
+      },
+      undefined,
+      "lab",
+    );
   } catch (err) {
     console.error("[lab] GET history error:", err);
-    return labError("INTERNAL", err instanceof Error ? err.message : "查询错误", 500);
+    return labError("INTERNAL", "查询失败，请稍后重试。", 500);
   }
 }

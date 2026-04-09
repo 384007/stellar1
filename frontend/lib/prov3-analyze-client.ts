@@ -1,4 +1,5 @@
 import { clientLikelyMainlandChinaUser } from "@/lib/client-region-hint";
+import { devInfo, devWarn } from "@/lib/dev-only-log";
 
 /** Same-origin Pro v3 orchestration (upload → one Modal ``/analyze/start`` → R2 job poll). */
 /* Upload: Pages ``/api/history/upload-video`` → R2 binding. Optional presigned PUT when
@@ -86,11 +87,11 @@ export function prov3ClientLikelyNeedsCnFriendlyJobWait(): boolean {
   return clientLikelyMainlandChinaUser();
 }
 
-/** 将 FastAPI `detail` 与常见 404 说明合并为一条用户可读文案。 */
+/** Merge HTTP status + upstream `detail` into one user-facing line (no infra names). */
 export function formatProAnalyzeHttpError(status: number, detail: string): string {
   const d = (detail || "").trim() || `HTTP ${status}`;
   if (status === 404) {
-    return `Pro分析失败 [404]: ${d}。请确认已部署含 Pro v3 异步分析的 Modal 镜像，且 R2 已配置。`;
+    return `Pro 分析暂时不可用 [404]：${d || "服务未找到"}。请稍后重试。`;
   }
   if (status === 422 && (d.includes("取消") || /cancel/i.test(d))) {
     return d;
@@ -108,26 +109,24 @@ export function humanizeProv3JobFailureDetail(detail: string): string {
   const d = (detail || "").trim();
   if (!d) return "Pro 分析失败";
   const human = humanizeProv3MediaGateDetail(d);
-  return human || d;
+  return human || "分析未完成，请稍后重试。";
 }
 
 function humanizeProv3MediaGateDetail(d: string): string | null {
   if (!d.includes("prov3_media_gate:")) return null;
   if (d.includes("empty_display_keyframes")) {
-    return (
-      "服务端媒体校验与低信任结果格式不一致（已在新版后端修复）。请部署最新 Pro v3 API 后重试，或更换片段再分析。"
-    );
+    return "结果格式与校验不一致，请稍后重试或更换片段。";
   }
   if (d.includes("missing_keyframe_image_url")) {
     return "关键帧未生成可访问的图片链接，请重试或缩短视频。";
   }
   if (d.includes("analysis_timeline_video_missing_on_disk")) {
-    return "真 240 分析时间线视频未正确落盘，请重试。";
+    return "分析用时间线视频暂未就绪，请重试。";
   }
   if (d.includes("missing_analysis_video_url")) {
-    return "缺少分析时间线视频地址，请重试或联系支持。";
+    return "缺少时间线视频，请重试。";
   }
-  return `媒体校验未通过（${d}）。请重试或联系支持。`;
+  return "媒体校验未通过，请重试。";
 }
 
 function sleep(ms: number): Promise<void> {
@@ -149,9 +148,7 @@ export async function runProv3AnalyzeMultipart(
   opts: RunProv3AnalyzeOptions,
 ): Promise<Prov3AnalyzeResult> {
   if (_prov3AnalyzeClientBusy) {
-    throw new Error(
-      "已有一次 Pro 分析正在进行，请等待结束后再试（重复请求会导致服务器返回 409）。",
-    );
+    throw new Error("已有一次 Pro 分析正在进行，请等待结束后再试。");
   }
   _prov3AnalyzeClientBusy = true;
   try {
@@ -218,7 +215,7 @@ export async function runProv3AnalyzeMultipart(
             if (putRes.ok) {
               videoR2Key = String(presignBody.video_r2_key).trim();
             } else {
-              console.warn(
+              devWarn(
                 `${opts.logPrefix} [PROV3_EDGE_JOB] CN presigned PUT HTTP ${putRes.status} — fallback Pages→R2 proxy`,
               );
             }
@@ -231,7 +228,7 @@ export async function runProv3AnalyzeMultipart(
         if (e instanceof Error && e.message.startsWith("HTTP ")) {
           throw e;
         }
-        console.warn(`${opts.logPrefix} [PROV3_EDGE_JOB] CN presign/direct skipped, using proxy:`, e);
+        devWarn(`${opts.logPrefix} [PROV3_EDGE_JOB] CN presign/direct skipped, using proxy:`, e);
       }
     }
 
@@ -271,7 +268,7 @@ export async function runProv3AnalyzeMultipart(
 
     opts.onJobPhase?.("starting");
     bumpAbort();
-    console.info(`${opts.logPrefix} [PROV3_EDGE_JOB] one analyze/start after R2 upload`, {
+    devInfo(`${opts.logPrefix} [PROV3_EDGE_JOB] one analyze/start after R2 upload`, {
       uploadId,
       video_r2_key: videoR2Key,
     });
@@ -304,7 +301,7 @@ export async function runProv3AnalyzeMultipart(
     const startJson = (await startRes.json()) as { job_id?: string };
     const jobId = String(startJson.job_id || "").trim();
     if (!jobId) {
-      throw new Error("分析任务未返回 job_id，请重试或联系支持。");
+      throw new Error("分析任务创建失败，请重试。");
     }
 
     // Non-CN: bounded poll. CN: no wall clock (Modal can run arbitrarily long; avoid false "timeout").
@@ -321,7 +318,7 @@ export async function runProv3AnalyzeMultipart(
         });
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
-        console.warn(`${opts.logPrefix} [PROV3_EDGE_JOB] poll network error (will retry GET only):`, msg);
+        devWarn(`${opts.logPrefix} [PROV3_EDGE_JOB] poll network error (will retry GET only):`, msg);
         opts.onJobPhase?.("reconnecting");
         await sleep(3000);
         continue;

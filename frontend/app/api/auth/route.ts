@@ -110,7 +110,7 @@ export async function POST(request: NextRequest) {
     if (action === "register") {
       if (!db) {
         return NextResponse.json(
-          { detail: "数据库未就绪，请确认D1已绑定" },
+          { detail: "数据服务暂未就绪，请稍后重试。" },
           { status: 503 }
         );
       }
@@ -166,7 +166,7 @@ export async function POST(request: NextRequest) {
     if (action === "login") {
       if (!db) {
         return NextResponse.json(
-          { detail: "数据库未就绪，请确认D1已绑定" },
+          { detail: "数据服务暂未就绪，请稍后重试。" },
           { status: 503 }
         );
       }
@@ -309,13 +309,10 @@ export async function POST(request: NextRequest) {
 
     return NextResponse.json({ detail: "无效操作" }, { status: 400 });
   } catch (err) {
-    const msg = err instanceof Error ? err.message : "认证错误";
+    const msg = err instanceof Error ? err.message : "";
     if (msg.includes("no such table")) {
-      return NextResponse.json(
-        { detail: "数据库表未创建，请先运行D1迁移" },
-        { status: 503 }
-      );
+      return NextResponse.json({ detail: "服务暂未就绪，请稍后重试。" }, { status: 503 });
     }
-    return NextResponse.json({ detail: msg }, { status: 500 });
+    return NextResponse.json({ detail: "认证服务异常，请稍后重试。" }, { status: 500 });
   }
 }

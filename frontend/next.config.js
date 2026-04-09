@@ -2,6 +2,8 @@ const path = require("path");
 
 /** @type {import('next').NextConfig} */
 const nextConfig = {
+  poweredByHeader: false,
+  productionBrowserSourceMaps: false,
   images: {
     remotePatterns: [
       { protocol: "https", hostname: "images.unsplash.com" },

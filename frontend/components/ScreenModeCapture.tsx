@@ -378,19 +378,13 @@ async function loadMediaPipe(
     return WebAssembly.validate(new Uint8Array([0,97,115,109,1,0,0,0,1,5,1,96,0,1,123,3,2,1,0,10,10,1,8,0,65,0,253,15,253,98,11]));
   } catch { return false; } })();
   const wasmFile = simd ? "vision_wasm_internal" : "vision_wasm_nosimd_internal";
-  const v = "0.10.33";
 
   // Build URL lists for parallel racing
   const wasmBinaryUrls = [
     `/mp/wasm/${wasmFile}.wasm`,
-    `https://registry.npmmirror.com/@mediapipe/tasks-vision/${v}/files/wasm/${wasmFile}.wasm`,
-    `https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@${v}/wasm/${wasmFile}.wasm`,
+    `/api/mp-ext/wasm/${wasmFile}.wasm`,
   ];
-  const wasmJsUrls = [
-    `/mp/wasm/${wasmFile}.js`,
-    `https://registry.npmmirror.com/@mediapipe/tasks-vision/${v}/files/wasm/${wasmFile}.js`,
-    `https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@${v}/wasm/${wasmFile}.js`,
-  ];
+  const wasmJsUrls = [`/mp/wasm/${wasmFile}.js`, `/api/mp-ext/wasm/${wasmFile}.js`];
   if (selfBase) {
     wasmBinaryUrls.splice(1, 0, `${selfBase}/wasm/${wasmFile}.wasm`);
     wasmJsUrls.splice(1, 0, `${selfBase}/wasm/${wasmFile}.js`);

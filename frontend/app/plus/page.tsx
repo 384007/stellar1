@@ -6,6 +6,7 @@ import UploadZone from "@/components/UploadZone";
 import AnalysisWaiting from "@/components/AnalysisWaiting";
 import ScreenModeCapture from "@/components/ScreenModeCapture";
 import PlusResultView, { type PlusAnalysisResult } from "@/components/PlusResultView";
+import { devWarn } from "@/lib/dev-only-log";
 import { preloadPoseModel } from "@/lib/mediapipe-assets";
 import { saveAnalysisVideo } from "@/lib/video-store";
 import { makeFormData } from "@/lib/fetch-retry";
@@ -119,7 +120,7 @@ export default function PlusPage() {
         if (reanalyzePayloadProv3ScreenMode(p)) setInputMode("screen");
         await processBlob(blob, reanalyzeHistoryFilename(blob));
       } catch (e) {
-        console.warn("[plus] reanalyze pipeline error:", e);
+        devWarn("[plus] reanalyze pipeline error:", e);
       }
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -165,7 +166,7 @@ export default function PlusPage() {
         writeEntry(minimalPlusHistoryPayload(data));
         pruneLocalStellarHistoryRecords();
       } catch (e2) {
-        console.warn("[plus] local history save failed (quota or storage):", e2, e1);
+        devWarn("[plus] local history save failed (quota or storage):", e2, e1);
       }
     }
   }
@@ -219,14 +220,14 @@ export default function PlusPage() {
         if (saved.success !== false) {
           markLocalRecordSynced(data.analysis_id);
         } else {
-          console.warn("[history] plus save rejected:", saved.detail || saved);
+          devWarn("[history] plus save rejected:", saved.detail || saved);
         }
       } else {
         const errText = await res.text().catch(() => "");
-        console.warn("[history] plus save failed:", res.status, errText.slice(0, 400));
+        devWarn("[history] plus save failed:", res.status, errText.slice(0, 400));
       }
     } catch (e) {
-      console.warn("[history] plus save error:", e);
+      devWarn("[history] plus save error:", e);
     }
   }
 
@@ -365,7 +366,7 @@ export default function PlusPage() {
       try {
         await saveAnalysisToHistory(data, blob, filename);
       } catch (e) {
-        console.warn("[plus] history save failed:", e);
+        devWarn("[plus] history save failed:", e);
       }
     } catch (err: unknown) {
       clearInterval(progressInterval); clearTimeout(clubFallbackTimer); setProgress(0);

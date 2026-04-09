@@ -7,6 +7,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getRequestContext } from "@cloudflare/next-on-pages";
 import { requireProUserForProv3Edge } from "@/lib/prov3-edge-route-auth";
 import { buildProv3ModalUrlList, normalizeProHttpApiBase } from "@/lib/prov3-endpoints";
+import { sanitizeProductJson } from "@/lib/chains/sanitize";
 
 export const runtime = "edge";
 
@@ -45,7 +46,7 @@ export async function POST(request: NextRequest) {
   const modalUrls = buildProv3ModalUrlList(getCfEnv, cnHint);
   const base = normalizeProHttpApiBase(modalUrls[0] || "");
   if (!base) {
-    return NextResponse.json({ detail: "Modal backend URL not configured" }, { status: 503 });
+    return NextResponse.json({ detail: "分析服务暂时不可用，请稍后重试。" }, { status: 503 });
   }
 
   const url = `${base}/pro-v3/analyze/start`;
@@ -71,8 +72,29 @@ export async function POST(request: NextRequest) {
   });
 
   const text = await fr.text();
+  const ct = fr.headers.get("content-type") || "";
+  if (ct.includes("application/json")) {
+    try {
+      const data = JSON.parse(text) as unknown;
+      return NextResponse.json(sanitizeProductJson(data, "analysis"), {
+        status: fr.status,
+        headers: { "content-type": "application/json; charset=utf-8" },
+      });
+    } catch {
+      if (!fr.ok) {
+        return NextResponse.json({ detail: "服务暂时不可用，请稍后重试。" }, { status: fr.status });
+      }
+      return new NextResponse(text, {
+        status: fr.status,
+        headers: { "content-type": ct },
+      });
+    }
+  }
+  if (!fr.ok) {
+    return NextResponse.json({ detail: "服务暂时不可用，请稍后重试。" }, { status: fr.status });
+  }
   return new NextResponse(text, {
     status: fr.status,
-    headers: { "content-type": fr.headers.get("content-type") || "application/json" },
+    headers: { "content-type": ct || "application/octet-stream" },
   });
 }
