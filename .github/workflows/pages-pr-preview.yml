@@ -13,7 +13,8 @@ permissions:
 
 jobs:
   pages-preview:
-    if: ${{ github.event.pull_request.head.repo.full_name == github.repository }}
+    # No fork PRs; skip (do not fail) when CLOUDFLARE_API_TOKEN is unset for this repo.
+    if: ${{ github.event.pull_request.head.repo.full_name == github.repository && secrets.CLOUDFLARE_API_TOKEN != '' }}
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -23,10 +24,6 @@ jobs:
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
     steps:
       - uses: actions/checkout@v4
-
-      - name: Check required secrets
-        run: |
-          test -n "$CLOUDFLARE_API_TOKEN" || { echo 'Missing CLOUDFLARE_API_TOKEN secret'; exit 1; }
 
       - uses: actions/setup-node@v4
         with:
