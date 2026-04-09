@@ -17,8 +17,8 @@
 #
 # Cloudflare Pages (Edge + browser Gemini): Settings → Environment variables → add the same
 # GEMINI_PROXY_* names (often as Secrets). Example CLI from repo root:
-#   npx wrangler pages secret put GEMINI_PROXY_ALI --project-name stellar-ai
-#   npx wrangler pages secret put GEMINI_PROXY_JD --project-name stellar-ai
+#   npx wrangler pages secret put GEMINI_PROXY_ALI --project-name stellar1
+#   npx wrangler pages secret put GEMINI_PROXY_JD --project-name stellar1
 
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
