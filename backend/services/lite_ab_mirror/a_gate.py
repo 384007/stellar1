@@ -12,6 +12,9 @@ from services.lite_ab_mirror.scoring import average_confidence
 _A_TOP_IMPACT_MIN_CONFIDENCE = 0.58
 _A_FINISH_MIN_CONFIDENCE = 0.55
 
+# Legacy selective-refine tags — ignore as hard fails when geometry already passes.
+_SEMANTIC_INVALID_SUFFIX = "_semantic_invalid"
+
 
 def run_lite_a_gate(
     keyframes: List[dict],
@@ -20,15 +23,13 @@ def run_lite_a_gate(
 ) -> Tuple[str, List[str]]:
     fail_reasons: List[str] = []
 
-    if semantic_fail_reasons:
-        for r in semantic_fail_reasons:
-            if r and r not in fail_reasons:
-                fail_reasons.append(r)
+    order_ok = validate_event_order(keyframes)
+    gap_ok = core_frame_gap_ok(keyframes)
 
-    if not validate_event_order(keyframes):
+    if not order_ok:
         fail_reasons.append("event_order_invalid")
 
-    if not core_frame_gap_ok(keyframes):
+    if not gap_ok:
         fail_reasons.append("top_impact_gap_invalid")
 
     avg_conf = average_confidence(keyframes)
@@ -45,5 +46,16 @@ def run_lite_a_gate(
 
     if any(float(item.get("confidence", 0.0)) < 0.35 for item in keyframes):
         fail_reasons.append("possible_club_visibility_issue")
+
+    geom_ok = order_ok and gap_ok
+
+    if semantic_fail_reasons:
+        for r in semantic_fail_reasons:
+            if not r or r in fail_reasons:
+                continue
+            # Selective refine 后：若顺序与 Top–Impact 间距已合理，不再因旧式 *_semantic_invalid 判死
+            if geom_ok and r.endswith(_SEMANTIC_INVALID_SUFFIX):
+                continue
+            fail_reasons.append(r)
 
     return ("fail", fail_reasons) if fail_reasons else ("pass", [])

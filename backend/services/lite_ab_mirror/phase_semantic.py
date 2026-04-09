@@ -1,28 +1,28 @@
-"""Lite A-only: semantic checks + local window reselection for the 6 middle swing phases (no B path)."""
+"""Lite A-only: selective phase fixes — preserve SwingNet A rows unless a phase is clearly wrong (no B)."""
 
 from __future__ import annotations
 
 import copy
 import logging
 import math
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Sequence, Tuple
 
 from services.lite_ab_mirror.constants import EVENT_SEQUENCE
 
 logger = logging.getLogger(__name__)
 
-_EVENT_TO_SEMANTIC_REASON: Dict[str, str] = {
-    "Toe-up": "toeup_semantic_invalid",
-    "Mid-backswing": "mid_backswing_semantic_invalid",
-    "Top": "top_semantic_invalid",
-    "Mid-downswing": "mid_downswing_semantic_invalid",
-    "Impact": "impact_semantic_invalid",
-    "Mid-follow-through": "mid_followthrough_semantic_invalid",
-}
+_MIDDLE_EVENTS = (
+    "Toe-up",
+    "Mid-backswing",
+    "Top",
+    "Mid-downswing",
+    "Impact",
+    "Mid-follow-through",
+)
 
-_MAX_CANDIDATES = 320
-_PASSES = 5
-_SOFT_SCORE_FLOOR = 0.12
+_MAX_CANDIDATES = 256
+# Weak prior weight — must not dominate motion / boundary evidence
+_WEAK_PRIOR_WEIGHT = 0.06
 
 
 def _rows_by_event(rows: List[dict]) -> Dict[str, dict]:
@@ -46,7 +46,6 @@ def _ordered_rows(rows: List[dict]) -> List[dict]:
 
 
 def _enforce_strict_monotonic(rows: List[dict], max_idx: int) -> None:
-    """Guarantee strictly increasing frame_index within [0, max_idx]."""
     n = len(rows)
     hi = max(0, int(max_idx))
     prev = -1
@@ -132,21 +131,64 @@ def _candidates_in_window(
     return sorted({int(x) for x in cand if 0 <= int(x) <= mx})
 
 
-def _gaussian_score(idx: int, ideal: float, sigma: float) -> float:
-    if sigma <= 1e-6:
-        return 1.0 if abs(float(idx) - ideal) < 0.5 else 0.0
+def _nearest_timeline_k(frame_index: int, timeline: List[dict]) -> int:
+    if not timeline:
+        return 0
+    best_k = 0
+    best_d = 10**9
+    for k, t in enumerate(timeline):
+        fi = int(t.get("frame_index", -1))
+        d = abs(fi - int(frame_index))
+        if d < best_d:
+            best_d = d
+            best_k = k
+    return best_k
+
+
+def motion_score_at_frame(
+    frame_index: int,
+    timeline: List[dict],
+    motions: Sequence[float],
+) -> float:
+    """Map a decode index to motion proxy (0..1 scale using max on timeline)."""
+    if not timeline or not motions:
+        return 0.5
+    k = _nearest_timeline_k(frame_index, timeline)
+    if k >= len(motions):
+        k = len(motions) - 1
+    raw = [float(motions[i]) for i in range(min(len(motions), len(timeline)))]
+    if not raw:
+        return 0.5
+    mx = max(raw) or 1e-6
+    v = float(motions[k]) if k < len(motions) else 0.0
+    return max(0.0, min(1.0, v / mx))
+
+
+def _weak_gaussian_prior(idx: int, ideal: float, span: float) -> float:
+    if span <= 1e-6:
+        return 1.0
+    sigma = max(2.5, 0.1 * span)
     d = float(idx) - ideal
     return float(math.exp(-(d * d) / (2.0 * sigma * sigma)))
 
 
-def _resolve_impact_hint(
+def _resolve_impact_hint_frames(
     by: Dict[str, dict],
     *,
     max_idx: int,
     explicit: int | None,
+    timeline: List[dict],
+    motions: Sequence[float],
 ) -> int:
     if explicit is not None:
         return max(0, min(int(explicit), max_idx))
+    if timeline and motions and len(motions) > 2:
+        # Peak motion on timeline → impact proxy
+        m = list(motions[1:]) if len(motions) > 1 else list(motions)
+        if m:
+            k_peak = int(max(range(len(m)), key=lambda i: m[i]))
+            k_peak = max(0, min(k_peak, len(timeline) - 1))
+            return max(0, min(int(timeline[k_peak].get("frame_index", max_idx // 2)), max_idx))
     if "Impact" in by:
         return max(0, min(int(by["Impact"].get("frame_index", 0)), max_idx))
     top = by.get("Top")
@@ -156,71 +198,119 @@ def _resolve_impact_hint(
     return max(0, max_idx // 2)
 
 
-def _score_toeup(idx: int, addr: int, mid_bs: int) -> float:
-    if idx <= addr or idx >= mid_bs:
-        return 0.0
-    span = max(1, mid_bs - addr)
-    ideal = addr + 0.28 * span
-    sigma = max(3.0, 0.12 * span)
-    return _gaussian_score(idx, ideal, sigma)
+# --- should_refine: only clearly broken phases ---------------------------------
 
 
-def _score_mid_back(idx: int, toe: int, top: int) -> float:
-    if idx <= toe or idx >= top:
-        return 0.0
-    span = max(1, top - toe)
-    ideal = toe + 0.45 * span
-    sigma = max(3.0, 0.11 * span)
-    return _gaussian_score(idx, ideal, sigma)
+def _gap_top_impact(by: Dict[str, dict]) -> int:
+    t = int(by["Top"]["frame_index"])
+    i = int(by["Impact"]["frame_index"])
+    return max(0, i - t)
 
 
-def _score_top(idx: int, mbs: int, mds: int, cur: int, max_idx: int) -> float:
-    w = max(6, min(24, (mds - mbs) // 3 or 8))
-    lo = max(mbs + 1, cur - w)
-    hi = min(mds - 1, cur + w)
-    if idx < lo or idx > hi:
-        return 0.0
-    if idx <= mbs or idx >= mds:
-        return 0.0
-    span = max(1, hi - lo)
-    ideal = float(lo + hi) / 2.0
-    sigma = max(2.5, 0.08 * span)
-    return _gaussian_score(idx, ideal, sigma)
+def should_refine_toeup(by: Dict[str, dict]) -> bool:
+    addr = int(by["Address"]["frame_index"])
+    toe = int(by["Toe-up"]["frame_index"])
+    mbs = int(by["Mid-backswing"]["frame_index"])
+    if toe <= addr or toe >= mbs:
+        return True
+    if mbs - addr <= 2:
+        return False
+    return toe <= addr + 1 or toe >= mbs - 1
 
 
-def _score_mid_down(idx: int, top: int, imp: int) -> float:
-    if idx <= top or idx >= imp:
-        return 0.0
-    span = max(1, imp - top)
-    # Not at fixed offset from Impact — favor mid corridor
-    ideal = top + 0.42 * span
-    sigma = max(3.5, 0.12 * span)
-    return _gaussian_score(idx, ideal, sigma)
+def should_refine_mid_backswing(by: Dict[str, dict]) -> bool:
+    toe = int(by["Toe-up"]["frame_index"])
+    mbs = int(by["Mid-backswing"]["frame_index"])
+    top = int(by["Top"]["frame_index"])
+    if mbs <= toe or mbs >= top:
+        return True
+    if top - toe <= 2:
+        return False
+    return mbs <= toe + 1 or mbs >= top - 1
 
 
-def _score_impact(idx: int, hint: int, top: int, fin: int) -> float:
-    w = max(5, min(30, (fin - top) // 6 or 10))
-    lo = max(top + 1, hint - w)
-    hi = min(fin - 1, hint + w)
-    if idx < lo or idx > hi:
-        return 0.0
-    sigma = max(3.0, 0.06 * max(1, hi - lo))
-    return _gaussian_score(idx, float(hint), sigma)
+def should_refine_top(by: Dict[str, dict]) -> bool:
+    mbs = int(by["Mid-backswing"]["frame_index"])
+    top = int(by["Top"]["frame_index"])
+    mds = int(by["Mid-downswing"]["frame_index"])
+    if top <= mbs or top >= mds:
+        return True
+    if mds - mbs <= 2:
+        return False
+    return top <= mbs + 1 or top >= mds - 1
 
 
-def _score_mid_follow(idx: int, imp: int, fin: int) -> float:
-    if idx <= imp or idx >= fin:
-        return 0.0
-    span = max(1, fin - imp)
-    ideal = imp + 0.38 * span
-    sigma = max(3.5, 0.11 * span)
-    return _gaussian_score(idx, ideal, sigma)
+def should_refine_mid_downswing(by: Dict[str, dict]) -> bool:
+    """Conservative: only fix clear corridor violations or hugging boundaries."""
+    top = int(by["Top"]["frame_index"])
+    mds = int(by["Mid-downswing"]["frame_index"])
+    imp = int(by["Impact"]["frame_index"])
+    if mds <= top or mds >= imp:
+        return True
+    corridor = imp - top
+    if corridor <= 3:
+        return False
+    # Too close to Top or Impact (not a real "mid" downswing)
+    if mds <= top + max(1, corridor // 12):
+        return True
+    if mds >= imp - max(1, corridor // 12):
+        return True
+    rel = (mds - top) / float(corridor)
+    if rel < 0.08 or rel > 0.92:
+        return True
+    return False
 
 
-def _best_pick(
-    candidates: List[int],
-    score_fn,
+def should_refine_impact(
+    by: Dict[str, dict],
     *,
+    hint_fi: int,
+    timeline: List[dict],
+    motions: Sequence[float],
+) -> bool:
+    top = int(by["Top"]["frame_index"])
+    imp = int(by["Impact"]["frame_index"])
+    fin = int(by["Finish"]["frame_index"])
+    if imp <= top or imp >= fin:
+        return True
+    # Motion peak alignment when we have evidence
+    if timeline and motions and len(motions) > 2:
+        w = max(5, min(28, (fin - top) // 5))
+        lo = max(top + 1, hint_fi - w)
+        hi_b = min(fin - 1, hint_fi + w)
+        if imp < lo or imp > hi_b:
+            return True
+    return False
+
+
+def should_refine_mid_follow(by: Dict[str, dict]) -> bool:
+    imp = int(by["Impact"]["frame_index"])
+    mft = int(by["Mid-follow-through"]["frame_index"])
+    fin = int(by["Finish"]["frame_index"])
+    if mft <= imp or mft >= fin:
+        return True
+    if fin - imp <= 2:
+        return False
+    return mft <= imp + 1 or mft >= fin - 1
+
+
+_SELECTORS = {
+    "Toe-up": should_refine_toeup,
+    "Mid-backswing": should_refine_mid_backswing,
+    "Top": should_refine_top,
+    "Mid-downswing": should_refine_mid_downswing,
+    "Impact": None,  # special: needs hint
+    "Mid-follow-through": should_refine_mid_follow,
+}
+
+
+def _pick_with_motion(
+    candidates: List[int],
+    *,
+    timeline: List[dict],
+    motions: Sequence[float],
+    weak_ideal: float | None,
+    weak_span: float,
     fallback: int,
 ) -> Tuple[int, float]:
     if not candidates:
@@ -228,7 +318,11 @@ def _best_pick(
     best_i = candidates[0]
     best_s = -1.0
     for idx in candidates:
-        s = float(score_fn(idx))
+        ms = motion_score_at_frame(idx, timeline, motions)
+        prior = 1.0
+        if weak_ideal is not None and weak_span > 0:
+            prior = _weak_gaussian_prior(idx, weak_ideal, weak_span)
+        s = ms + _WEAK_PRIOR_WEIGHT * prior
         if s > best_s:
             best_s = s
             best_i = idx
@@ -247,12 +341,10 @@ def refine_lite_a_rows_with_phase_semantics(
     max_frame_index: int | None = None,
 ) -> Tuple[List[dict], List[str], Dict[str, Any]]:
     """
-    Local window reselection for middle 6 phases; always returns 8 monotonic rows.
-
-    ``poses`` / ``timeline`` / ``motions`` are accepted for API compatibility; scoring uses
-    timeline indices and optional impact hint only (no full re-infer).
+    Single-pass selective refine: keep A rows unless ``should_refine_*`` says otherwise.
+    Uses timeline + motions for scoring; weak Gaussian only as tie-breaker.
     """
-    _ = (poses, timeline, motions)
+    _ = poses  # reserved — future pose-based checks; do not destabilize A with guesses
     meta = dict(preprocess_meta or {})
     hi = max_frame_index
     if hi is None:
@@ -262,14 +354,45 @@ def refine_lite_a_rows_with_phase_semantics(
     if hi < 0:
         hi = 0
 
-    working = ensure_eight_keyframe_rows(rows, max_frame_index=hi)
-    semantic_debug: Dict[str, Any] = {"passes": [], "max_frame_index": hi}
+    tl = list(timeline or [])
+    mo = list(motions or [])
 
+    working = ensure_eight_keyframe_rows(rows, max_frame_index=hi)
+    by = _rows_by_event(working)
+    hint_fi = _resolve_impact_hint_frames(by, max_idx=hi, explicit=impact_hint_frame_index, timeline=tl, motions=mo)
+
+    refined_events: Dict[str, Dict[str, Any]] = {}
     fail_reasons: List[str] = []
 
-    for p in range(_PASSES):
-        by = _rows_by_event(working)
-        hint = _resolve_impact_hint(by, max_idx=hi, explicit=impact_hint_frame_index)
+    def snapshot_original() -> Dict[str, int]:
+        return {str(r.get("event_name")): int(r.get("frame_index", 0)) for r in working}
+
+    original_idx = snapshot_original()
+
+    # --- single pass: middle 6 only, in phase order
+    for ev in _MIDDLE_EVENTS:
+        row = by.get(ev)
+        if row is None:
+            continue
+        orig_fi = int(row.get("frame_index", 0))
+
+        need_fix = False
+        if ev == "Impact":
+            need_fix = should_refine_impact(by, hint_fi=hint_fi, timeline=tl, motions=mo)
+        else:
+            fn = _SELECTORS.get(ev)
+            if fn is not None:
+                need_fix = bool(fn(by))
+
+        if not need_fix:
+            refined_events[ev] = {"action": "kept", "frame_index": orig_fi}
+            continue
+
+        # 无 timeline/motion 时不强行按弱先验改帧 — 保留 A 原始结果
+        if len(tl) < 2 or len(mo) < 2:
+            refined_events[ev] = {"action": "kept_no_motion_evidence", "frame_index": orig_fi}
+            continue
+
         addr = int(by["Address"]["frame_index"])
         toe = int(by["Toe-up"]["frame_index"])
         mbs = int(by["Mid-backswing"]["frame_index"])
@@ -278,100 +401,100 @@ def refine_lite_a_rows_with_phase_semantics(
         imp = int(by["Impact"]["frame_index"])
         fin = int(by["Finish"]["frame_index"])
 
-        pass_log: Dict[str, Any] = {"pass": p}
+        pick = orig_fi
+        score = 0.0
 
-        # --- Toe-up: Address → Mid-backswing
-        lo, hi_t = addr + 1, max(addr + 2, mbs - 1)
-        cand = _candidates_in_window(lo, hi_t, analysis_frames, max_frame_index=hi)
-        pick, sc = _best_pick(cand, lambda i: _score_toeup(i, addr, mbs), fallback=toe)
-        by["Toe-up"]["frame_index"] = pick
-        by["Toe-up"]["confidence"] = max(float(by["Toe-up"].get("confidence") or 0.0), min(0.95, 0.35 + sc))
-        pass_log["Toe-up"] = {"idx": pick, "score": sc}
-        if sc < _SOFT_SCORE_FLOOR and _EVENT_TO_SEMANTIC_REASON["Toe-up"] not in fail_reasons:
-            fail_reasons.append(_EVENT_TO_SEMANTIC_REASON["Toe-up"])
+        if ev == "Toe-up":
+            lo, hi_b = addr + 1, max(addr + 2, mbs - 1)
+            cand = _candidates_in_window(lo, hi_b, analysis_frames, max_frame_index=hi)
+            span = max(1, mbs - addr)
+            ideal = addr + 0.28 * span
+            pick, score = _pick_with_motion(
+                cand, timeline=tl, motions=mo, weak_ideal=ideal, weak_span=float(span), fallback=orig_fi
+            )
+        elif ev == "Mid-backswing":
+            lo, hi_b = toe + 1, max(toe + 2, top - 1)
+            cand = _candidates_in_window(lo, hi_b, analysis_frames, max_frame_index=hi)
+            span = max(1, top - toe)
+            ideal = toe + 0.45 * span
+            pick, score = _pick_with_motion(
+                cand, timeline=tl, motions=mo, weak_ideal=ideal, weak_span=float(span), fallback=orig_fi
+            )
+        elif ev == "Top":
+            lo = max(mbs + 1, top - max(6, (hi - addr) // 30))
+            hi_b = min(mds - 1, top + max(6, (hi - addr) // 30))
+            cand = _candidates_in_window(lo, hi_b, analysis_frames, max_frame_index=hi)
+            span = max(1, hi_b - lo)
+            ideal = float(lo + hi_b) / 2.0
+            pick, score = _pick_with_motion(
+                cand, timeline=tl, motions=mo, weak_ideal=ideal, weak_span=float(span), fallback=orig_fi
+            )
+        elif ev == "Mid-downswing":
+            lo, hi_b = top + 1, max(top + 2, imp - 1)
+            cand = _candidates_in_window(lo, hi_b, analysis_frames, max_frame_index=hi)
+            span = max(1, imp - top)
+            ideal = top + 0.42 * span
+            pick, score = _pick_with_motion(
+                cand, timeline=tl, motions=mo, weak_ideal=ideal, weak_span=float(span), fallback=orig_fi
+            )
+        elif ev == "Impact":
+            w = max(6, min(30, (fin - top) // 6 or 10))
+            lo = max(top + 1, hint_fi - w)
+            hi_b = min(fin - 1, hint_fi + w)
+            cand = _candidates_in_window(lo, hi_b, analysis_frames, max_frame_index=hi)
+            span = max(1, hi_b - lo)
+            pick, score = _pick_with_motion(
+                cand, timeline=tl, motions=mo, weak_ideal=float(hint_fi), weak_span=float(span), fallback=orig_fi
+            )
+        elif ev == "Mid-follow-through":
+            lo, hi_b = imp + 1, max(imp + 2, fin - 1)
+            cand = _candidates_in_window(lo, hi_b, analysis_frames, max_frame_index=hi)
+            span = max(1, fin - imp)
+            ideal = imp + 0.38 * span
+            pick, score = _pick_with_motion(
+                cand, timeline=tl, motions=mo, weak_ideal=ideal, weak_span=float(span), fallback=orig_fi
+            )
 
-        # --- Mid-backswing: Toe-up → Top
-        toe = int(by["Toe-up"]["frame_index"])
-        lo, hi_t = toe + 1, max(toe + 2, top - 1)
-        cand = _candidates_in_window(lo, hi_t, analysis_frames, max_frame_index=hi)
-        pick, sc = _best_pick(cand, lambda i: _score_mid_back(i, toe, top), fallback=mbs)
-        by["Mid-backswing"]["frame_index"] = pick
-        by["Mid-backswing"]["confidence"] = max(
-            float(by["Mid-backswing"].get("confidence") or 0.0), min(0.95, 0.35 + sc)
-        )
-        pass_log["Mid-backswing"] = {"idx": pick, "score": sc}
-        if sc < _SOFT_SCORE_FLOOR and _EVENT_TO_SEMANTIC_REASON["Mid-backswing"] not in fail_reasons:
-            fail_reasons.append(_EVENT_TO_SEMANTIC_REASON["Mid-backswing"])
+        if pick == orig_fi and need_fix:
+            # Could not move — report only if still structurally bad
+            if ev == "Mid-downswing" and (mds <= top or mds >= imp):
+                fail_reasons.append("mid_downswing_unresolved")
+            refined_events[ev] = {"action": "refine_skipped", "frame_index": orig_fi, "score": score}
+        else:
+            row["frame_index"] = int(pick)
+            row["confidence"] = max(float(row.get("confidence") or 0.0), min(0.95, 0.35 + min(0.5, score)))
+            refined_events[ev] = {"action": "refined", "from": orig_fi, "to": int(pick), "score": score}
+            by[ev] = row
 
-        mbs = int(by["Mid-backswing"]["frame_index"])
-        top = int(by["Top"]["frame_index"])
-        mds = int(by["Mid-downswing"]["frame_index"])
+    working = [by[e] for e in EVENT_SEQUENCE]
+    _enforce_strict_monotonic(working, hi)
 
-        # --- Top: corridor between Mid-bs and Mid-down, local window around current Top
-        lo = max(mbs + 1, top - max(8, (hi - addr) // 25))
-        hi_t = min(mds - 1, top + max(8, (hi - addr) // 25))
-        cand = _candidates_in_window(lo, hi_t, analysis_frames, max_frame_index=hi)
-        pick, sc = _best_pick(cand, lambda i: _score_top(i, mbs, mds, top, hi), fallback=top)
-        by["Top"]["frame_index"] = pick
-        by["Top"]["confidence"] = max(float(by["Top"].get("confidence") or 0.0), min(0.95, 0.4 + sc))
-        pass_log["Top"] = {"idx": pick, "score": sc}
-        if sc < _SOFT_SCORE_FLOOR and _EVENT_TO_SEMANTIC_REASON["Top"] not in fail_reasons:
-            fail_reasons.append(_EVENT_TO_SEMANTIC_REASON["Top"])
+    semantic_debug: Dict[str, Any] = {
+        "mode": "selective_single_pass",
+        "max_frame_index": hi,
+        "impact_hint_frame_index": hint_fi,
+        "timeline_len": len(tl),
+        "motions_len": len(mo),
+        "original_frame_index": original_idx,
+        "per_event": refined_events,
+    }
 
-        top = int(by["Top"]["frame_index"])
-        imp = int(by["Impact"]["frame_index"])
-        mds = int(by["Mid-downswing"]["frame_index"])
-
-        # --- Mid-downswing: Top → Impact (never reuse “Impact minus fixed offset” exclusively)
-        lo, hi_t = top + 1, max(top + 2, imp - 1)
-        cand = _candidates_in_window(lo, hi_t, analysis_frames, max_frame_index=hi)
-        pick, sc = _best_pick(cand, lambda i: _score_mid_down(i, top, imp), fallback=mds)
-        by["Mid-downswing"]["frame_index"] = pick
-        by["Mid-downswing"]["confidence"] = max(
-            float(by["Mid-downswing"].get("confidence") or 0.0), min(0.95, 0.35 + sc)
-        )
-        pass_log["Mid-downswing"] = {"idx": pick, "score": sc}
-        if sc < _SOFT_SCORE_FLOOR and _EVENT_TO_SEMANTIC_REASON["Mid-downswing"] not in fail_reasons:
-            fail_reasons.append(_EVENT_TO_SEMANTIC_REASON["Mid-downswing"])
-
-        mds = int(by["Mid-downswing"]["frame_index"])
-        hint = _resolve_impact_hint(by, max_idx=hi, explicit=impact_hint_frame_index)
-        fin = int(by["Finish"]["frame_index"])
-
-        # --- Impact: around hint
-        lo = max(top + 1, hint - max(6, (fin - top) // 8))
-        hi_t = min(fin - 1, hint + max(6, (fin - top) // 8))
-        cand = _candidates_in_window(lo, hi_t, analysis_frames, max_frame_index=hi)
-        pick, sc = _best_pick(cand, lambda i: _score_impact(i, hint, top, fin), fallback=imp)
-        by["Impact"]["frame_index"] = pick
-        by["Impact"]["confidence"] = max(float(by["Impact"].get("confidence") or 0.0), min(0.95, 0.45 + sc))
-        pass_log["Impact"] = {"idx": pick, "score": sc}
-        if sc < _SOFT_SCORE_FLOOR and _EVENT_TO_SEMANTIC_REASON["Impact"] not in fail_reasons:
-            fail_reasons.append(_EVENT_TO_SEMANTIC_REASON["Impact"])
-
-        imp = int(by["Impact"]["frame_index"])
-
-        # --- Mid-follow-through: Impact → Finish
-        lo, hi_t = imp + 1, max(imp + 2, fin - 1)
-        cand = _candidates_in_window(lo, hi_t, analysis_frames, max_frame_index=hi)
-        mft = int(by["Mid-follow-through"]["frame_index"])
-        pick, sc = _best_pick(cand, lambda i: _score_mid_follow(i, imp, fin), fallback=mft)
-        by["Mid-follow-through"]["frame_index"] = pick
-        by["Mid-follow-through"]["confidence"] = max(
-            float(by["Mid-follow-through"].get("confidence") or 0.0), min(0.95, 0.35 + sc)
-        )
-        pass_log["Mid-follow-through"] = {"idx": pick, "score": sc}
-        if sc < _SOFT_SCORE_FLOOR and _EVENT_TO_SEMANTIC_REASON["Mid-follow-through"] not in fail_reasons:
-            fail_reasons.append(_EVENT_TO_SEMANTIC_REASON["Mid-follow-through"])
-
-        working = [by[e] for e in EVENT_SEQUENCE]
-        _enforce_strict_monotonic(working, hi)
-        semantic_debug["passes"].append(pass_log)
+    # Post-check: only add fail reasons if still broken (no blanket semantic_invalid)
+    by2 = _rows_by_event(working)
+    if _gap_top_impact(by2) < 4:
+        fail_reasons.append("top_impact_gap_invalid_post_semantic")
+    t2 = int(by2["Top"]["frame_index"])
+    i2 = int(by2["Impact"]["frame_index"])
+    md2 = int(by2["Mid-downswing"]["frame_index"])
+    if not (t2 < md2 < i2):
+        fail_reasons.append("mid_downswing_corridor_invalid")
 
     logger.info(
-        "[phase_semantic] refined middle phases max_idx=%s reasons=%s",
+        "[phase_semantic] selective max_idx=%s hint=%s fails=%s events=%s",
         hi,
+        hint_fi,
         fail_reasons,
+        {k: v.get("action") for k, v in refined_events.items()},
     )
     return working, fail_reasons, semantic_debug
 
@@ -379,4 +502,5 @@ def refine_lite_a_rows_with_phase_semantics(
 __all__ = [
     "ensure_eight_keyframe_rows",
     "refine_lite_a_rows_with_phase_semantics",
+    "motion_score_at_frame",
 ]
