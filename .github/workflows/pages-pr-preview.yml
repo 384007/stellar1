@@ -1,22 +1,16 @@
 name: Frontend PR Preview
 
 # 自动部署触发说明（需在仓库 Settings → Actions → General 中允许 Actions，且配置 CLOUDFLARE_* secrets）：
-# - pull_request：PR 打开、新提交、重新打开、草稿 → 可审查（ready_for_review）时各跑一次
-# - push：非 main/master 分支推送且命中 paths（便于先 push 再开 PR 也有预览）
-# - push 与 pull_request 可能对同一 commit 各触发一次 → concurrency 合并为一次执行
+# - pull_request：PR 打开、新提交、重新打开、草稿 → 可审查（ready_for_review）时各跑一次（任意文件变更均重建预览）
+# - push：非 main/master 分支任意推送均重建预览（与后端/Modal 联调时不必再改 frontend 才触发）
+# - push 与 pull_request 可能对同一 commit 各触发一次 → concurrency 按 sha 合并为一次执行
 on:
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
-    paths:
-      - 'frontend/**'
-      - '.github/workflows/pages-pr-preview.yml'
   push:
     branches-ignore:
       - main
       - master
-    paths:
-      - 'frontend/**'
-      - '.github/workflows/pages-pr-preview.yml'
   workflow_dispatch:
     inputs:
       ref:

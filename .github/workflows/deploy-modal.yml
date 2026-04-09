@@ -1,18 +1,11 @@
 name: Deploy to Modal
 
-# main：生产发布；feat/**：功能分支推送时同步重部署（便于联调 Modal，无需等合并 main）
+# main：生产发布；feat/**：功能分支任意推送均重部署 Modal（避免只改 lite 路径等时漏跑）
 on:
   push:
     branches:
       - main
       - 'feat/**'
-    paths:
-      - 'modal_app.py'
-      - 'backend/**'
-      - 'tools/modal_bake_yolo.py'
-      - 'tools/modal_bake_swingnet.py'
-      - 'backend/requirements-modal.txt'
-      - '.github/workflows/deploy-modal.yml'
   workflow_dispatch:
 
 concurrency:
