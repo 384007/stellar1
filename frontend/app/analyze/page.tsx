@@ -717,7 +717,8 @@ export default function AnalyzePage() {
     }, 800);
 
     let clubFallbackTimer: ReturnType<typeof setTimeout> | undefined;
-    const wantsEarlyClubHand = modeForRun === "pro" || modeForRun === "lite";
+    /** Lite 仅走 ``POST /analyze/lite``；预检 club-detect 会与主分析叠加成多次 Modal run（如 3×club-detect + lite）。 */
+    const wantsEarlyClubHand = modeForRun === "pro";
     const clubDetectPromise = wantsEarlyClubHand
       ? detectClubFromBlob(sendBlob, { enableHandPopup: true })
       : Promise.resolve();
@@ -1493,7 +1494,7 @@ export default function AnalyzePage() {
               </div>
             )}
 
-            {/* Lite: club + handedness first (same /api/club-detect as Pro); stays visible while analysis runs */}
+            {/* Lite：主分析 ``/analyze/lite`` 内带杆型/左右手；此处仅展示进度条，结果页再显示具体识别 */}
             {analysisMode === "lite" && (
               <div className="fixed bottom-6 left-4 right-4 z-50 animate-fade-in space-y-2">
                 <ClubHandSummaryBar
