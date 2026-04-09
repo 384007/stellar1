@@ -6,6 +6,13 @@ on:
   push:
     branches:
       - main
+      - 'feat/**'
+    paths:
+      - 'modal_app_lite.py'
+      - 'backend/**'
+      - 'backend/requirements-modal.txt'
+      - 'backend/requirements-modal-lite.txt'
+      - '.github/workflows/deploy-modal-lite.yml'
   workflow_dispatch:
 
 concurrency:
