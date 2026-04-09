@@ -6,6 +6,21 @@ on:
     paths:
       - 'frontend/**'
       - '.github/workflows/pages-pr-preview.yml'
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: 'Branch or SHA to build (e.g. feat/modal-centric-backend-proxies)'
+        required: true
+        type: string
+      preview_branch:
+        description: 'Cloudflare Pages --branch (e.g. pr-50)'
+        required: true
+        default: 'pr-50'
+        type: string
+      pr_number:
+        description: 'Optional: PR number to post preview URL as a comment (e.g. 50)'
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -13,8 +28,15 @@ permissions:
 
 jobs:
   pages-preview:
-    # No fork PRs; skip (do not fail) when CLOUDFLARE_API_TOKEN is unset for this repo.
-    if: ${{ github.event.pull_request.head.repo.full_name == github.repository && secrets.CLOUDFLARE_API_TOKEN != '' }}
+    if: >-
+      ${{
+        secrets.CLOUDFLARE_API_TOKEN != '' &&
+        (
+          github.event_name == 'workflow_dispatch' ||
+          (github.event_name == 'pull_request' &&
+            github.event.pull_request.head.repo.full_name == github.repository)
+        )
+      }}
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -24,6 +46,8 @@ jobs:
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.ref || github.sha }}
 
       - uses: actions/setup-node@v4
         with:
@@ -46,20 +70,28 @@ jobs:
         id: deploy
         run: |
           set -eo pipefail
-          BRANCH_NAME="pr-${{ github.event.pull_request.number }}"
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            BRANCH_NAME="${{ github.event.inputs.preview_branch }}"
+          else
+            BRANCH_NAME="pr-${{ github.event.pull_request.number }}"
+          fi
+          echo "Using Cloudflare Pages branch: $BRANCH_NAME"
           LOG_FILE="$RUNNER_TEMP/wrangler-preview.log"
           npx wrangler pages deploy .vercel/output/static \
             --project-name stellar-ai \
             --branch "$BRANCH_NAME" \
             --commit-dirty=true 2>&1 | tee "$LOG_FILE"
           PREVIEW_URL=$(grep -Eo 'https://[^ ]+\.(pages|workers)\.dev[^ ]*' "$LOG_FILE" | tail -n1 || true)
+          if [ -z "$PREVIEW_URL" ]; then
+            PREVIEW_URL=$(grep -Eo 'https://[^ ]+pages\.dev[^ ]*' "$LOG_FILE" | tail -n1 || true)
+          fi
           echo "preview_url=$PREVIEW_URL" >> "$GITHUB_OUTPUT"
           if [ -z "$PREVIEW_URL" ]; then
-            echo 'Could not detect preview URL from wrangler output.'
+            echo 'Could not detect preview URL from wrangler output; check Cloudflare Pages → stellar-ai → Deployments.'
           fi
 
       - name: Comment preview link on PR
-        if: ${{ steps.deploy.outputs.preview_url != '' }}
+        if: ${{ steps.deploy.outputs.preview_url != '' && github.event_name == 'pull_request' }}
         uses: actions/github-script@v7
         with:
           script: |
@@ -72,11 +104,45 @@ jobs:
               'Suggested smoke test:',
               '- open `/analyze`',
               '- upload a video in Lite / Pro / Plus',
-              '- confirm analysis completes instead of only spinning or erroring'
+              '- confirm analysis completes instead of only spinning or erroring',
+              '',
+              'If upload or analysis returns 503, open Cloudflare → Pages → stellar-ai → Settings and ensure **Preview** (not only Production) has the same secrets/bindings as production: JWT_SECRET, R2, D1, MODAL_BACKEND_URL / LITE_BACKEND_URL, Gemini keys as needed.'
             ].join('\n');
             await github.rest.issues.createComment({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              issue_number: context.issue.number,
+              issue_number: context.payload.pull_request.number,
+              body,
+            });
+
+      - name: Comment preview link (manual run)
+        if: >-
+          ${{
+            steps.deploy.outputs.preview_url != '' &&
+            github.event_name == 'workflow_dispatch' &&
+            github.event.inputs.pr_number != ''
+          }}
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const url = `${{ toJson(steps.deploy.outputs.preview_url) }}`;
+            const n = Number.parseInt('${{ github.event.inputs.pr_number }}', 10);
+            if (!Number.isFinite(n) || n <= 0) {
+              core.setFailed('Invalid pr_number');
+              return;
+            }
+            const body = [
+              'Frontend PR preview (manual workflow run):',
+              '',
+              url,
+              '',
+              'Suggested smoke test: `/analyze` → upload video → confirm analysis completes.',
+              '',
+              'If upload or analysis returns 503, ensure **Preview** env secrets/bindings match Production in Cloudflare Pages (JWT_SECRET, R2, D1, Modal/Gemini).'
+            ].join('\n');
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: n,
               body,
             });
