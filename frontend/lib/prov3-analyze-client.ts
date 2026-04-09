@@ -2,8 +2,7 @@ import { clientLikelyMainlandChinaUser } from "@/lib/client-region-hint";
 import { devInfo, devWarn } from "@/lib/dev-only-log";
 
 /** Same-origin Pro v3 orchestration (upload → one Modal ``/analyze/start`` → R2 job poll). */
-/* Upload: Pages ``/api/history/upload-video`` → R2 binding. Optional presigned PUT when
- * ``NEXT_PUBLIC_PROV3_CN_USE_PRESIGNED_UPLOAD=true``. Job poll: no client cap when ``unboundedJobPoll``. */
+/* Upload: Pages ``/api/history/upload-video`` → R2 binding. CN may try presigned PUT first; server decides via secrets. */
 const PRO_V3_EDGE_ANALYZE_START = "/api/prov3/analyze/start";
 const PRO_V3_EDGE_ANALYZE_CANCEL = "/api/prov3/analyze/cancel";
 
@@ -63,19 +62,6 @@ export function yieldUiBeforeHeavyParse(): Promise<void> {
   return new Promise((resolve) => {
     requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
   });
-}
-
-/**
- * Reads `NEXT_PUBLIC_PROV3_RENDER_FALLBACK`. The edge-job path does not use Render fallback;
- * kept for callers that branch on this flag elsewhere.
- */
-export function prov3RenderFallbackEnabled(): boolean {
-  return process.env.NEXT_PUBLIC_PROV3_RENDER_FALLBACK === "true";
-}
-
-/** Opt-in: CN tries presigned PUT to R2 (requires Pages R2_ACCOUNT_ID + keys + bucket CORS). Default off. */
-function prov3CnPresignedUploadEnabled(): boolean {
-  return process.env.NEXT_PUBLIC_PROV3_CN_USE_PRESIGNED_UPLOAD === "true";
 }
 
 /**
@@ -169,7 +155,7 @@ export async function runProv3AnalyzeMultipart(
 
     let videoR2Key = "";
 
-    if (opts.cnNetworkHint && prov3CnPresignedUploadEnabled()) {
+    if (opts.cnNetworkHint) {
       type PresignJson = {
         mode?: string;
         upload_url?: string;

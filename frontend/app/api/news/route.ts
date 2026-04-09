@@ -4,14 +4,21 @@ import { sanitizeProductJson } from "@/lib/chains/sanitize";
 export const runtime = "edge";
 export const dynamic = "force-dynamic";
 
-const BACKEND = process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:8000";
+function newsBackendBase(): string {
+  const raw =
+    process.env.BACKEND_URL ||
+    process.env.NEWS_BACKEND_URL ||
+    process.env.NEXT_PUBLIC_BACKEND_URL ||
+    "http://localhost:8000";
+  return raw.trim().replace(/\/+$/, "");
+}
 
 export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
   const limit = searchParams.get("limit") || "10";
 
   try {
-    const res = await fetch(`${BACKEND}/news?limit=${limit}&_=${Date.now()}`, {
+    const res = await fetch(`${newsBackendBase()}/news?limit=${limit}&_=${Date.now()}`, {
       cache: "no-store",
     });
 

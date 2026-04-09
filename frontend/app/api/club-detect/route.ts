@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getRequestContext } from "@cloudflare/next-on-pages";
-import { resolveLiteAnalyzeUpstreamBase } from "@/lib/prov3-endpoints";
+import { resolveLiteAnalyzeUpstreamBase } from "@/lib/server/prov3-upstream";
 
 export const runtime = "edge";
 

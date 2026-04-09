@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getRequestContext } from "@cloudflare/next-on-pages";
 import { jwtVerify } from "jose";
-import { resolveLiteAnalyzeUpstreamBase } from "@/lib/prov3-endpoints";
+import { resolveLiteAnalyzeUpstreamBase } from "@/lib/server/prov3-upstream";
 import { sanitizeProductJson } from "@/lib/chains/sanitize";
 
 export const runtime = "edge";

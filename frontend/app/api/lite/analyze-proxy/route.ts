@@ -3,7 +3,7 @@ import { getRequestContext } from "@cloudflare/next-on-pages";
 import { jwtVerify } from "jose";
 
 import { LITE_ANALYZE_FETCH_TIMEOUT_MS } from "@/lib/lite-analyze-timeout";
-import { resolveLiteAnalyzeUpstreamBase } from "@/lib/prov3-endpoints";
+import { resolveLiteAnalyzeUpstreamBase } from "@/lib/server/prov3-upstream";
 import { sanitizeLiteSseStream } from "@/lib/chains";
 import { sanitizeProductJson } from "@/lib/chains/sanitize";
 

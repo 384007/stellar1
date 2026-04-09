@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { jwtVerify } from "jose";
 import { getRequestContext } from "@cloudflare/next-on-pages";
 import { jsonProduct } from "@/lib/chains";
+import { prov3ModalPrimaryOrigin } from "@/lib/server/prov3-upstream";
 
 export const runtime = "edge";
 
@@ -17,18 +18,13 @@ function getCfEnv(key: string): string {
   }
 }
 
-function getModalUrl(): string {
-  return (
-    getCfEnv("MODAL_BACKEND_URL") ||
-    process.env.MODAL_BACKEND_URL ||
-    "https://dytsui--stellar-ai-fastapi-app.modal.run"
-  )
-    .trim()
-    .replace(/\/+$/, "");
+function getModalUrl(request: NextRequest): string {
+  const cfRaw = (request.headers.get("cf-ipcountry") || request.headers.get("CF-IPCountry") || "").trim();
+  return prov3ModalPrimaryOrigin(getCfEnv, cfRaw).replace(/\/+$/, "");
 }
 
-async function fetchPlusModalOnly(file: File): Promise<Response> {
-  const modalUrl = getModalUrl();
+async function fetchPlusModalOnly(request: NextRequest, file: File): Promise<Response> {
+  const modalUrl = getModalUrl(request);
   const form = new FormData();
   form.append("file", file);
   const ctrl = new AbortController();
@@ -179,7 +175,7 @@ export async function POST(request: NextRequest) {
 
     let res: Response;
     try {
-      res = await fetchPlusModalOnly(file);
+      res = await fetchPlusModalOnly(request, file);
     } catch (e) {
       if (e instanceof DOMException && e.name === "AbortError") {
         return NextResponse.json({ detail: "Plus 分析超时，请压缩视频后重试" }, { status: 504 });

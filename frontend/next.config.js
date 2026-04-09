@@ -5,26 +5,11 @@ const nextConfig = {
   poweredByHeader: false,
   productionBrowserSourceMaps: false,
   images: {
-    remotePatterns: [
-      { protocol: "https", hostname: "images.unsplash.com" },
-      { protocol: "https", hostname: "*.r2.cloudflarestorage.com" },
-    ],
+    remotePatterns: [{ protocol: "https", hostname: "images.unsplash.com" }],
   },
   env: {
-    NEXT_PUBLIC_BACKEND_URL: process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:8000",
+    // Only values that are intentionally public (site URL). Backend / MediaPipe bases are server-only.
     NEXT_PUBLIC_APP_URL: process.env.NEXT_PUBLIC_APP_URL || "http://localhost:3000",
-    // MediaPipe R2 URL is public in the browser anyway. Some hosts only allow "Secret" env names
-    // without NEXT_PUBLIC_* — map those here so `next build` can still inline the client bundle.
-    NEXT_PUBLIC_MEDIAPIPE_CDN_BASE: (
-      process.env.NEXT_PUBLIC_MEDIAPIPE_CDN_BASE ||
-      process.env.MEDIAPIPE_CDN_BASE ||
-      ""
-    ).trim(),
-    NEXT_PUBLIC_MEDIAPIPE_ALLOW_FOREIGN_FALLBACK: (
-      process.env.NEXT_PUBLIC_MEDIAPIPE_ALLOW_FOREIGN_FALLBACK ||
-      process.env.MEDIAPIPE_ALLOW_FOREIGN_FALLBACK ||
-      ""
-    ).trim(),
   },
   webpack: (config, { webpack, isServer }) => {
     config.resolve.alias["@mediapipe/tasks-vision"] = false;

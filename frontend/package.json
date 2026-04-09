@@ -7,7 +7,7 @@
   },
   "scripts": {
     "dev": "next dev",
-    "build": "node scripts/fetch-mediapipe-models.mjs && NODE_OPTIONS='--require ./scripts/next-edge-build-polyfill.cjs' next build",
+    "build": "node scripts/fetch-mediapipe-models.mjs && NODE_OPTIONS='--require ./scripts/next-edge-build-polyfill.cjs' next build && node scripts/check-no-client-leaks.mjs",
     "start": "next start",
     "lint": "next lint",
     "test:e2e": "playwright test",
@@ -28,7 +28,8 @@
     "jsonwebtoken": "^9.0.2",
     "next": "^15.1.0",
     "react": "^19.0.0",
-    "react-dom": "^19.0.0"
+    "react-dom": "^19.0.0",
+    "server-only": "^0.0.1"
   },
   "devDependencies": {
     "@cloudflare/next-on-pages": "^1.13.7",

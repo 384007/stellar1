@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getRequestContext } from "@cloudflare/next-on-pages";
-import { buildProv3ModalUrlList, normalizeProHttpApiBase } from "@/lib/prov3-endpoints";
+import { buildProv3ModalUrlList, normalizeProHttpApiBase } from "@/lib/server/prov3-upstream";
 
 export const runtime = "edge";
 

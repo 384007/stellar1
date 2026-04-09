@@ -1,5 +1,5 @@
 import type { NextRequest } from "next/server";
-import { resolveLiteAnalyzeUpstreamBase } from "@/lib/prov3-endpoints";
+import { resolveLiteAnalyzeUpstreamBase } from "@/lib/server/prov3-upstream";
 
 export type CfEnvGetter = (key: string) => string;
 
