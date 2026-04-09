@@ -5,6 +5,12 @@ import { PRO_V3_ANALYZE_PATH } from "@/lib/prov3-endpoints";
 /** Shipped default when env has no MODAL_BACKEND_URL; keep in sync with Modal deployment. */
 export const DEFAULT_PROV3_MODAL_URL = "https://dytsui--stellar-ai-fastapi-app.modal.run";
 
+/**
+ * Lite-only Modal worker (`modal deploy modal_app_lite` → app `stellar-ai-lite`, ASGI `fastapi_app_lite`).
+ * Override with ``LITE_BACKEND_URL`` in Cloudflare Pages if your workspace slug differs.
+ */
+export const DEFAULT_LITE_MODAL_URL = "https://dytsui--stellar-ai-lite-fastapi-app-lite.modal.run";
+
 const DEFAULT_RENDER = "https://stellar1-backend.onrender.com";
 
 function splitCsv(raw: string): string[] {
@@ -111,24 +117,48 @@ export function normalizeProv3UrlListsFromPrecheck(data: {
 }
 
 /**
- * Edge / server origin for Lite analyze upstream.
- * Priority: LITE_BACKEND_URL → Pro Modal list (MODAL_BACKEND_URL + fallbacks) → default Modal base.
+ * Pro / Plus stack (`modal deploy modal_app.py` → ``main:app``). CN-aware fallbacks.
+ * Use for routes that only exist on the full app (e.g. ``/analyze/plus/posture-video``).
  */
-export function resolveLiteAnalyzeUpstreamBase(
+export function resolveProModalUpstreamBase(
   getCfEnv: (key: string) => string,
   options?: { clientCountryCode?: string },
   processEnv: Record<string, string | undefined> = process.env,
 ): string {
-  const secretLite = (getCfEnv("LITE_BACKEND_URL") || processEnv.LITE_BACKEND_URL || "").trim();
-  if (secretLite) {
-    return normalizeProHttpApiBase(secretLite);
-  }
   const cn = (options?.clientCountryCode || "").trim().toUpperCase() === "CN";
   const modalPrimary = buildProv3ModalUrlList(getCfEnv, cn, processEnv)[0];
   if (modalPrimary) {
     return modalPrimary;
   }
   return normalizeProHttpApiBase(DEFAULT_PROV3_MODAL_URL);
+}
+
+/**
+ * Lite-only worker (`modal deploy modal_app_lite` → ``main_lite:app``): ``/analyze/lite``,
+ * ``/analyze/vision-classic``, ``/analyze/club-detect``, ``/analyze/recalculate``.
+ *
+ * Priority: ``LITE_BACKEND_URL`` → ``DEFAULT_LITE_MODAL_URL`` (never the Pro Modal URL).
+ */
+export function resolveLiteModalWorkerBase(
+  getCfEnv: (key: string) => string,
+  processEnv: Record<string, string | undefined> = process.env,
+): string {
+  const secretLite = (getCfEnv("LITE_BACKEND_URL") || processEnv.LITE_BACKEND_URL || "").trim();
+  if (secretLite) {
+    return normalizeProHttpApiBase(secretLite);
+  }
+  return normalizeProHttpApiBase(DEFAULT_LITE_MODAL_URL);
+}
+
+/**
+ * Lite Modal worker only (same as ``resolveLiteModalWorkerBase``). ``clientCountryCode`` is ignored.
+ */
+export function resolveLiteAnalyzeUpstreamBase(
+  getCfEnv: (key: string) => string,
+  _options?: { clientCountryCode?: string },
+  processEnv: Record<string, string | undefined> = process.env,
+): string {
+  return resolveLiteModalWorkerBase(getCfEnv, processEnv);
 }
 
 export function buildProV3AnalyzeRequestUrl(apiBaseOrigin: string): string {

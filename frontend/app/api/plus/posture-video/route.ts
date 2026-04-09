@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getRequestContext } from "@cloudflare/next-on-pages";
-import { resolveLiteAnalyzeUpstreamBase } from "@/lib/server/prov3-upstream";
+import { resolveProModalUpstreamBase } from "@/lib/server/prov3-upstream";
 import { sanitizeProductJson } from "@/lib/chains/sanitize";
 
 export const runtime = "edge";
@@ -21,7 +21,7 @@ function getCfEnv(key: string): string {
  */
 export async function POST(request: NextRequest) {
   const cfRaw = (request.headers.get("cf-ipcountry") || request.headers.get("CF-IPCountry") || "").trim();
-  const base = resolveLiteAnalyzeUpstreamBase(getCfEnv, { clientCountryCode: cfRaw }).replace(/\/+$/, "");
+  const base = resolveProModalUpstreamBase(getCfEnv, { clientCountryCode: cfRaw }).replace(/\/+$/, "");
   if (!base) {
     return NextResponse.json({ detail: "分析服务暂时不可用，请稍后重试。" }, { status: 503 });
   }

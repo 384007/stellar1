@@ -17,8 +17,8 @@ export const runtime = "edge";
  * the browser sees HTTP 524 even though upstream ``AbortSignal`` allows 1h. Mitigations: raise CF/proxy
  * timeouts or async Lite (not implemented here).
  *
- * Default upstream is **main Pro Modal** (same as ``MODAL_BACKEND_URL`` / fallbacks).
- * Optional override: ``LITE_BACKEND_URL`` = dedicated Lite-only origin, no trailing slash.
+ * Default upstream is the **Lite-only Modal** worker (``resolveLiteModalWorkerBase`` / ``DEFAULT_LITE_MODAL_URL``).
+ * Override with ``LITE_BACKEND_URL`` if your deployment URL differs, no trailing slash.
  */
 
 function getCfEnv(key: string): string {

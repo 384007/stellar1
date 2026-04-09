@@ -1,5 +1,5 @@
 import type { NextRequest } from "next/server";
-import { resolveLiteAnalyzeUpstreamBase } from "@/lib/server/prov3-upstream";
+import { resolveLiteModalWorkerBase } from "@/lib/server/prov3-upstream";
 
 export type CfEnvGetter = (key: string) => string;
 
@@ -7,8 +7,7 @@ export type CfEnvGetter = (key: string) => string;
  * Resolve Modal (or LITE_BACKEND_URL) base for server-side upstream calls.
  */
 export function modalAnalysisBase(getCfEnv: CfEnvGetter, request: NextRequest): string {
-  const cfRaw = (request.headers.get("cf-ipcountry") || request.headers.get("CF-IPCountry") || "").trim();
-  return resolveLiteAnalyzeUpstreamBase(getCfEnv, { clientCountryCode: cfRaw }).replace(/\/+$/, "");
+  return resolveLiteModalWorkerBase(getCfEnv).replace(/\/+$/, "");
 }
 
 export function forwardHeadersFromRequest(request: NextRequest): Headers {
