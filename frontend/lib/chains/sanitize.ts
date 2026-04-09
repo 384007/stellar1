@@ -47,11 +47,14 @@ export const PRODUCT_UNDERSCORE_PUBLIC_KEYS = new Set<string>(["_plus_usage"]);
 
 export type ProductChain = "analysis" | "lab" | "plus" | "render" | "record" | "share" | "auth" | "generic";
 
+/** Chains where string values are not rewritten (e.g. news may contain arbitrary https links). */
+const CHAINS_STRING_PASSTHROUGH: ReadonlySet<ProductChain> = new Set(["generic", "auth"]);
+
 /**
- * Collapse absolute Pro v3 / R2 media URLs to ``path+search`` only before JSON reaches the browser
- * (no host; client rewrites to ``/api/cdn/p?m=1`` / ``?r=1``).
+ * Collapse recognizable Pro v3 / R2 media URLs to ``path+search``; unknown ``https`` URLs become ``""``
+ * so absolute upstream hosts never reach the browser.
  */
-export function normalizeProv3MediaAbsoluteString(s: string): string {
+export function normalizeProv3MediaAbsoluteStringStrict(s: string): string {
   const t = s.trim();
   if (!/^https?:\/\//i.test(t)) return s;
   try {
@@ -65,10 +68,10 @@ export function normalizeProv3MediaAbsoluteString(s: string): string {
     if (idx !== -1) {
       return p.slice(idx) + u.search;
     }
+    return "";
   } catch {
-    /* keep original */
+    return "";
   }
-  return s;
 }
 
 /**
@@ -76,7 +79,10 @@ export function normalizeProv3MediaAbsoluteString(s: string): string {
  */
 export function sanitizeProductJson(value: unknown, _chain: ProductChain = "generic"): unknown {
   if (value === null || value === undefined) return value;
-  if (typeof value === "string") return normalizeProv3MediaAbsoluteString(value);
+  if (typeof value === "string") {
+    if (CHAINS_STRING_PASSTHROUGH.has(_chain)) return value;
+    return normalizeProv3MediaAbsoluteStringStrict(value);
+  }
   if (typeof value !== "object") return value;
   if (Array.isArray(value)) {
     return value.map((x) => sanitizeProductJson(x, _chain));
@@ -108,7 +114,7 @@ export function sanitizePredictionObject(pred: Record<string, unknown> | null | 
     } else if (Array.isArray(v)) {
       out[k] = sanitizeProductJson(v, "analysis");
     } else if (typeof v === "string") {
-      out[k] = normalizeProv3MediaAbsoluteString(v);
+      out[k] = normalizeProv3MediaAbsoluteStringStrict(v);
     } else {
       out[k] = v;
     }

@@ -35,7 +35,7 @@ export function isProv3DurableR2ProductUrl(url: string): boolean {
   }
 }
 
-/** Rewrite Modal / R2 media references to same-origin CDN proxy paths. */
+/** Rewrite Modal / R2 media references to same-origin CDN proxy paths. Unknown absolute URLs are dropped (``""``). */
 export function resolveProv3ProductMediaUrl(url: string | undefined | null): string {
   const u = String(url ?? "").trim();
   if (!u) return "";
@@ -51,9 +51,9 @@ export function resolveProv3ProductMediaUrl(url: string | undefined | null): str
         return cdnR2Path(r2Seg);
       }
     } catch {
-      return u;
+      return "";
     }
-    return u;
+    return "";
   }
   if (u.startsWith("/pro-v3/media/")) {
     return cdnModalPath(u);
@@ -82,8 +82,7 @@ export function normalizeProv3MediaInRaw(raw: Record<string, unknown>): void {
   for (const key of topKeys) {
     const v = raw[key];
     if (typeof v === "string" && v.trim()) {
-      const n = resolveProv3ProductMediaUrl(v);
-      if (n) raw[key] = n;
+      raw[key] = resolveProv3ProductMediaUrl(v);
     }
   }
 
@@ -96,8 +95,7 @@ export function normalizeProv3MediaInRaw(raw: Record<string, unknown>): void {
       const rec = row as Record<string, unknown>;
       const ku = rec.keyframe_image_url;
       if (typeof ku === "string" && ku.trim()) {
-        const n = resolveProv3ProductMediaUrl(ku);
-        if (n) rec.keyframe_image_url = n;
+        rec.keyframe_image_url = resolveProv3ProductMediaUrl(ku);
       }
     }
   }

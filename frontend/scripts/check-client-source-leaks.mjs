@@ -40,7 +40,48 @@ function walkFiles(rootDir, baseRel, out) {
   }
 }
 
+/**
+ * ``resolveProv3ProductMediaUrl`` must not passthrough unknown absolute URLs via ``return u``
+ * inside the ``/^https?:\\/\\//i`` branch (relative paths may still end with ``return u``).
+ */
+function assertProv3ResolveNoAbsolutePassthrough() {
+  const rel = path.join("lib", "prov3-media-url.ts");
+  const abs = path.join(cwd, rel);
+  if (!fs.existsSync(abs)) return;
+  const raw = fs.readFileSync(abs, "utf8");
+  const needle = "if (/^https?:\\/\\//i.test(u)) {";
+  const i = raw.indexOf(needle);
+  if (i === -1) {
+    console.error(`check-client-source-leaks: missing ${needle} in ${rel}`);
+    process.exit(1);
+  }
+  const open = raw.indexOf("{", i);
+  if (open === -1) process.exit(1);
+  let depth = 0;
+  for (let j = open; j < raw.length; j++) {
+    const c = raw[j];
+    if (c === "{") depth++;
+    else if (c === "}") {
+      depth--;
+      if (depth === 0) {
+        const httpsBranch = raw.slice(open + 1, j);
+        if (/\breturn\s+u\s*;/.test(httpsBranch)) {
+          console.error(
+            `check-client-source-leaks: ${rel} — absolute-URL branch of resolveProv3ProductMediaUrl must not contain "return u;" (unknown https must be dropped, not passed through).`,
+          );
+          process.exit(1);
+        }
+        return;
+      }
+    }
+  }
+  console.error(`check-client-source-leaks: could not parse ${needle} block in ${rel}`);
+  process.exit(1);
+}
+
 function main() {
+  assertProv3ResolveNoAbsolutePassthrough();
+
   /** @type {{ abs: string; rel: string }[]} */
   const files = [];
   for (const root of ROOTS) {
