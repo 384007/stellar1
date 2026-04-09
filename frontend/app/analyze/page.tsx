@@ -31,9 +31,6 @@ import { LITE_ANALYZE_FETCH_TIMEOUT_MS } from "@/lib/lite-analyze-timeout";
 import { readLiteAnalyzeResult } from "@/lib/read-lite-analyze-response";
 import { pruneLocalStellarHistoryRecords } from "@/lib/pro-history-retention";
 import {
-  DEFAULT_PROV3_MODAL_URL,
-  normalizeProv3UrlListsFromPrecheck,
-  PRO_V3_EDGE_PRECHECK_PATH,
   resolveLiteAnalyzeClientOrigin,
   requestProv3AnalyzeCancel,
   runProv3AnalyzeMultipart,
@@ -212,7 +209,6 @@ export default function AnalyzePage() {
     () => trimBackendOrigin(resolveLiteAnalyzeClientOrigin()),
     [],
   );
-  const backendBaseRef = useRef<string>(process.env.NEXT_PUBLIC_BACKEND_URL || "https://stellar1-backend.onrender.com");
   const lastBlobRef = useRef<{ blob: Blob; filename: string } | null>(null);
   /** Pro v3 对屏路径：在打开实拍前标记来源为拍屏 tab。 */
   const screenCaptureForProv3Ref = useRef(false);
@@ -332,37 +328,28 @@ export default function AnalyzePage() {
       const authHeaders: Record<string, string> = {};
       if (token && token.includes(".")) authHeaders["Authorization"] = `Bearer ${token}`;
 
-      // ① Precheck — Modal URL list + network hint (orchestration still uses Edge proxies)
-      const defaultBackend =
-        process.env.NEXT_PUBLIC_BACKEND_URL || "https://stellar1-backend.onrender.com";
-      let proNetworkHint = "";
-      let modalUrls: string[] = [DEFAULT_PROV3_MODAL_URL];
-      let backendUrls: string[] = [defaultBackend];
+      // Pro v3：网络提示与 Lite 同源（CF / 客户端语言回退）；Modal/Render 基址仅在 Edge 解析。
+      let cnPro = false;
       try {
-        const pc = await fetch(PRO_V3_EDGE_PRECHECK_PATH, {
-          method: "POST",
-          headers: token ? { Authorization: `Bearer ${token}` } : {},
-        });
-        if (pc.ok) {
-          const data = await pc.json();
-          const lists = normalizeProv3UrlListsFromPrecheck(data);
-          modalUrls = lists.modalUrls;
-          backendUrls = lists.backendUrls.length ? lists.backendUrls : [defaultBackend];
-          if (data.network_hint === "cn") proNetworkHint = "cn";
+        const nh = await fetch("/api/lite/network-hint", { method: "GET" });
+        if (nh.ok) {
+          const j = (await nh.json()) as { network_hint?: string; lite_geo?: string };
+          if (j.network_hint === "cn" || j.lite_geo === "cn") cnPro = true;
+          else if (j.lite_geo === "unknown" && clientLikelyMainlandChinaUser()) cnPro = true;
+        } else if (clientLikelyMainlandChinaUser()) {
+          cnPro = true;
         }
-      } catch { /* precheck failed — proceed with defaults */ }
-      backendBaseRef.current = backendUrls[0] || defaultBackend;
+      } catch {
+        if (clientLikelyMainlandChinaUser()) cnPro = true;
+      }
 
       const mb = (file.size / 1024 / 1024).toFixed(1);
-      const cnPro = proNetworkHint === "cn";
       const screenMode = resolveProv3ScreenMode(filename, prov3ScreenMode);
       const { raw: rawPro, route: proServedBy } = await runProv3AnalyzeMultipart(
         file as Blob,
         filename,
         authHeaders,
         {
-          modalUrls,
-          backendUrls,
           cnNetworkHint: cnPro,
           unboundedJobPoll: cnPro || clientLikelyMainlandChinaUser(),
           screenMode,
@@ -558,15 +545,8 @@ export default function AnalyzePage() {
   async function recalculatePredictionFromBackend(
     data: AnalysisResult,
     overrides?: { club_type?: string; club_group?: string; hand?: "R" | "L" | "UNKNOWN"; hand_confidence?: number; preferred_ball_speed?: number },
-    recalculateBaseOverride?: string,
   ): Promise<AnalysisResult["prediction"] | null> {
     try {
-      const overrideTrim = trimBackendOrigin(recalculateBaseOverride || "");
-      const backendUrl =
-        overrideTrim ||
-        backendBaseRef.current ||
-        process.env.NEXT_PUBLIC_BACKEND_URL ||
-        "https://stellar1-backend.onrender.com";
       const poseFrames = data.pose_frames || [];
       if (poseFrames.length === 0) return null;
       const mid = poseFrames[Math.floor(poseFrames.length / 2)];
@@ -591,7 +571,7 @@ export default function AnalyzePage() {
       const t = setTimeout(() => ctrl.abort(), RECALCULATE_TIMEOUT_MS);
       let res: Response;
       try {
-        res = await fetch(`${backendUrl}/analyze/recalculate`, {
+        res = await fetch("/api/analyze/recalculate", {
           method: "POST",
           headers,
           body: JSON.stringify(body),
@@ -857,17 +837,13 @@ export default function AnalyzePage() {
       if (shouldBackgroundRecalc) {
         void (async () => {
           try {
-            const recomputed = await recalculatePredictionFromBackend(
-              data,
-              {
-                club_type: data.prediction.club_type,
-                club_group: data.prediction.club_group,
-                hand: handWasConfirmed ? handRef.current : (data.prediction.hand ?? "UNKNOWN"),
-                hand_confidence: handWasConfirmed ? 1.0 : (data.prediction.hand_confidence ?? 0),
-                preferred_ball_speed: data.prediction.fused_speed,
-              },
-              undefined,
-            );
+            const recomputed = await recalculatePredictionFromBackend(data, {
+              club_type: data.prediction.club_type,
+              club_group: data.prediction.club_group,
+              hand: handWasConfirmed ? handRef.current : (data.prediction.hand ?? "UNKNOWN"),
+              hand_confidence: handWasConfirmed ? 1.0 : (data.prediction.hand_confidence ?? 0),
+              preferred_ball_speed: data.prediction.fused_speed,
+            });
             if (recomputed) {
               setResult((prev) => {
                 if (!prev || prev.analysis_id !== analysisId) return prev;
@@ -1114,17 +1090,13 @@ export default function AnalyzePage() {
         club_detection_confidence: 1.0,
       },
     };
-    const recomputed = await recalculatePredictionFromBackend(
-      next,
-      {
-        club_type: clubType,
-        club_group: newGroup,
-        hand: next.prediction.hand ?? "UNKNOWN",
-        hand_confidence: next.prediction.hand_confidence ?? 0,
-        preferred_ball_speed: next.prediction.fused_speed,
-      },
-      analysisMode === "lite" && liteBackendBase ? liteBackendBase : undefined,
-    );
+    const recomputed = await recalculatePredictionFromBackend(next, {
+      club_type: clubType,
+      club_group: newGroup,
+      hand: next.prediction.hand ?? "UNKNOWN",
+      hand_confidence: next.prediction.hand_confidence ?? 0,
+      preferred_ball_speed: next.prediction.fused_speed,
+    });
     setResult({
       ...next,
       prediction: recomputed ? { ...next.prediction, ...recomputed } : next.prediction,
@@ -1147,17 +1119,13 @@ export default function AnalyzePage() {
         hand_confidence: 1.0,
       },
     };
-    const recomputed = await recalculatePredictionFromBackend(
-      next,
-      {
-        hand: selectedHand,
-        hand_confidence: 1.0,
-        club_type: next.prediction.club_type,
-        club_group: next.prediction.club_group,
-        preferred_ball_speed: next.prediction.fused_speed,
-      },
-      analysisMode === "lite" && liteBackendBase ? liteBackendBase : undefined,
-    );
+    const recomputed = await recalculatePredictionFromBackend(next, {
+      hand: selectedHand,
+      hand_confidence: 1.0,
+      club_type: next.prediction.club_type,
+      club_group: next.prediction.club_group,
+      preferred_ball_speed: next.prediction.fused_speed,
+    });
     setResult({
       ...next,
       prediction: recomputed ? { ...next.prediction, ...recomputed } : next.prediction,

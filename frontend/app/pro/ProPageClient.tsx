@@ -12,8 +12,6 @@ import type { PoseSnapshot } from "@/components/KeyframeStrip";
 import { getAnalysisVideoBlob, saveAnalysisVideo } from "@/lib/video-store";
 import { clientLikelyMainlandChinaUser } from "@/lib/client-region-hint";
 import {
-  DEFAULT_PROV3_MODAL_URL,
-  normalizeProv3UrlListsFromPrecheck,
   PRO_V3_EDGE_PRECHECK_PATH,
   requestProv3AnalyzeCancel,
   runProv3AnalyzeMultipart,
@@ -185,9 +183,6 @@ export default function ProPageClient({ deepLinkAnalysisId }: { deepLinkAnalysis
   /** 对屏模式分析完成后先打开姿势诊断（报告文案）；上传主路径仍以视频分析为先。 */
   const prov3ScreenOpenDiagnosisTabRef = useRef(false);
 
-  const backendUrlsRef = useRef<string[]>(["https://stellar1-backend.onrender.com"]);
-  /** Default until Pro v3 precheck returns — avoids skipping Modal if user analyzes before precheck finishes. */
-  const modalUrlsRef = useRef<string[]>([DEFAULT_PROV3_MODAL_URL]);
   const cnNetworkHintRef = useRef(false);
   /** 防止双击/历史再次分析竞态导致重复 POST Modal。 */
   const analysisInFlightRef = useRef(false);
@@ -237,14 +232,8 @@ export default function ProPageClient({ deepLinkAnalysisId }: { deepLinkAnalysis
           window.location.href = "/pro-login";
           return;
         }
-        const lists = normalizeProv3UrlListsFromPrecheck(data);
-        if (lists.backendUrls.length) backendUrlsRef.current = lists.backendUrls;
-        modalUrlsRef.current = lists.modalUrls;
         cnNetworkHintRef.current = data.network_hint === "cn";
       })
-      .catch(() => {});
-
-    fetch("https://stellar1-backend.onrender.com/health", { signal: AbortSignal.timeout(60_000) })
       .catch(() => {});
 
     preloadPoseModel();
@@ -600,8 +589,6 @@ export default function ProPageClient({ deepLinkAnalysisId }: { deepLinkAnalysis
       try {
         const cn = cnNetworkHintRef.current;
         const out = await runProv3AnalyzeMultipart(uploadBlob, uploadFilename, authHeaders, {
-          modalUrls: modalUrlsRef.current,
-          backendUrls: backendUrlsRef.current,
           cnNetworkHint: cn,
           unboundedJobPoll: cn || clientLikelyMainlandChinaUser(),
           screenMode: effectiveScreenMode,
@@ -1128,7 +1115,6 @@ export default function ProPageClient({ deepLinkAnalysisId }: { deepLinkAnalysis
                   key={result.analysis_id}
                   result={proExpandedToPlusViewModel(result as unknown as Record<string, unknown>)}
                   lang={lang}
-                  backendUrl={backendUrlsRef.current[0] || "https://stellar1-backend.onrender.com"}
                   externalVideoSrc={proVideoSrc}
                   coachingMode="pro"
                   initialActiveTab={prov3ScreenOpenDiagnosisTabRef.current ? "diagnosis" : "video"}

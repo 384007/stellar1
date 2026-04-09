@@ -20,7 +20,7 @@
  * ``resolveLiteAnalyzeUpstreamBase``.
  */
 
-/** Next.js Edge route: Pro JWT + Modal/Render URL lists (see ``app/api/prov3/precheck``). */
+/** Next.js Edge route: Pro JWT + optional ``network_hint`` (no Modal/Render URL lists in the JSON body). */
 export const PRO_V3_EDGE_PRECHECK_PATH = "/api/prov3/precheck";
 
 /** FastAPI Pro v3 API — single prefix on Modal/Render (``backend/routers/prov3_api.py``). */

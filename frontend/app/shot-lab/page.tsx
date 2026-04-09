@@ -25,6 +25,7 @@ import {
   fetchLabVideoBlobForReanalyze,
   reanalyzeHistoryFilename,
 } from "@/lib/reanalyze-from-history";
+import { resolveLiteAnalyzeClientOrigin } from "@/lib/prov3-endpoints";
 
 type Stage = "upload" | "processing" | "results";
 type Lang = "en" | "zh";
@@ -39,8 +40,6 @@ interface LabResponse {
   result: LabResult;
   quota: LabQuotaResponse;
 }
-
-const BACKEND_FALLBACK = "https://stellar1-backend.onrender.com";
 
 // ── Reusable sub-components ──
 
@@ -397,7 +396,7 @@ export default function ShotLabPage() {
     signal: AbortSignal,
   ): Promise<LabPrediction | null> => {
     try {
-      const backendUrl = process.env.NEXT_PUBLIC_BACKEND_URL || BACKEND_FALLBACK;
+      const backendUrl = resolveLiteAnalyzeClientOrigin().replace(/\/+$/, "");
       const fd = makeFormData(file, file.name);
       const ctrl = new AbortController();
       const timeout = setTimeout(() => ctrl.abort(), 90_000);

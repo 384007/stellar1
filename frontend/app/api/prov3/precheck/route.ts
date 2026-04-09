@@ -3,18 +3,14 @@
  *
  * 1. Validates the Pro JWT (signed token only — rejects local-* tokens)
  * 2. Optionally verifies is_pro against D1 for ground truth
- * 3. Returns { allowed, is_pro, modal_url, backend_url, modal_urls, backend_urls, token }
- *    (multi-endpoint lists for Pro v3 client failover; modal_url/backend_url stay first entries)
+ * 3. Returns { allowed, is_pro, network_hint? } — no Modal/Render URLs or token (orchestration stays on Edge).
  */
 
 import { NextRequest, NextResponse } from "next/server";
 import { jwtVerify } from "jose";
 import { getRequestContext } from "@cloudflare/next-on-pages";
-import { buildProv3BackendUrlList, buildProv3ModalUrlList } from "@/lib/prov3-endpoints";
 
 export const runtime = "edge";
-
-const BACKEND_FALLBACK = "https://stellar1-backend.onrender.com";
 
 function cfClientCountry(request: NextRequest): string {
   return (
@@ -107,19 +103,10 @@ export async function POST(request: NextRequest) {
   }
 
   const mainlandCn = cfClientCountry(request) === "CN";
-  const modalUrls = buildProv3ModalUrlList(getCfEnv, mainlandCn);
-  const backendUrls = buildProv3BackendUrlList(getCfEnv, mainlandCn, BACKEND_FALLBACK);
-  const modalUrl = modalUrls[0] || "";
-  const backendUrl = backendUrls[0] || BACKEND_FALLBACK;
 
   return NextResponse.json({
     allowed: true,
     is_pro: true,
-    backend_url: backendUrl,
-    modal_url: modalUrl || undefined,
-    backend_urls: backendUrls,
-    modal_urls: modalUrls,
     ...(mainlandCn ? { network_hint: "cn" as const } : {}),
-    token,
   });
 }

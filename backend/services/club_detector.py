@@ -32,12 +32,16 @@ CLUB_GROUP_MAP: dict[str, str] = {
 
 ALL_CLUB_TYPES = list(CLUB_GROUP_MAP.keys())
 
-CLUB_DETECT_PROMPT = """You are an expert golf equipment analyst.
-Look at this golf swing image carefully and identify the type of golf club the player is using.
+CLUB_DETECT_PROMPT = """You are an expert golf equipment and stance analyst.
 
-你是一名高尔夫器材专家。请仔细观察图片中球员使用的球杆，判断球杆型号。
+FIRST: Determine if this image shows a person holding or swinging a golf club.
+If NO golf club is visible, return: {"club_type": "UNKNOWN", "confidence": 0, "hand": "R"}
+Only if you can clearly see a golf club, identify the club type and handedness.
+
+首先判断图中是否有人持有或挥动高尔夫球杆。如果看不到球杆，直接返回 UNKNOWN。
 
 Possible club types (球杆型号):
+- UNKNOWN: no golf club visible (看不到球杆)
 - WOOD (木杆): 1W, 3W, 5W
 - IRON (铁杆): 3I, 4I, 5I, 6I, 7I, 8I, 9I
 - WEDGE (挖起杆): PW, AW, SW, LW
@@ -45,8 +49,9 @@ Possible club types (球杆型号):
 
 Respond with ONLY this JSON (no markdown, no backticks):
 {
-  "club_type": "<one of: 1W, 3W, 5W, 3I, 4I, 5I, 6I, 7I, 8I, 9I, PW, AW, SW, LW, PT>",
-  "confidence": <float 0.0 to 1.0>
+  "club_type": "<UNKNOWN or one of: 1W, 3W, 5W, 3I, 4I, 5I, 6I, 7I, 8I, 9I, PW, AW, SW, LW, PT>",
+  "confidence": <float 0.0 to 1.0>,
+  "hand": "<R or L>"
 }
 
 Identification tips / 识别要点:
@@ -54,10 +59,8 @@ Identification tips / 识别要点:
 - Irons have thin, flat blade-like heads (铁杆杆头薄而平)
 - Wedges look similar to short irons but with more loft (挖起杆类似短铁杆但角度更大)
 - Putters have a flat face and are used on the green (推杆平面杆头，用于果岭)
-- If the club head is not clearly visible, estimate from shaft length and swing posture
-  (如果杆头不清晰，可从杆身长度和挥杆姿势推断)
-- If you truly cannot determine the club type, use "7I" with low confidence
-  (如果确实无法判断，使用 "7I" 并给出低置信度)"""
+- If the club head is not clearly visible but a person is swinging, estimate from shaft length
+- Handedness: R = right-handed, L = left-handed; default R if uncertain (无法判断时默认 R)"""
 
 
 def _frame_to_base64(frame: np.ndarray) -> str:
@@ -66,8 +69,8 @@ def _frame_to_base64(frame: np.ndarray) -> str:
 
 
 def _parse_club_response(text: str) -> dict:
-    """Extract club_type, club_group, confidence from AI text response."""
-    text = re.sub(r"<think>[\s\S]*?</think>", "", text).strip()
+    """Extract club_type, club_group, confidence, hand from AI text response."""
+    text = re.sub(r"<think>[\s\S]*?</think>", "", text, flags=re.IGNORECASE).strip()
 
     match = re.search(r"\{[\s\S]*?\}", text)
     if match:
@@ -75,31 +78,37 @@ def _parse_club_response(text: str) -> dict:
             data = json.loads(match.group())
             club_type = str(data.get("club_type", "")).upper().strip()
             confidence = float(data.get("confidence", 0.0))
+            hand_raw = str(data.get("hand", "R")).upper().strip()
+            hand = "L" if hand_raw == "L" else "R"
 
-            if club_type in CLUB_GROUP_MAP:
+            if club_type == "UNKNOWN" or club_type not in CLUB_GROUP_MAP:
                 return {
-                    "club_type": club_type,
-                    "club_group": CLUB_GROUP_MAP[club_type],
+                    "club_type": "UNKNOWN",
+                    "club_group": "IRON",
                     "confidence": round(min(max(confidence, 0.0), 1.0), 2),
+                    "hand": hand,
                 }
+            return {
+                "club_type": club_type,
+                "club_group": CLUB_GROUP_MAP[club_type],
+                "confidence": round(min(max(confidence, 0.0), 1.0), 2),
+                "hand": hand,
+            }
         except (json.JSONDecodeError, ValueError, TypeError):
             pass
 
     logger.warning("Could not parse club detection response: %s", text[:200])
-    return {"club_type": "UNKNOWN", "club_group": "IRON", "confidence": 0.0}
+    return {"club_type": "UNKNOWN", "club_group": "IRON", "confidence": 0.0, "hand": "R"}
 
 
 async def _detect_club_gemini(img_b64: str) -> dict:
     """Call Gemini (Developer API or Vertex) to identify the club."""
-    from services.gemini_service import developer_key_label, run_gemini_vision
+    from services.gemini_service import run_gemini_vision
 
-    text, key_slot = await run_gemini_vision(
+    text, _key_slot = await run_gemini_vision(
         CLUB_DETECT_PROMPT, [img_b64], max_tokens=256, temperature=0.2,
     )
-    out = _parse_club_response(text)
-    if key_slot is not None:
-        out["ai_key"] = developer_key_label(key_slot)
-    return out
+    return _parse_club_response(text)
 
 
 async def _detect_club_qwen(img_b64: str) -> dict:
@@ -153,9 +162,17 @@ async def detect_club(frame: np.ndarray, region: str = "global") -> dict:
             "club_type":  str   — e.g. "7I", or "UNKNOWN" on failure,
             "club_group": str   — one of WOOD / IRON / WEDGE / PUTTER,
             "confidence": float — 0.0 – 1.0,
+            "hand": str — "R" or "L",
+            "ai_provider": str — internal diagnostic only; strip before HTTP responses,
         }
     """
-    _unknown = {"club_type": "UNKNOWN", "club_group": "IRON", "confidence": 0.0, "ai_provider": "none"}
+    _unknown = {
+        "club_type": "UNKNOWN",
+        "club_group": "IRON",
+        "confidence": 0.0,
+        "hand": "R",
+        "ai_provider": "none",
+    }
     try:
         img_b64 = _frame_to_base64(frame)
     except Exception as e:
@@ -166,6 +183,8 @@ async def detect_club(frame: np.ndarray, region: str = "global") -> dict:
     try:
         out = await _detect_club_gemini(img_b64)
         out["ai_provider"] = "gemini"
+        if "hand" not in out:
+            out["hand"] = "R"
         logger.info("[ai] club_detect provider=gemini")
         return out
     except Exception as e:
@@ -176,6 +195,8 @@ async def detect_club(frame: np.ndarray, region: str = "global") -> dict:
         try:
             out = await _detect_club_qwen(img_b64)
             out["ai_provider"] = "qwen"
+            if "hand" not in out:
+                out["hand"] = "R"
             logger.info("[ai] club_detect provider=qwen (fallback)")
             return out
         except Exception as e2:

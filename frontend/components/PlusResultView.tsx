@@ -1374,8 +1374,8 @@ function FullSwingView({ result, lang, prov3Strict, prov3KfGate }: FullSwingView
 /* ═══════════════ Posture Practice Panel ═══════════════ */
 
 function PosturePracticePanel({
-  result, lang, backendUrl,
-}: { result: PlusAnalysisResult; lang: "en" | "zh"; backendUrl: string }) {
+  result, lang,
+}: { result: PlusAnalysisResult; lang: "en" | "zh" }) {
   const [videos, setVideos] = useState<PostureVideoCard[]>(() => {
     const addressEval = result.swing_phase_evaluations?.find(e => e.phase === "address");
     const issuesZh = result.issues_zh || [];
@@ -1448,7 +1448,8 @@ function PosturePracticePanel({
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), 660_000);
 
-      const res = await fetch(`${backendUrl}/analyze/plus/posture-video`, {
+      const postureUrl = "/api/plus/posture-video";
+      const res = await fetch(postureUrl, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -1656,7 +1657,6 @@ export default function PlusResultView({
   result,
   lang,
   externalVideoSrc,
-  backendUrl,
   coachingMode,
   initialActiveTab,
   renderProv3VideoOverlay,
@@ -2691,11 +2691,7 @@ export default function PlusResultView({
           )}
 
           {result.type !== "pro" && showPosturePractice && (
-            <PosturePracticePanel
-              result={result}
-              lang={lang}
-              backendUrl={backendUrl || process.env.NEXT_PUBLIC_BACKEND_URL || "https://stellar1-backend.onrender.com"}
-            />
+            <PosturePracticePanel result={result} lang={lang} />
           )}
 
           {result.type === "pro" && result.training && (

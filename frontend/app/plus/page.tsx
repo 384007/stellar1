@@ -65,9 +65,6 @@ export default function PlusPage() {
   const [processingClub, setProcessingClub] = useState<ClubDetection | null>(null);
   const processingClubRef = useRef<ClubDetection | null>(null);
   const [showClubPicker, setShowClubPicker] = useState(false);
-  const [analysisBackendUrl, setAnalysisBackendUrl] = useState("");
-  /** From GET {backend}/health — modal | render | local (no manual curl) */
-  const [apiRuntime, setApiRuntime] = useState<string | null>(null);
 
   const CLUB_GROUPS = [
     { id: "WOOD", label_zh: "木杆", label_en: "Wood", clubs: ["1W", "3W", "5W"] },
@@ -96,10 +93,6 @@ export default function PlusPage() {
       .then(r => r.json()).then(data => setUsage(data))
       .catch(() => setUsage({ used: 0, remaining: 3, limit: 3, is_pro: false }))
       .finally(() => setUsageLoading(false));
-
-    // Warm up the Render backend in the background so it is ready when analysis starts.
-    fetch("https://stellar1-backend.onrender.com/health", { method: "GET", signal: AbortSignal.timeout(60_000) })
-      .catch(() => {});
 
     preloadPoseModel();
   }, [router]);
@@ -334,145 +327,32 @@ export default function PlusPage() {
       }
     }, 6000);
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    let precheck: any = null;
     try {
       const token = localStorage.getItem("stellar_token");
+      const authHeaders: Record<string, string> = token ? { Authorization: `Bearer ${token}` } : {};
 
-      // Step 1: precheck — fast Edge route (auth + usage check, no backend proxy).
-      // This avoids CF Worker's 30s wall-clock timeout swallowing the long analysis.
-      const precheckRes = await fetch("/api/plus/precheck", {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 360_000);
+      const res = await fetch("/api/plus", {
         method: "POST",
-        headers: token ? { Authorization: `Bearer ${token}` } : {},
+        headers: authHeaders,
+        body: makeFormData(blob, filename),
+        signal: controller.signal,
       });
-      if (!precheckRes.ok) {
-        const errData = await precheckRes.json().catch(() => ({ detail: `HTTP ${precheckRes.status}` }));
+      clearTimeout(timer);
+
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({ detail: `HTTP ${res.status}` }));
         if (errData.limit_reached) {
           throw new Error(lang === "zh"
             ? `今日 Plus 分析次数已达上限（${errData.limit}次/天）。升级 Pro 解锁无限次使用。`
             : `Daily Plus limit reached (${errData.limit}/day). Upgrade to Pro.`);
         }
-        throw new Error(errData.detail || (lang === "zh" ? "Plus 分析权限检查失败" : "Plus precheck failed"));
-      }
-      precheck = await precheckRes.json();
-      if (!precheck.allowed) {
-        throw new Error(precheck.detail || (lang === "zh" ? "Plus 分析不可用" : "Plus analysis unavailable"));
-      }
-
-      // Step 2: call backend directly — bypasses CF Worker timeout entirely.
-      const backendUrl: string = precheck.backend_url || "https://stellar1-backend.onrender.com";
-      const modalUrl: string = precheck.modal_url || "";
-      // Prefer Modal for posture-video (GPU-backed, faster cold start); fall back to Render.
-      const effectiveBackend = (modalUrl || backendUrl).replace(/\/$/, "");
-      setAnalysisBackendUrl(effectiveBackend);
-      setApiRuntime(null);
-      void fetch(`${effectiveBackend}/health`, { signal: AbortSignal.timeout(15_000) })
-        .then((r) => r.json())
-        .then((d: { runtime?: string }) => {
-          if (typeof d.runtime === "string" && d.runtime) setApiRuntime(d.runtime);
-        })
-        .catch(() => setApiRuntime(null));
-      const authToken: string = precheck.token || token || "";
-
-      const authHeaders: Record<string, string> = authToken ? { Authorization: `Bearer ${authToken}` } : {};
-
-      let res: Response | null = null;
-
-      // Try Modal first (faster, GPU-backed). Retry once on connection failure.
-      if (modalUrl) {
-        for (let mAttempt = 0; mAttempt < 2 && !res; mAttempt++) {
-          try {
-            if (mAttempt > 0) {
-              console.log(`[plus] Modal retry after connection failure, waiting 8s…`);
-              await new Promise(r => setTimeout(r, 8_000));
-            }
-            // Match Render analyze timeout: dense MediaPipe can run several minutes on CPU.
-            const ctrl = new AbortController();
-            const t = setTimeout(() => ctrl.abort(), 360_000);
-            const mRes = await fetch(`${modalUrl}/analyze/plus`, {
-              method: "POST", headers: authHeaders,
-              body: makeFormData(blob, filename),
-              signal: ctrl.signal,
-            });
-            clearTimeout(t);
-            // 422: strict gate / contract — Modal image may lag Render; retry Render.
-            if (mRes.ok) res = mRes;
-            else if (mRes.status === 422 || mRes.status >= 500)
-              console.warn(`[plus] Modal ${mRes.status}, falling back to Render`);
-            else res = mRes;
-            break;
-          } catch (e) {
-            const isAbort = e instanceof DOMException && e.name === "AbortError";
-            const isConnect = !isAbort && e instanceof TypeError;
-            console.warn(`[plus] Modal ${isAbort ? "timeout" : e instanceof Error ? e.message : "error"}`);
-            if (!isConnect) break;
-          }
-        }
-      }
-
-      // Render backend — warm it up first, then send the heavy upload.
-      if (!res) {
-        for (let w = 0; w < 12; w++) {
-          try {
-            const hc = await fetch(`${backendUrl}/health`, { signal: AbortSignal.timeout(10_000) });
-            if (hc.ok) break;
-          } catch { /* still waking */ }
-          if (w < 11) await new Promise(r => setTimeout(r, 5_000));
-        }
-        const controller = new AbortController();
-        const timer = setTimeout(() => controller.abort(), 360_000);
-        let connectAttempts = 0;
-        const maxConnectRetries = precheck?.network_hint === "cn" ? 2 : 1;
-        while (!res) {
-          try {
-            res = await fetch(`${backendUrl}/analyze/plus`, {
-              method: "POST", headers: authHeaders,
-              body: makeFormData(blob, filename),
-              signal: controller.signal,
-            });
-          } catch (e) {
-            const isAbort = e instanceof DOMException && e.name === "AbortError";
-            const isConnectFailure = !isAbort && e instanceof TypeError;
-            if (isConnectFailure && connectAttempts < maxConnectRetries) {
-              connectAttempts++;
-              await new Promise(r => setTimeout(r, 10_000));
-              continue;
-            }
-            clearTimeout(timer);
-            clearInterval(progressInterval); clearTimeout(clubFallbackTimer);
-            if (isAbort) {
-              setError(lang === "zh"
-                ? "Plus 分析超时（超过6分钟），请压缩视频（建议10秒以内）后重试"
-                : "Plus analysis timed out (>6 min). Please compress the video (≤10s) and retry.");
-            } else {
-              setError(lang === "zh"
-                ? `网络连接失败 (${e instanceof Error ? e.message : "网络错误"})`
-                : `Network error (${e instanceof Error ? e.message : "error"})`);
-            }
-            setStage("upload");
-            return;
-          }
-          break;
-        }
-        clearTimeout(timer);
-      }
-
-      if (!res.ok) {
-        const errData = await res.json().catch(() => ({ detail: `HTTP ${res!.status}` }));
         throw new Error(errData.detail || `Plus 分析失败 [${res.status}]`);
       }
 
       setProgress(97);
       const data: PlusAnalysisResult = await res.json();
-      // Attach usage info from precheck response
-      if (!data._plus_usage) {
-        data._plus_usage = {
-          used: precheck.remaining >= 0 ? Math.max(0, 3 - precheck.remaining) : 0,
-          remaining: precheck.remaining,
-          limit: precheck.is_pro ? null : 3,
-          is_pro: precheck.is_pro,
-        };
-      }
       clearInterval(progressInterval); clearTimeout(clubFallbackTimer);
       setProgress(100);
       if (data._plus_usage) setUsage(data._plus_usage);
@@ -577,14 +457,6 @@ export default function PlusPage() {
           </a>
           <div className="flex items-center gap-2">
             <span className="rounded-lg bg-gradient-to-r from-brand-purple to-brand-gold px-2.5 py-0.5 text-[10px] font-bold text-white">PLUS</span>
-            {apiRuntime && (
-              <span
-                className="hidden sm:inline rounded-md border border-white/10 bg-white/[0.04] px-2 py-0.5 text-[9px] font-medium uppercase tracking-wide text-white/45"
-                title={analysisBackendUrl || undefined}
-              >
-                {lang === "zh" ? "分析节点" : "API"} · {apiRuntime}
-              </span>
-            )}
             {username && (
               <a href="/history" className="flex items-center gap-1 rounded-lg border border-white/10 px-2.5 py-1 text-xs text-white/60 transition hover:border-brand-gold/30 hover:text-brand-gold">
                 <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}><path strokeLinecap="round" strokeLinejoin="round" d="M15.75 6a3.75 3.75 0 1 1-7.5 0 3.75 3.75 0 0 1 7.5 0ZM4.501 20.118a7.5 7.5 0 0 1 14.998 0A17.933 17.933 0 0 1 12 21.75c-2.676 0-5.216-.584-7.499-1.632Z" /></svg>
@@ -775,12 +647,7 @@ export default function PlusPage() {
 
         {stage === "results" && result && (
           <>
-            <PlusResultView
-              result={result}
-              lang={lang}
-              backendUrl={analysisBackendUrl}
-              externalVideoSrc={sessionVideoSrc}
-            />
+            <PlusResultView result={result} lang={lang} externalVideoSrc={sessionVideoSrc} />
             <div className="text-center py-6">
               <button
                 onClick={() => {
@@ -791,7 +658,6 @@ export default function PlusPage() {
                   setStage("upload");
                   setResult(null);
                   setError("");
-                  setApiRuntime(null);
                 }}
                 className="btn-primary"
               >

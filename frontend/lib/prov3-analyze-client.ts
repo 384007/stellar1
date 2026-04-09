@@ -32,8 +32,10 @@ export async function requestProv3AnalyzeCancel(
 }
 
 export type RunProv3AnalyzeOptions = {
-  modalUrls: string[];
-  backendUrls: string[];
+  /** @deprecated Lists are resolved on Edge (``/api/prov3/analyze/start``); kept for call-site compatibility. */
+  modalUrls?: string[];
+  /** @deprecated Lists are resolved on Edge; kept for call-site compatibility. */
+  backendUrls?: string[];
   /** Precheck / CF — forwarded as ``X-Stellar-Network-Hint: cn`` to Modal only when true. */
   cnNetworkHint: boolean;
   /** No client poll wall clock (precheck CN **or** ``clientLikelyMainlandChinaUser()``). */

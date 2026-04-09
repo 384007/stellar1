@@ -6,7 +6,9 @@ import os
 import tempfile
 
 import httpx
-from fastapi import APIRouter, HTTPException, Depends, Request
+import numpy as np
+import cv2
+from fastapi import APIRouter, HTTPException, Depends, Request, File, UploadFile
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from starlette.responses import StreamingResponse
@@ -302,6 +304,54 @@ async def analyze_lite(
         if he.status_code == 400 and isinstance(he.detail, dict):
             return JSONResponse(status_code=400, content=he.detail)
         raise
+
+
+@router.post("/club-detect")
+async def analyze_club_detect_multipart(
+    request: Request,
+    frame: UploadFile = File(...),
+    current_user: Optional[dict] = Depends(get_current_user),
+):
+    """
+    Club + handedness from a single JPEG frame.
+    Provider / keys stay in ``gemini_service``; response is product-only.
+    """
+    from services.club_detector import detect_club
+
+    raw = await frame.read()
+    if not raw:
+        return JSONResponse(
+            content={
+                "club_type": "UNKNOWN",
+                "club_group": "IRON",
+                "confidence": 0.0,
+                "hand": "R",
+            }
+        )
+    arr = np.frombuffer(raw, dtype=np.uint8)
+    img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+    if img is None:
+        return JSONResponse(
+            content={
+                "club_type": "UNKNOWN",
+                "club_group": "IRON",
+                "confidence": 0.0,
+                "hand": "R",
+            }
+        )
+    region = "CN" if (request.headers.get("CF-IPCountry") or "").upper() == "CN" else "global"
+    out = await detect_club(img, region)
+    hand = out.get("hand")
+    if hand not in ("R", "L"):
+        hand = "R"
+    return JSONResponse(
+        content={
+            "club_type": str(out.get("club_type") or "UNKNOWN"),
+            "club_group": str(out.get("club_group") or "IRON"),
+            "confidence": float(out.get("confidence") or 0.0),
+            "hand": hand,
+        }
+    )
 
 
 @router.post("/recalculate")
