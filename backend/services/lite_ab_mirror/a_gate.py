@@ -13,8 +13,17 @@ _A_TOP_IMPACT_MIN_CONFIDENCE = 0.58
 _A_FINISH_MIN_CONFIDENCE = 0.55
 
 
-def run_lite_a_gate(keyframes: List[dict]) -> Tuple[str, List[str]]:
+def run_lite_a_gate(
+    keyframes: List[dict],
+    *,
+    semantic_fail_reasons: List[str] | None = None,
+) -> Tuple[str, List[str]]:
     fail_reasons: List[str] = []
+
+    if semantic_fail_reasons:
+        for r in semantic_fail_reasons:
+            if r and r not in fail_reasons:
+                fail_reasons.append(r)
 
     if not validate_event_order(keyframes):
         fail_reasons.append("event_order_invalid")

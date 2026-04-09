@@ -1,4 +1,4 @@
-"""Lite keyframe pipeline: SwingNet A infer → A quality gate only (no B / local refine)."""
+"""Lite keyframe pipeline: SwingNet A infer → phase semantic local refine → A quality gate (A-only, no B)."""
 
 from __future__ import annotations
 
@@ -10,6 +10,7 @@ from services.golfdb_swingnet_service import clear_swingnet_ctx
 from services.lite_ab_mirror.a_extract import run_lite_a_infer_only
 from services.lite_ab_mirror.a_gate import run_lite_a_gate
 from services.lite_ab_mirror.constants import TRUST_HIGH, TRUST_LOW
+from services.lite_ab_mirror.phase_semantic import refine_lite_a_rows_with_phase_semantics
 from services.provider_registry import role_log
 
 logger = logging.getLogger(__name__)
@@ -36,6 +37,13 @@ def run_lite_ab_after_preprocess(
         "screen_mode_corrected": bool(pre.get("screen_mode_corrected", False)),
     }
     analysis_frames: List[dict] = list(pre.get("analysis_frames") or [])
+    total_frames = int(pre.get("total_frames") or 0)
+    max_from_total = max(0, total_frames - 1) if total_frames > 0 else -1
+    max_from_lattice = max((int(x.get("frame_index", 0)) for x in analysis_frames), default=-1)
+    max_idx = max(max_from_lattice, max_from_total)
+    if max_idx < 0:
+        max_idx = 0
+    preprocess_meta["max_frame_index"] = max_idx
 
     try:
         if cancel_check:
@@ -54,20 +62,36 @@ def run_lite_ab_after_preprocess(
             f"reasons={list(infer.fail_reasons)!r}"
         )
 
-        if infer.a_status == "fail":
-            return infer.keyframes, TRUST_LOW, False, list(infer.fail_reasons)
+        rows = copy.deepcopy(infer.keyframes)
+        refined_rows, semantic_fail_reasons, sem_dbg = refine_lite_a_rows_with_phase_semantics(
+            rows,
+            analysis_frames=analysis_frames,
+            preprocess_meta=preprocess_meta,
+            poses=list(pre.get("poses") or []),
+            timeline=None,
+            motions=None,
+            impact_hint_frame_index=None,
+            max_frame_index=max_idx,
+        )
+        logger.info("%s %s phase_semantic passes=%s reasons=%s", _LOG, _KF, len(sem_dbg.get("passes") or []), semantic_fail_reasons)
+        role_log(
+            f"[ROLE=LITE_PIPELINE] {_KF} phase_semantic_done reasons={list(semantic_fail_reasons)!r}"
+        )
 
         if cancel_check:
             cancel_check()
 
-        rows = copy.deepcopy(infer.keyframes)
-        max_idx = max((int(x.get("frame_index", 0)) for x in analysis_frames), default=-1)
-        if max_idx >= 0:
-            for row in rows:
-                fi = int(row.get("frame_index", 0))
-                row["frame_index"] = max(0, min(fi, max_idx))
+        for row in refined_rows:
+            fi = int(row.get("frame_index", 0))
+            row["frame_index"] = max(0, min(fi, max_idx))
 
-        status, fail_reasons = run_lite_a_gate(rows)
+        sem_for_gate = list(semantic_fail_reasons)
+        if infer.a_status == "fail":
+            for r in infer.fail_reasons:
+                if r and r not in sem_for_gate:
+                    sem_for_gate.append(r)
+
+        status, fail_reasons = run_lite_a_gate(refined_rows, semantic_fail_reasons=sem_for_gate)
         logger.info("%s %s a_gate status=%s reasons=%s", _LOG, _KF, status, fail_reasons)
         role_log(
             f"[ROLE=LITE_PIPELINE] {_KF} a_gate status={status!r} reasons={list(fail_reasons)!r}"
@@ -76,6 +100,6 @@ def run_lite_ab_after_preprocess(
         phase_pass = status == "pass"
         trust = TRUST_HIGH if phase_pass else TRUST_LOW
         out_reasons: List[str] = [] if phase_pass else list(fail_reasons)
-        return rows, trust, phase_pass, out_reasons
+        return refined_rows, trust, phase_pass, out_reasons
     finally:
         clear_swingnet_ctx(analysis_id)
