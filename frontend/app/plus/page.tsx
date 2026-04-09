@@ -66,6 +66,8 @@ export default function PlusPage() {
   const [processingClub, setProcessingClub] = useState<ClubDetection | null>(null);
   const processingClubRef = useRef<ClubDetection | null>(null);
   const [showClubPicker, setShowClubPicker] = useState(false);
+  /** 防止双击 / 并发触发多次 ``POST /api/plus``。 */
+  const plusAnalysisInFlightRef = useRef(false);
 
   const CLUB_GROUPS = [
     { id: "WOOD", label_zh: "木杆", label_en: "Wood", clubs: ["1W", "3W", "5W"] },
@@ -104,6 +106,10 @@ export default function PlusPage() {
     if (!p || p.page !== "plus") return;
     void (async () => {
       try {
+        if (plusAnalysisInFlightRef.current) {
+          devWarn("[plus] reanalyze skipped while Plus analysis already in flight");
+          return;
+        }
         const blob = await fetchVideoBlobForHistoryReanalyze(
           p.analysisId,
           p.videoUrl,
@@ -123,8 +129,9 @@ export default function PlusPage() {
         devWarn("[plus] reanalyze pipeline error:", e);
       }
     })();
+    // 仅登录就绪时消费一次队列；勿依赖 lang，避免切换语言重复跑 effect。
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [authChecked, lang]);
+  }, [authChecked]);
 
   // Avoid [sessionVideoSrc] effect cleanup + revokeObjectURL: Strict Mode can revoke the URL
   // while the video tab still needs it. Revoke only in setSessionVideoSrc updaters / reset flows.
@@ -299,6 +306,11 @@ export default function PlusPage() {
   }
 
   async function processBlob(blob: Blob, filename: string) {
+    if (plusAnalysisInFlightRef.current) {
+      devWarn("[plus] analyze already in flight, ignoring duplicate trigger");
+      return;
+    }
+    plusAnalysisInFlightRef.current = true;
     setSessionVideoSrc((prev) => {
       if (prev) try { URL.revokeObjectURL(prev); } catch { /* */ }
       return null;
@@ -377,6 +389,8 @@ export default function PlusPage() {
         setError(msg);
       }
       setStage("upload");
+    } finally {
+      plusAnalysisInFlightRef.current = false;
     }
   }
 

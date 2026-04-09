@@ -268,6 +268,10 @@ export default function AnalyzePage() {
     if (!p || p.page !== "analyze") return;
     void (async () => {
       try {
+        if (analysisInFlightRef.current) {
+          devWarn("[analyze] reanalyze skipped while analysis already in flight");
+          return;
+        }
         const blob = await fetchVideoBlobForHistoryReanalyze(
           p.analysisId,
           p.videoUrl,
@@ -289,9 +293,9 @@ export default function AnalyzePage() {
         devWarn("[analyze] reanalyze pipeline error:", e);
       }
     })();
-    // processBlob 为稳定闭包即可；仅依赖登录就绪与语言（错误文案）
+    // 仅登录就绪时消费一次；勿依赖 lang，避免切换语言重复跑 effect。
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [authChecked, lang]);
+  }, [authChecked]);
 
   function resolveProv3ScreenMode(
     filename: string,

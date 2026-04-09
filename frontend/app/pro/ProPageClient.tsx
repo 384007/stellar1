@@ -347,7 +347,9 @@ export default function ProPageClient({ deepLinkAnalysisId }: { deepLinkAnalysis
         deepLinkStartedForRef.current = null;
       }
     };
-  }, [deepId, lang]);
+    // 仅 deepId 变化时重载记录；勿依赖 lang，避免重复拉取同一条目。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [deepId]);
 
   useEffect(() => {
     const explicitReanalyzeNav =
@@ -376,6 +378,10 @@ export default function ProPageClient({ deepLinkAnalysisId }: { deepLinkAnalysis
 
     void (async () => {
       try {
+        if (analysisInFlightRef.current) {
+          devWarn("[pro] reanalyze skipped while Pro analysis already in flight");
+          return;
+        }
         // History queues both URLs; timeline first is implemented inside fetchVideoBlobForHistoryReanalyze.
         const blob = await fetchVideoBlobForHistoryReanalyze(
           p.analysisId,
@@ -397,8 +403,9 @@ export default function ProPageClient({ deepLinkAnalysisId }: { deepLinkAnalysis
         devWarn("[pro] reanalyze pipeline error:", e);
       }
     })();
+    // 勿依赖 lang：避免切换语言时重复 reconcile / 异步链。
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [deepId, lang]);
+  }, [deepId]);
 
   // Do not revoke proVideoSrc in a [proVideoSrc] effect cleanup: React Strict Mode runs that
   // cleanup while the URL is still needed, breaking the <video> src. Revoke only when replacing

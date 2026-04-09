@@ -25,6 +25,7 @@ import {
   fetchLabVideoBlobForReanalyze,
   reanalyzeHistoryFilename,
 } from "@/lib/reanalyze-from-history";
+import { devWarn } from "@/lib/dev-only-log";
 
 type Stage = "upload" | "processing" | "results";
 type Lang = "en" | "zh";
@@ -263,6 +264,8 @@ export default function ShotLabPage() {
   const [compareResult, setCompareResult] = useState<{ shots: Record<string, unknown>[]; diff: Record<string, { a: number | null; b: number | null; delta: number | null }> } | null>(null);
   const [compareLoading, setCompareLoading] = useState(false);
   const [exportLoading, setExportLoading] = useState(false);
+  /** 防止双击 / 重入导致多次 ``/api/lab`` 任务。 */
+  const labAnalysisInFlightRef = useRef(false);
 
   useEffect(() => {
     const token = localStorage.getItem("stellar_token");
@@ -423,6 +426,11 @@ export default function ShotLabPage() {
   }, []);
 
   const submitLabAnalysisFile = useCallback(async (file: File) => {
+    if (labAnalysisInFlightRef.current) {
+      devWarn("[shot-lab] lab analysis already in flight, ignoring duplicate trigger");
+      return;
+    }
+    labAnalysisInFlightRef.current = true;
     setStage("processing");
     setError("");
     setProgress(0);
@@ -515,6 +523,8 @@ export default function ShotLabPage() {
         setError(err instanceof Error ? err.message : "分析失败，请重试");
       }
       setStage("upload");
+    } finally {
+      labAnalysisInFlightRef.current = false;
     }
   }, [fetchUnifiedPrediction, lang, loadHistory]);
 
@@ -527,6 +537,10 @@ export default function ShotLabPage() {
     const p = consumeReanalyzeFromHistoryPayload();
     if (!p || p.page !== "shot-lab") return;
     void (async () => {
+      if (labAnalysisInFlightRef.current) {
+        devWarn("[shot-lab] reanalyze skipped while lab analysis already in flight");
+        return;
+      }
       const blob = await fetchLabVideoBlobForReanalyze(p.analysisId);
       if (!blob || blob.size === 0) {
         setError(
@@ -540,8 +554,9 @@ export default function ShotLabPage() {
       const file = new File([blob], fname, { type: blob.type || "application/octet-stream" });
       await submitLabAnalysisFile(file);
     })();
+    // 仅登录就绪时消费一次；勿依赖 lang/submitLabAnalysisFile，避免重复跑。
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [authChecked, lang, submitLabAnalysisFile]);
+  }, [authChecked]);
 
   async function loadTrend() {
     const token = localStorage.getItem("stellar_token");
