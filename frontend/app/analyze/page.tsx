@@ -727,8 +727,8 @@ export default function AnalyzePage() {
     }, 800);
 
     let clubFallbackTimer: ReturnType<typeof setTimeout> | undefined;
-    /** Lite 仅走 ``POST /analyze/lite``；预检 club-detect 会与主分析叠加成多次 Modal run（如 3×club-detect + lite）。 */
-    const wantsEarlyClubHand = modeForRun === "pro";
+    /** Lite 仅走 ``POST /analyze/lite``；Pro 才预检 club-detect（ref 与 mode 双条件防竞态）。 */
+    const wantsEarlyClubHand = modeForRun === "pro" && analysisModeRef.current === "pro";
     const clubDetectPromise = wantsEarlyClubHand
       ? detectClubFromBlob(sendBlob, { enableHandPopup: true })
       : Promise.resolve();
@@ -951,6 +951,10 @@ export default function AnalyzePage() {
     blob: Blob,
     options?: { enableHandPopup?: boolean },
   ): Promise<void> {
+    /** 硬门禁：Lite 只允许 ``POST /analyze/lite`` 这一条分析链，禁止任何 ``/api/club-detect``（3 连发）。 */
+    if (analysisModeRef.current === "lite") {
+      return;
+    }
     const enableHandPopup = options?.enableHandPopup ?? true;
     try {
       const token = localStorage.getItem("stellar_token");

@@ -165,7 +165,11 @@ async def run_lite_orchestrator(video_path: str, *, region: str = "global") -> d
         hconf = float(hand_info.get("confidence") or 0.0)
         hand_ok = hand != "UNKNOWN" and hconf >= _MIN_HAND_CONF
 
-        club_info = await _club_from_previews(list(pre.get("preview_bgr") or []), region)
+        # 单次 Lite 分析内只跑 1 次杆型视觉（与浏览器侧「禁止多跑 club-detect」一致）
+        _pv = list(pre.get("preview_bgr") or [])
+        if len(_pv) > 1:
+            _pv = [_pv[len(_pv) // 2]]
+        club_info = await _club_from_previews(_pv, region)
         ct = str(club_info.get("club_type") or "UNKNOWN").upper()
         cg = str(club_info.get("club_group") or "IRON").upper()
         cconf = float(club_info.get("confidence") or 0.0)
