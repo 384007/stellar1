@@ -1,8 +1,17 @@
 name: Frontend PR Preview
 
+# PR 打开/更新时跑；同一分支每次 push（且命中 paths）也跑，便于「先推送、后开 PR」时也有预览。
+# push 与 pull_request 可能对同一 commit 各触发一次 → 用 concurrency 合并为一次执行。
 on:
   pull_request:
     types: [opened, synchronize, reopened]
+    paths:
+      - 'frontend/**'
+      - '.github/workflows/pages-pr-preview.yml'
+  push:
+    branches-ignore:
+      - main
+      - master
     paths:
       - 'frontend/**'
       - '.github/workflows/pages-pr-preview.yml'
@@ -26,12 +35,18 @@ permissions:
   contents: read
   pull-requests: write
 
+concurrency:
+  group: stellar1-pages-preview-${{ github.repository }}-${{ github.sha }}
+  cancel-in-progress: true
+
 jobs:
   pages-preview:
     # Note: `secrets` is not allowed in job-level `if` (GitHub parses the workflow before secrets exist).
+    # push：仅本仓库分支；fork 的 PR 仍仅在同仓库 PR 时跑（与原先一致）。
     if: >-
       ${{
         github.event_name == 'workflow_dispatch' ||
+        github.event_name == 'push' ||
         (github.event_name == 'pull_request' &&
           github.event.pull_request.head.repo.full_name == github.repository)
       }}
@@ -86,8 +101,13 @@ jobs:
           set -eo pipefail
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             BRANCH_NAME="${{ github.event.inputs.preview_branch }}"
-          else
+          elif [ "${{ github.event_name }}" = "pull_request" ]; then
             BRANCH_NAME="pr-${{ github.event.pull_request.number }}"
+          else
+            # push（无 PR 时）：用分支名生成稳定、合法的 Pages preview branch
+            REF_NAME="${{ github.ref_name }}"
+            SAFE=$(echo "$REF_NAME" | tr '[:upper:]' '[:lower:]' | sed -e 's/[^a-z0-9._-]/-/g' -e 's/--*/-/g' | cut -c1-48)
+            BRANCH_NAME="push-${SAFE}"
           fi
           echo "Using Cloudflare Pages branch: $BRANCH_NAME"
           LOG_FILE="$RUNNER_TEMP/wrangler-preview.log"
