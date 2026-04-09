@@ -176,7 +176,9 @@ export default function AnalyzePage() {
   const [showExtendedHUD, setShowExtendedHUD] = useState(false);
   const [lang, setLang] = useState<"en" | "zh">("zh");
   const [activeTab, setActiveTab] = useState<"analysis" | "3d" | "comparison">("analysis");
-  const [analysisMode, setAnalysisMode] = useState<AnalysisMode>("pro");
+  /** 默认 Lite：避免未切换 Tab 就上传时仍按 Pro 预检 3×club-detect；与 ref 同步防竞态。 */
+  const [analysisMode, setAnalysisMode] = useState<AnalysisMode>("lite");
+  const analysisModeRef = useRef<AnalysisMode>("lite");
   const [username, setUsername] = useState("");
   const [authChecked, setAuthChecked] = useState(false);
   const [screenRecording, setScreenRecording] = useState(false);
@@ -220,6 +222,10 @@ export default function AnalyzePage() {
   /** Lite：同一次分析最多发 1 次 POST /analyze/lite（禁止隐式重试）。 */
   const liteAnalyzeHttpIssuedRef = useRef(false);
   const proAnalyzeAbortRef = useRef<AbortController | null>(null);
+
+  useEffect(() => {
+    analysisModeRef.current = analysisMode;
+  }, [analysisMode]);
 
   const stopProAnalysis = useCallback(async () => {
     const token = localStorage.getItem("stellar_token");
@@ -315,7 +321,7 @@ export default function AnalyzePage() {
     proAbortSignal?: AbortSignal,
     liteIdempotencyKey?: string | null,
   ): Promise<AnalysisResult> {
-    const isPro = (modeOverride ?? analysisMode) === "pro";
+    const isPro = (modeOverride ?? analysisModeRef.current) === "pro";
 
     if (isPro) {
       // Pro mode: precheck (Edge) → same-origin upload + ``/api/prov3/analyze/start`` → poll job from R2
@@ -664,7 +670,7 @@ export default function AnalyzePage() {
     }
     analysisInFlightRef.current = true;
     try {
-    const modeForRun = analysisModeOverride ?? analysisMode;
+    const modeForRun = analysisModeOverride ?? analysisModeRef.current;
     if (modeForRun === "lite") {
       liteIdempotencyKeyRef.current =
         typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
@@ -1293,7 +1299,12 @@ export default function AnalyzePage() {
             {/* Analysis Mode Selector */}
             <div className="mx-auto mb-4 max-w-xl">
               <div className="flex rounded-xl border border-white/10 bg-white/[0.02] p-1 overflow-hidden">
-                <button onClick={() => setAnalysisMode("lite")}
+                <button
+                  type="button"
+                  onClick={() => {
+                    analysisModeRef.current = "lite";
+                    setAnalysisMode("lite");
+                  }}
                   className={`flex-1 rounded-lg py-3 text-sm font-semibold transition-all ${
                     analysisMode === "lite"
                       ? "bg-brand-purple/20 text-white border border-brand-purple/30"
@@ -1302,7 +1313,12 @@ export default function AnalyzePage() {
                   <span className="block">{lang === "zh" ? "普通分析" : "Standard"}</span>
                   <span className="block text-[10px] font-normal text-white/30 mt-0.5">Stellar AI</span>
                 </button>
-                <button onClick={() => setAnalysisMode("pro")}
+                <button
+                  type="button"
+                  onClick={() => {
+                    analysisModeRef.current = "pro";
+                    setAnalysisMode("pro");
+                  }}
                   className={`flex-1 rounded-lg py-3 text-sm font-semibold transition-all ${
                     analysisMode === "pro"
                       ? "bg-brand-gold/20 text-brand-gold border border-brand-gold/30"
