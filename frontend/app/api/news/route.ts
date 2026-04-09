@@ -8,7 +8,6 @@ function newsBackendBase(): string {
   const raw =
     process.env.BACKEND_URL ||
     process.env.NEWS_BACKEND_URL ||
-    process.env.NEXT_PUBLIC_BACKEND_URL ||
     "http://localhost:8000";
   return raw.trim().replace(/\/+$/, "");
 }

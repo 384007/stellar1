@@ -2,7 +2,7 @@ import { clientLikelyMainlandChinaUser } from "@/lib/client-region-hint";
 import { devInfo, devWarn } from "@/lib/dev-only-log";
 
 /** Same-origin Pro v3 orchestration (upload → one Modal ``/analyze/start`` → R2 job poll). */
-/* Upload: Pages ``/api/history/upload-video`` → R2 binding. CN may try presigned PUT first; server decides via secrets. */
+/* Upload: always ``POST /api/history/upload-video`` (Edge R2 binding); browser never receives R2 presigned URLs. */
 const PRO_V3_EDGE_ANALYZE_START = "/api/prov3/analyze/start";
 const PRO_V3_EDGE_ANALYZE_CANCEL = "/api/prov3/analyze/cancel";
 
@@ -66,7 +66,7 @@ export function yieldUiBeforeHeavyParse(): Promise<void> {
 
 /**
  * When CF/precheck misses mainland (VPN etc.), still avoid false client-side job timeouts for zh-CN users.
- * Does not affect Modal routing — only ``unboundedJobPoll`` / presign try.
+ * Does not affect Modal routing — only ``unboundedJobPoll``.
  * Delegates to ``clientLikelyMainlandChinaUser`` (single source in ``client-region-hint``).
  */
 export function prov3ClientLikelyNeedsCnFriendlyJobWait(): boolean {
@@ -153,103 +153,36 @@ export async function runProv3AnalyzeMultipart(
     const uploadId = crypto.randomUUID();
     const mime = blob.type?.trim() || "video/mp4";
 
-    let videoR2Key = "";
-
-    if (opts.cnNetworkHint) {
-      type PresignJson = {
-        mode?: string;
-        upload_url?: string;
-        video_r2_key?: string;
-        content_type?: string;
-      };
+    const upRes = await fetch("/api/history/upload-video", {
+      method: "POST",
+      headers: {
+        ...authHeaders,
+        "Content-Type": mime,
+        "X-Stellar-Upload-Analysis-Id": uploadId,
+        "X-Stellar-Upload-Filename": filename,
+        "X-Stellar-Upload-Byte-Length": String(blob.size),
+      },
+      body: blob,
+      signal: abortSignal,
+    });
+    if (!upRes.ok) {
+      let detail = `HTTP ${upRes.status}`;
       try {
-        const pr = await fetch("/api/history/upload-video/presign", {
-          method: "POST",
-          headers: {
-            ...authHeaders,
-            "Content-Type": "application/json",
-            "X-Stellar-Network-Hint": "cn",
-          },
-          body: JSON.stringify({
-            analysis_id: uploadId,
-            filename,
-            content_type: mime,
-            byte_length: blob.size,
-          }),
-          signal: abortSignal,
-        });
-        if (pr.status === 401 || pr.status === 403) {
-          let detail = `HTTP ${pr.status}`;
-          try {
-            const j = (await pr.json()) as { detail?: string };
-            if (typeof j.detail === "string") detail = j.detail;
-          } catch {
-            /* ignore */
-          }
-          throw new Error(detail);
-        }
-        if (pr.ok) {
-          const presignBody = (await pr.json()) as PresignJson;
-          if (presignBody.mode === "direct" && presignBody.upload_url && presignBody.video_r2_key) {
-            const putMime = (presignBody.content_type || mime).trim() || mime;
-            const putRes = await fetch(presignBody.upload_url, {
-              method: "PUT",
-              headers: { "Content-Type": putMime },
-              body: blob,
-              signal: abortSignal,
-            });
-            if (putRes.ok) {
-              videoR2Key = String(presignBody.video_r2_key).trim();
-            } else {
-              devWarn(
-                `${opts.logPrefix} [PROV3_EDGE_JOB] CN presigned PUT HTTP ${putRes.status} — fallback Pages→R2 proxy`,
-              );
-            }
-          }
-        }
-      } catch (e) {
-        if (abortSignal?.aborted) {
-          throw new Error(userCancelledMessage || "分析已停止");
-        }
-        if (e instanceof Error && e.message.startsWith("HTTP ")) {
-          throw e;
-        }
-        devWarn(`${opts.logPrefix} [PROV3_EDGE_JOB] CN presign/direct skipped, using proxy:`, e);
+        const j = (await upRes.json()) as { detail?: string };
+        if (typeof j.detail === "string") detail = j.detail;
+      } catch {
+        /* ignore */
       }
+      throw new Error(
+        upRes.status === 401 || upRes.status === 403
+          ? detail
+          : `视频上传失败：${detail}`,
+      );
     }
-
+    const upJson = (await upRes.json()) as { video_r2_key?: string };
+    const videoR2Key = String(upJson.video_r2_key || "").trim();
     if (!videoR2Key) {
-      const upRes = await fetch("/api/history/upload-video", {
-        method: "POST",
-        headers: {
-          ...authHeaders,
-          "Content-Type": mime,
-          "X-Stellar-Upload-Analysis-Id": uploadId,
-          "X-Stellar-Upload-Filename": filename,
-          "X-Stellar-Upload-Byte-Length": String(blob.size),
-        },
-        body: blob,
-        signal: abortSignal,
-      });
-      if (!upRes.ok) {
-        let detail = `HTTP ${upRes.status}`;
-        try {
-          const j = (await upRes.json()) as { detail?: string };
-          if (typeof j.detail === "string") detail = j.detail;
-        } catch {
-          /* ignore */
-        }
-        throw new Error(
-          upRes.status === 401 || upRes.status === 403
-            ? detail
-            : `视频上传失败：${detail}`,
-        );
-      }
-      const upJson = (await upRes.json()) as { video_r2_key?: string };
-      videoR2Key = String(upJson.video_r2_key || "").trim();
-      if (!videoR2Key) {
-        throw new Error("视频上传成功但未返回存储键，请重试。");
-      }
+      throw new Error("视频上传成功但未返回存储键，请重试。");
     }
 
     opts.onJobPhase?.("starting");

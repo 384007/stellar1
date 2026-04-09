@@ -22,13 +22,11 @@ pages_build_output_dir = ".vercel/output/static"
 
 [vars]
 ENVIRONMENT = "production"
-NEXT_PUBLIC_BACKEND_URL = "https://stellar1-backend.onrender.com"
+BACKEND_URL = "https://stellar1-backend.onrender.com"
 GEMINI_MODEL = "gemini-2.5-flash-lite"
 # Secrets (dashboard): GEMINI_API_KEY, JWT_SECRET — required for Lite analyze + auth.
 # Optional Lite / Edge multi-key failover (same names as backend): GEMINI_API_KEY_2 … GEMINI_API_KEY_10.
-# Optional: CN browser→R2 presigned upload — build with NEXT_PUBLIC_PROV3_CN_USE_PRESIGNED_UPLOAD=true
-# and set Pages Secrets R2_ACCOUNT_ID, R2_BUCKET, R2_ACCESS_KEY, R2_SECRET_KEY + R2 CORS. Default
-# CN upload is same-origin /api/history/upload-video (R2 binding only, no S3 API secrets).
+# Video upload: same-origin POST /api/history/upload-video (R2 binding only; browser never gets presigned S3 URLs).
 #
 # Optional CN egress: GEMINI_PROXY_ALI, GEMINI_PROXY_JD (HTTPS origin, no trailing slash) — add as
 # Pages Secrets (same values as Modal ``custom-secret``). Example:

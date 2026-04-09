@@ -27,7 +27,7 @@ export const ROUTE_CHAIN_MAP: Record<string, { chain: string; upstream: string }
   "app/api/history/route.ts": { chain: "record", upstream: "d1_r2" },
   "app/api/history/[id]/route.ts": { chain: "record", upstream: "d1" },
   "app/api/history/upload-video/route.ts": { chain: "record", upstream: "r2" },
-  "app/api/history/upload-video/presign/route.ts": { chain: "record", upstream: "r2" },
+  "app/api/history/upload-video/presign/route.ts": { chain: "record", upstream: "edge" },
   "app/api/history/video/[id]/route.ts": { chain: "render", upstream: "r2" },
   "app/api/share/route.ts": { chain: "share", upstream: "d1" },
   "app/api/share/[token]/route.ts": { chain: "share", upstream: "d1" },

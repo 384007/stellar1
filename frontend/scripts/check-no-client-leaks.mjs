@@ -14,12 +14,15 @@ const FORBIDDEN = [
   "dytsui--stellar-ai-fastapi-app.modal.run",
   "onrender.com",
   "r2.cloudflarestorage.com",
+  "cloudflarestorage.com",
   "generativelanguage.googleapis.com",
   "NEXT_PUBLIC_BACKEND_URL",
   "NEXT_PUBLIC_MODAL_BACKEND_URL",
   "NEXT_PUBLIC_LITE_BACKEND_URL",
   "NEXT_PUBLIC_MEDIAPIPE_CDN_BASE",
   "NEXT_PUBLIC_MEDIAPIPE_ALLOW_FOREIGN_FALLBACK",
+  "NEXT_PUBLIC_STELLAR_PROV3_R2_PUBLIC_BASE",
+  "upload_url",
 ];
 
 const EXT = /\.(js|mjs|css|json|html|txt|map)$/i;

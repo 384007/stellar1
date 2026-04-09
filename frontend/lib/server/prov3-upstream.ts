@@ -56,7 +56,7 @@ export function buildProv3ModalUrlList(
 }
 
 /**
- * Render / secondary API bases (server-only). Accepts legacy NEXT_PUBLIC_BACKEND_URL at runtime on the worker only — not inlined for the browser.
+ * Render / secondary API bases (server-only). Uses ``BACKEND_URL`` / bindings only — never ``NEXT_PUBLIC_*``.
  */
 export function buildProv3BackendUrlList(
   getCfEnv: (key: string) => string,
@@ -67,8 +67,6 @@ export function buildProv3BackendUrlList(
   const primary = (
     getCfEnv("BACKEND_URL") ||
     processEnv.BACKEND_URL ||
-    getCfEnv("NEXT_PUBLIC_BACKEND_URL") ||
-    processEnv.NEXT_PUBLIC_BACKEND_URL ||
     primaryFallback
   )
     .trim()

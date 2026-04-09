@@ -14,8 +14,8 @@ function getCfEnv(key: string): string {
 
 function r2PublicOrigin(): string {
   const raw =
-    getCfEnv("NEXT_PUBLIC_STELLAR_PROV3_R2_PUBLIC_BASE") ||
-    process.env.NEXT_PUBLIC_STELLAR_PROV3_R2_PUBLIC_BASE ||
+    getCfEnv("STELLAR_PROV3_R2_PUBLIC_BASE") ||
+    process.env.STELLAR_PROV3_R2_PUBLIC_BASE ||
     "";
   return raw.trim().replace(/\/+$/, "");
 }

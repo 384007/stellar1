@@ -501,7 +501,7 @@ def _log_prov3_ui_display_blockers(
         hints.append("非 https 或异常串可能被浏览器拦截")
     if av.startswith("/prov3-media/") or av.startswith("/pro-v3/media/"):
         blockers.append("analysis_video_url_path_only")
-        hints.append("路径型 URL:CF Pages 需 NEXT_PUBLIC_STELLAR_PROV3_R2_PUBLIC_BASE 或后端写完整 R2 https")
+        hints.append("路径型 URL:CF Pages 需 STELLAR_PROV3_R2_PUBLIC_BASE(Edge) 或后端写完整 R2 https")
 
     strip_field = _frontend_prov3_keyframe_strip_field(result)
     ui_rows = [r for r in list(result.get(strip_field) or []) if isinstance(r, dict)]

@@ -135,7 +135,7 @@ jobs:
               '- `/analyze` → upload a short video → wait for result',
               '- `/login` if APIs return 401',
               '',
-              'If upload or analysis returns 503, open Cloudflare → Pages → stellar1 → Settings and ensure **Preview** env matches Production (JWT_SECRET, R2, D1, MODAL_BACKEND_URL / LITE_BACKEND_URL, Gemini keys).'
+              'If upload or analysis returns 503, open Cloudflare → Pages → stellar1 → Settings and ensure **Preview** env matches Production (JWT_SECRET, BACKEND_URL, R2, D1, MODAL_BACKEND_URL / LITE_BACKEND_URL, Gemini keys).'
             ].join('\n');
             await github.rest.issues.createComment({
               owner: context.repo.owner,

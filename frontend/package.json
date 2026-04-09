@@ -7,7 +7,7 @@
   },
   "scripts": {
     "dev": "next dev",
-    "build": "node scripts/fetch-mediapipe-models.mjs && NODE_OPTIONS='--require ./scripts/next-edge-build-polyfill.cjs' next build && node scripts/check-no-client-leaks.mjs",
+    "build": "node scripts/fetch-mediapipe-models.mjs && NODE_OPTIONS='--require ./scripts/next-edge-build-polyfill.cjs' next build && node scripts/check-no-client-leaks.mjs && node scripts/check-client-source-leaks.mjs",
     "start": "next start",
     "lint": "next lint",
     "test:e2e": "playwright test",
