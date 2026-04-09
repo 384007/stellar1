@@ -1,14 +1,7 @@
 /**
  * Pro v3 / R2 media: rewrite to same-origin ``/api/cdn/p`` so the browser never loads Modal/R2 hosts directly.
+ * Only ``m=1&p=`` (Modal ``/pro-v3/media/``) and ``r=1&p=`` (``/prov3-media/``) — no reversible encoding of full upstream URLs.
  */
-
-function toBase64Url(s: string): string {
-  const utf8 = new TextEncoder().encode(s);
-  let bin = "";
-  for (let i = 0; i < utf8.length; i++) bin += String.fromCharCode(utf8[i]!);
-  const b64 = btoa(bin);
-  return b64.replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
-}
 
 function cdnModalPath(pathWithSearch: string): string {
   return `/api/cdn/p?m=1&p=${encodeURIComponent(pathWithSearch)}`;
@@ -18,8 +11,12 @@ function cdnR2Path(pathWithSearch: string): string {
   return `/api/cdn/p?r=1&p=${encodeURIComponent(pathWithSearch)}`;
 }
 
-function cdnFullUrl(absUrl: string): string {
-  return `/api/cdn/p?f=1&z=${encodeURIComponent(toBase64Url(absUrl))}`;
+/** ``/prov3-media/...`` segment inside pathname (any host). */
+function pathFromProv3MediaPathname(pathname: string, search: string): string | null {
+  const low = pathname.toLowerCase();
+  const idx = low.indexOf("/prov3-media/");
+  if (idx === -1) return null;
+  return pathname.slice(idx) + search;
 }
 
 /**
@@ -49,8 +46,9 @@ export function resolveProv3ProductMediaUrl(url: string | undefined | null): str
       if (parsed.pathname.startsWith("/pro-v3/media/")) {
         return cdnModalPath(ps);
       }
-      if (parsed.pathname.includes("/prov3-media/")) {
-        return cdnFullUrl(u);
+      const r2Seg = pathFromProv3MediaPathname(parsed.pathname, parsed.search);
+      if (r2Seg) {
+        return cdnR2Path(r2Seg);
       }
     } catch {
       return u;

@@ -14,6 +14,10 @@ const FORBIDDEN = [
   "NEXT_PUBLIC_BACKEND_URL",
   "NEXT_PUBLIC_STELLAR_PROV3_R2_PUBLIC_BASE",
   "r2.cloudflarestorage.com",
+  "cdnFullUrl(",
+  "?f=1&z=",
+  "decodeBase64Url(",
+  "allowAbsoluteUrl(",
 ];
 
 const ROOTS = ["app", "lib", "components"];

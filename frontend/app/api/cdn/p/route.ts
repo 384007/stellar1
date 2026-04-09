@@ -28,21 +28,6 @@ function modalPrimaryOrigin(request: NextRequest): string {
   return first;
 }
 
-function modalOriginAllowHosts(request: NextRequest): Set<string> {
-  const cf = (request.headers.get("cf-ipcountry") || request.headers.get("CF-IPCountry") || "").trim();
-  const cn = cf.toUpperCase() === "CN";
-  const hosts = new Set<string>();
-  for (const o of buildProv3ModalUrlList(getCfEnv, cn)) {
-    try {
-      const u = new URL(o.startsWith("http") ? o : `https://${o}`);
-      hosts.add(u.hostname.toLowerCase());
-    } catch {
-      /* ignore */
-    }
-  }
-  return hosts;
-}
-
 function safeFixedPath(raw: string, requiredPrefix: string): string | null {
   let decoded: string;
   try {
@@ -60,41 +45,6 @@ function safeFixedPath(raw: string, requiredPrefix: string): string | null {
   } catch {
     return null;
   }
-}
-
-function decodeBase64Url(s: string): string | null {
-  const pad = s.length % 4 === 0 ? "" : "====".slice(s.length % 4);
-  const b64 = s.replace(/-/g, "+").replace(/_/g, "/") + pad;
-  try {
-    const bin = atob(b64);
-    const bytes = new Uint8Array(bin.length);
-    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-    return new TextDecoder().decode(bytes);
-  } catch {
-    return null;
-  }
-}
-
-function allowAbsoluteUrl(urlStr: string, request: NextRequest): URL | null {
-  let u: URL;
-  try {
-    u = new URL(urlStr);
-  } catch {
-    return null;
-  }
-  if (u.protocol !== "https:" && u.protocol !== "http:") return null;
-  const host = u.hostname.toLowerCase();
-  if (modalOriginAllowHosts(request).has(host)) return u;
-  const ro = r2PublicOrigin();
-  if (ro) {
-    try {
-      const ru = new URL(ro.startsWith("http") ? ro : `https://${ro}`);
-      if (host === ru.hostname.toLowerCase()) return u;
-    } catch {
-      /* ignore */
-    }
-  }
-  return null;
 }
 
 function buildUpstreamResponse(ir: Response, method: "GET" | "HEAD"): NextResponse {
@@ -124,9 +74,7 @@ async function runProxy(request: NextRequest, method: "GET" | "HEAD"): Promise<N
   const sp = request.nextUrl.searchParams;
   const m = sp.get("m");
   const r = sp.get("r");
-  const f = sp.get("f");
   const pRaw = sp.get("p");
-  const z = sp.get("z");
 
   let target: string | null = null;
 
@@ -143,13 +91,6 @@ async function runProxy(request: NextRequest, method: "GET" | "HEAD"): Promise<N
     if (!ro) return new NextResponse(null, { status: 503 });
     const base = ro.startsWith("http") ? ro : `https://${ro}`;
     target = `${base.replace(/\/+$/, "")}${path}`;
-  } else if (f === "1" && z) {
-    if (z.length > 4096) return new NextResponse(null, { status: 400 });
-    const decoded = decodeBase64Url(z);
-    if (!decoded) return new NextResponse(null, { status: 400 });
-    const u = allowAbsoluteUrl(decoded, request);
-    if (!u) return new NextResponse(null, { status: 403 });
-    target = u.toString();
   } else {
     return new NextResponse(null, { status: 400 });
   }

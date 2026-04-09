@@ -23,6 +23,8 @@ const FORBIDDEN = [
   "NEXT_PUBLIC_MEDIAPIPE_ALLOW_FOREIGN_FALLBACK",
   "NEXT_PUBLIC_STELLAR_PROV3_R2_PUBLIC_BASE",
   "upload_url",
+  "/api/cdn/p?f=1&z=",
+  "f=1&z=",
 ];
 
 const EXT = /\.(js|mjs|css|json|html|txt|map)$/i;

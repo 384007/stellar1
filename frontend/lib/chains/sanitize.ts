@@ -48,10 +48,35 @@ export const PRODUCT_UNDERSCORE_PUBLIC_KEYS = new Set<string>(["_plus_usage"]);
 export type ProductChain = "analysis" | "lab" | "plus" | "render" | "record" | "share" | "auth" | "generic";
 
 /**
+ * Collapse absolute Pro v3 / R2 media URLs to ``path+search`` only before JSON reaches the browser
+ * (no host; client rewrites to ``/api/cdn/p?m=1`` / ``?r=1``).
+ */
+export function normalizeProv3MediaAbsoluteString(s: string): string {
+  const t = s.trim();
+  if (!/^https?:\/\//i.test(t)) return s;
+  try {
+    const u = new URL(t);
+    const p = u.pathname;
+    if (p.startsWith("/pro-v3/media/")) {
+      return p + u.search;
+    }
+    const low = p.toLowerCase();
+    const idx = low.indexOf("/prov3-media/");
+    if (idx !== -1) {
+      return p.slice(idx) + u.search;
+    }
+  } catch {
+    /* keep original */
+  }
+  return s;
+}
+
+/**
  * Deep-clone plain JSON-ish structures and drop denylisted keys.
  */
 export function sanitizeProductJson(value: unknown, _chain: ProductChain = "generic"): unknown {
   if (value === null || value === undefined) return value;
+  if (typeof value === "string") return normalizeProv3MediaAbsoluteString(value);
   if (typeof value !== "object") return value;
   if (Array.isArray(value)) {
     return value.map((x) => sanitizeProductJson(x, _chain));
@@ -82,6 +107,8 @@ export function sanitizePredictionObject(pred: Record<string, unknown> | null | 
       out[k] = sanitizeProductJson(v, "analysis");
     } else if (Array.isArray(v)) {
       out[k] = sanitizeProductJson(v, "analysis");
+    } else if (typeof v === "string") {
+      out[k] = normalizeProv3MediaAbsoluteString(v);
     } else {
       out[k] = v;
     }
