@@ -1,4 +1,4 @@
-"""Lite keyframe pipeline: SwingNet A infer → phase semantic local refine → A quality gate (A-only, no B)."""
+"""Lite keyframe pipeline: SwingNet A infer → Mid-downswing refine (pose/motion) → A quality gate (A-only, no B)."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ from services.golfdb_swingnet_service import clear_swingnet_ctx
 from services.lite_ab_mirror.a_extract import run_lite_a_infer_only
 from services.lite_ab_mirror.a_gate import run_lite_a_gate
 from services.lite_ab_mirror.constants import TRUST_HIGH, TRUST_LOW
-from services.lite_ab_mirror.phase_semantic import refine_lite_a_rows_with_phase_semantics
+from services.lite_ab_mirror.downswing_refine import refine_lite_a_rows_with_phase_semantics
 from services.lite_timeline_motion import (
     lite_build_uniform_timeline,
     lite_impact_hint_from_timeline,
@@ -94,14 +94,15 @@ def run_lite_ab_after_preprocess(
             max_frame_index=max_idx,
         )
         logger.info(
-            "%s %s phase_semantic selective mode=%s reasons=%s",
+            "%s %s downswing_refine action=%s reasons=%s dbg=%s",
             _LOG,
             _KF,
-            sem_dbg.get("mode"),
+            sem_dbg.get("action"),
             semantic_fail_reasons,
+            {k: sem_dbg.get(k) for k in ("module", "action", "original_mds", "final_mds", "touched")},
         )
         role_log(
-            f"[ROLE=LITE_PIPELINE] {_KF} phase_semantic_done mode={sem_dbg.get('mode')!r} "
+            f"[ROLE=LITE_PIPELINE] {_KF} downswing_refine_done action={sem_dbg.get('action')!r} "
             f"reasons={list(semantic_fail_reasons)!r}"
         )
 

@@ -12,8 +12,33 @@ from services.lite_ab_mirror.scoring import average_confidence
 _A_TOP_IMPACT_MIN_CONFIDENCE = 0.58
 _A_FINISH_MIN_CONFIDENCE = 0.55
 
-# Legacy selective-refine tags — ignore as hard fails when geometry already passes.
-_SEMANTIC_INVALID_SUFFIX = "_semantic_invalid"
+# Mid-downswing corridor along Top→Impact (aligned with ``downswing_refine``)
+_MID_DS_REL_MIN = 0.12
+_MID_DS_REL_MAX = 0.88
+
+
+def _mid_downswing_gate_reasons(keyframes: List[dict]) -> List[str]:
+    """Low-trust hints when Mid-downswing is outside a plausible downswing band."""
+    by = {str(k.get("event_name")): k for k in keyframes}
+    need = ("Mid-downswing", "Top", "Impact")
+    if not all(e in by for e in need):
+        return []
+    top = int(by["Top"]["frame_index"])
+    mds = int(by["Mid-downswing"]["frame_index"])
+    imp = int(by["Impact"]["frame_index"])
+    reasons: List[str] = []
+    if not (top < mds < imp):
+        reasons.append("mid_downswing_semantic_invalid")
+        return reasons
+    corridor = imp - top
+    if corridor < 2:
+        return reasons
+    rel = (mds - top) / float(corridor)
+    if rel < _MID_DS_REL_MIN:
+        reasons.append("mid_downswing_too_close_to_top")
+    if rel > _MID_DS_REL_MAX:
+        reasons.append("mid_downswing_too_close_to_impact")
+    return reasons
 
 
 def run_lite_a_gate(
@@ -47,14 +72,13 @@ def run_lite_a_gate(
     if any(float(item.get("confidence", 0.0)) < 0.35 for item in keyframes):
         fail_reasons.append("possible_club_visibility_issue")
 
-    geom_ok = order_ok and gap_ok
+    for r in _mid_downswing_gate_reasons(keyframes):
+        if r not in fail_reasons:
+            fail_reasons.append(r)
 
     if semantic_fail_reasons:
         for r in semantic_fail_reasons:
             if not r or r in fail_reasons:
-                continue
-            # Selective refine 后：若顺序与 Top–Impact 间距已合理，不再因旧式 *_semantic_invalid 判死
-            if geom_ok and r.endswith(_SEMANTIC_INVALID_SUFFIX):
                 continue
             fail_reasons.append(r)
 
