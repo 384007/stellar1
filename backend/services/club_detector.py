@@ -272,31 +272,20 @@ def _club_out_public(d: dict) -> dict:
     return {k: v for k, v in d.items() if k != "ai_provider"}
 
 
-async def detect_club_three_frames_from_video(video_path: str, region: str = "global") -> dict:
+async def detect_club_multiframe_bgr(frames: list[np.ndarray], region: str = "global") -> dict:
     """
-    Sample 25% / 40% / 60% of the clip, **one** multimodal vision call (Gemini or Qwen), not three.
+    One multimodal vision call for 1–3 BGR frames (Gemini / Qwen multiframe prompt).
 
-    Keeps Lite / Plus / Pro to **one** club-related vision round-trip on top of the product's own AI call.
+    Used by ``/analyze/club-detect-batch`` and heuristic Lite A so a single Modal HTTP does not
+    trigger three separate ``detect_club`` (single-image) round-trips.
     """
     _unknown = {"club_type": "UNKNOWN", "club_group": "IRON", "confidence": 0.0, "hand": "R"}
-    if not video_path or not os.path.isfile(video_path):
-        return dict(_unknown)
-
-    pcts = (0.25, 0.4, 0.6)
-    frames: list[np.ndarray] = []
-    for p in pcts:
-        fr = await asyncio.to_thread(read_bgr_frame_at_percent, video_path, p)
-        if fr is not None and fr.size > 0:
-            frames.append(fr)
-    if not frames:
-        fr = await asyncio.to_thread(read_bgr_frame_at_percent, video_path, 0.4)
-        if fr is not None and fr.size > 0:
-            frames = [fr, fr, fr]
-    if not frames:
+    clean = [f for f in frames if f is not None and getattr(f, "size", 0) > 0]
+    if not clean:
         return dict(_unknown)
 
     try:
-        imgs = _three_jpeg_b64s_from_frames(frames)
+        imgs = _three_jpeg_b64s_from_frames(clean[:3])
     except Exception as e:
         logger.error("Club multiframe encode failed: %s", e)
         return dict(_unknown)
@@ -323,9 +312,35 @@ async def detect_club_three_frames_from_video(video_path: str, region: str = "gl
             logger.warning("Qwen multiframe club detection failed: %s", e2)
 
     # Last resort: single middle frame, one vision call (not three sequential).
-    mid = frames[len(frames) // 2]
+    mid = clean[len(clean) // 2]
     out = await detect_club(mid, region)
     return _club_out_public(out)
+
+
+async def detect_club_three_frames_from_video(video_path: str, region: str = "global") -> dict:
+    """
+    Sample 25% / 40% / 60% of the clip, **one** multimodal vision call (Gemini or Qwen), not three.
+
+    Keeps Lite / Plus / Pro to **one** club-related vision round-trip on top of the product's own AI call.
+    """
+    _unknown = {"club_type": "UNKNOWN", "club_group": "IRON", "confidence": 0.0, "hand": "R"}
+    if not video_path or not os.path.isfile(video_path):
+        return dict(_unknown)
+
+    pcts = (0.25, 0.4, 0.6)
+    frames: list[np.ndarray] = []
+    for p in pcts:
+        fr = await asyncio.to_thread(read_bgr_frame_at_percent, video_path, p)
+        if fr is not None and fr.size > 0:
+            frames.append(fr)
+    if not frames:
+        fr = await asyncio.to_thread(read_bgr_frame_at_percent, video_path, 0.4)
+        if fr is not None and fr.size > 0:
+            frames = [fr, fr, fr]
+    if not frames:
+        return dict(_unknown)
+
+    return await detect_club_multiframe_bgr(frames, region=region)
 
 
 async def _detect_club_gemini(img_b64: str) -> dict:

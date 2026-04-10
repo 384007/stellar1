@@ -362,11 +362,11 @@ async def analyze_club_detect_batch_multipart(
     current_user: Optional[dict] = Depends(get_current_user),
 ):
     """
-    Three JPEG frames in **one** HTTP request — runs ``detect_club`` on each, then merges.
+    Three JPEG frames in **one** HTTP request — **one** multimodal club vision call (not 3× single-frame).
 
-    One Modal/ASGI invocation; avoids three separate ``/analyze/club-detect`` calls from Edge.
+    One Modal/ASGI invocation; one Gemini/Qwen round-trip for the three frames together.
     """
-    from services.club_detector import aggregate_club_detect_frames, detect_club
+    from services.club_detector import detect_club_multiframe_bgr
 
     async def _decode_one(up: UploadFile) -> Optional[np.ndarray]:
         raw = await up.read()
@@ -393,12 +393,7 @@ async def analyze_club_detect_batch_multipart(
         )
 
     region = "CN" if (request.headers.get("CF-IPCountry") or "").upper() == "CN" else "global"
-    frame_results: list[dict] = []
-    for im in imgs:
-        out = await detect_club(im, region)
-        frame_results.append(out)
-
-    merged = aggregate_club_detect_frames(frame_results)
+    merged = await detect_club_multiframe_bgr(imgs, region)
     hand = merged.get("hand")
     if hand not in ("R", "L"):
         hand = "R"
