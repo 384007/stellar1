@@ -339,7 +339,12 @@ async def run_stellar_pro_video_analysis(
     if isinstance(ub, dict):
         raw.update(ub)
 
-    await apply_impact_club_vision_to_result(raw, kfs, region=region)
+    await apply_impact_club_vision_to_result(
+        raw,
+        kfs,
+        region=region,
+        source_video_path=input_video_path,
+    )
 
     t_cs = time.perf_counter()
     logger.info("[STELLAR_PRO][CONTACT_SHEET] stage=start")

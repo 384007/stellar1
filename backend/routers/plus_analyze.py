@@ -647,7 +647,28 @@ async def analyze_plus(
                 hud["phase"] = pose["phase_data"]
             hud_frames.append(hud)
 
-        detected_club = ai_result.get("detected_club") or {}
+        from services.club_detector import detect_club_three_frames_from_video
+
+        if tmp_path and os.path.isfile(tmp_path):
+            vision_club = await detect_club_three_frames_from_video(tmp_path, region=region)
+        else:
+            vision_club = {"club_type": "UNKNOWN", "club_group": "IRON", "confidence": 0.0}
+        ai_dc = ai_result.get("detected_club") if isinstance(ai_result.get("detected_club"), dict) else {}
+        vt = str(vision_club.get("club_type") or "UNKNOWN").upper()
+        if vt != "UNKNOWN":
+            detected_club = {
+                "club_type": vt,
+                "club_group": str(vision_club.get("club_group") or "IRON"),
+                "confidence": float(vision_club.get("confidence") or 0.0),
+            }
+        else:
+            detected_club = ai_dc if ai_dc else {
+                "club_type": "UNKNOWN",
+                "club_group": "IRON",
+                "confidence": 0.0,
+            }
+        if isinstance(ai_result, dict):
+            ai_result["detected_club"] = detected_club
         club_type = detected_club.get("club_type") if isinstance(detected_club, dict) else None
         club_group = detected_club.get("club_group") if isinstance(detected_club, dict) else None
 

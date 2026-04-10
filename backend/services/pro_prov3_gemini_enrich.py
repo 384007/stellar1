@@ -156,7 +156,39 @@ async def enrich_pro_prov3_response(
     region: str = "global",
 ) -> dict[str, Any]:
     """Mutates and returns ``minimal``: fill summary / issues / suggestions / training_plan from Gemini when enabled."""
+    from services.club_detector import detect_club_three_frames_from_video
     from services.prov3_analyze_control import prov3_cancel_requested
+    from services.shot_predictor import calibrate_prediction
+
+    block0 = minimal.get("_prov3_motion")
+    if isinstance(block0, dict):
+        av0 = str(block0.get("analysis_video") or "").strip()
+        if av0 and Path(av0).is_file():
+            try:
+                vc = await detect_club_three_frames_from_video(av0, region=region)
+                ct = str(vc.get("club_type") or "UNKNOWN").upper()
+                cg = str(vc.get("club_group") or "IRON").upper()
+                cconf = float(vc.get("confidence") or 0.0)
+                pred = dict(minimal.get("prediction") or {})
+                if ct != "UNKNOWN":
+                    pred["club_type"] = ct
+                    pred["club_group"] = cg
+                    pred["club_detection_confidence"] = cconf
+                    ch = vc.get("hand")
+                    if ch in ("R", "L"):
+                        pred["hand"] = ch
+                    try:
+                        pred = calibrate_prediction(pred, club_type=ct, club_group=cg)
+                    except Exception:
+                        pass
+                    minimal["prediction"] = pred
+                minimal["detected_club"] = {
+                    "club_type": ct or "UNKNOWN",
+                    "club_group": cg or "IRON",
+                    "confidence": round(cconf, 4),
+                }
+            except Exception as exc:
+                logger.warning("[PRO_PROV3][CLUB] three-frame from video failed: %s", exc)
 
     if not _prov3_gemini_enabled():
         # Keep _prov3_motion — prov3_api copies analysis_video to media after enrich.

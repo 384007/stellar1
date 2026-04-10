@@ -14,7 +14,8 @@ from typing import Any
 from services.gemini_service import LITE_AI_TIMEOUT_S, analyze_swing_lite, cap_confidence
 from services.golfdb_swingnet_paths import swingnet_weights_configured
 from services.handedness_service import detect_handedness
-from services.lite_a_extractor_service import _club_from_previews, run_lite_a_extract as run_lite_heuristic_a_extract
+from services.club_detector import detect_club_three_frames_from_video
+from services.lite_a_extractor_service import run_lite_a_extract as run_lite_heuristic_a_extract
 from services.lite_ab_mirror.orchestrator import run_lite_ab_after_preprocess
 from services.lite_b_refiner_service import run_lite_b_refine as run_lite_heuristic_b_refine
 from services.lite_keyframe_export import lite_persist_keyframe_images
@@ -165,11 +166,8 @@ async def run_lite_orchestrator(video_path: str, *, region: str = "global") -> d
         hconf = float(hand_info.get("confidence") or 0.0)
         hand_ok = hand != "UNKNOWN" and hconf >= _MIN_HAND_CONF
 
-        # 单次 Lite 分析内只跑 1 次杆型视觉（与浏览器侧「禁止多跑 club-detect」一致）
-        _pv = list(pre.get("preview_bgr") or [])
-        if len(_pv) > 1:
-            _pv = [_pv[len(_pv) // 2]]
-        club_info = await _club_from_previews(_pv, region)
+        # 单次 Lite 分析内只跑 1 次杆型视觉（与主流程同一进程，无额外 Modal HTTP）
+        club_info = await detect_club_three_frames_from_video(analysis_video, region=region)
         ct = str(club_info.get("club_type") or "UNKNOWN").upper()
         cg = str(club_info.get("club_group") or "IRON").upper()
         cconf = float(club_info.get("confidence") or 0.0)

@@ -11,6 +11,7 @@ Uses the same Gemini stack as gemini_service.py:
     then Qwen fallback if Gemini fails and QWEN_API_KEY is set.
 """
 
+import asyncio
 import base64
 import json
 import logging
@@ -153,6 +154,62 @@ def aggregate_club_detect_frames(frame_results: list[dict]) -> dict:
         "confidence": 0.0,
         "hand": hand,
     }
+
+
+def read_bgr_frame_at_percent(video_path: str, pct: float) -> np.ndarray | None:
+    """Read one BGR frame at relative position ``pct`` in ``[0, 1]`` (best-effort)."""
+    cap = cv2.VideoCapture(video_path)
+    if not cap.isOpened():
+        return None
+    try:
+        n = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+        if n <= 1:
+            ok, fr = cap.read()
+            return fr if ok and fr is not None else None
+        p = min(1.0, max(0.0, float(pct)))
+        idx = int(round((n - 1) * p))
+        idx = max(0, min(idx, n - 1))
+        cap.set(cv2.CAP_PROP_POS_FRAMES, idx)
+        ok, frame = cap.read()
+        if ok and frame is not None:
+            return frame
+        cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+        ok2, fr2 = cap.read()
+        return fr2 if ok2 else None
+    finally:
+        cap.release()
+
+
+async def detect_club_three_frames_from_video(video_path: str, region: str = "global") -> dict:
+    """
+    Sample 25% / 40% / 60% of the clip, run ``detect_club`` on each, aggregate.
+
+    Use inside a single product pipeline (Lite / Plus / Pro) — no separate HTTP / Modal hop.
+    """
+    if not video_path or not os.path.isfile(video_path):
+        return {"club_type": "UNKNOWN", "club_group": "IRON", "confidence": 0.0, "hand": "R"}
+
+    pcts = (0.25, 0.4, 0.6)
+    frames: list[np.ndarray] = []
+    for p in pcts:
+        fr = await asyncio.to_thread(read_bgr_frame_at_percent, video_path, p)
+        if fr is not None and fr.size > 0:
+            frames.append(fr)
+    if not frames:
+        fr = await asyncio.to_thread(read_bgr_frame_at_percent, video_path, 0.4)
+        if fr is not None and fr.size > 0:
+            frames = [fr, fr, fr]
+    if not frames:
+        return {"club_type": "UNKNOWN", "club_group": "IRON", "confidence": 0.0, "hand": "R"}
+
+    outs: list[dict] = []
+    for fr in frames:
+        outs.append(await detect_club(fr, region))
+    merged = aggregate_club_detect_frames(outs)
+    hand = merged.get("hand")
+    if hand not in ("R", "L"):
+        merged["hand"] = "R"
+    return merged
 
 
 async def _detect_club_gemini(img_b64: str) -> dict:

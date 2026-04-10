@@ -28,7 +28,6 @@ import { isProv3StrictMediaPolicyResult, type Prov3ResultLike } from "@/lib/prov
 import { resolveProv3ProductMediaUrl } from "@/lib/prov3-media-url";
 import { clientLikelyMainlandChinaUser } from "@/lib/client-region-hint";
 import { devLog, devWarn } from "@/lib/dev-only-log";
-import { fetchClubDetectThreeFrames } from "@/lib/club-detect-batch-client";
 import { LITE_ANALYZE_FETCH_TIMEOUT_MS } from "@/lib/lite-analyze-timeout";
 import { readLiteAnalyzeResult } from "@/lib/read-lite-analyze-response";
 import { pruneLocalStellarHistoryRecords } from "@/lib/pro-history-retention";
@@ -163,13 +162,6 @@ function proTimelineVideoUrlForAnalyze(r: AnalysisResult): string | null {
 
 interface ClubDetection { club_type: string; club_group: string; confidence: number; hand?: "R" | "L" }
 
-/** Matches ``ClubDetectBatchResult`` from club-detect-batch-client (inline to satisfy ref typing). */
-type ClubPrecheckSnapshot = {
-  club_type: string;
-  club_group: string;
-  confidence: number;
-  hand: "R" | "L";
-};
 type Stage = "upload" | "processing" | "results";
 type InputMode = "upload" | "capture" | "screen";
 type AnalysisMode = "lite" | "pro";
@@ -231,8 +223,6 @@ export default function AnalyzePage() {
   /** Lite：同一次分析最多发 1 次 POST /analyze/lite（禁止隐式重试）。 */
   const liteAnalyzeHttpIssuedRef = useRef(false);
   const proAnalyzeAbortRef = useRef<AbortController | null>(null);
-  /** Pro：三帧预检合并结果（单次 ``/api/club-detect``→batch），用于与主分析 prediction 合并。 */
-  const clubPrecheckRef = useRef<ClubPrecheckSnapshot | null>(null);
 
   useEffect(() => {
     analysisModeRef.current = analysisMode;
@@ -704,7 +694,6 @@ export default function AnalyzePage() {
     setHandConfirmed(false);
     handLockedDuringProcessingRef.current = false;
     setShowHandPopup(false);
-    clubPrecheckRef.current = null;
 
     let sendBlob: Blob = blob;
     let sendFilename = filename;
@@ -738,36 +727,6 @@ export default function AnalyzePage() {
       });
     }, 800);
 
-    let clubFallbackTimer: ReturnType<typeof setTimeout> | undefined;
-    const wantsPrecheck = modeForRun === "pro" && analysisModeRef.current === "pro";
-    const precheckHeaders: Record<string, string> = {};
-    const tok = localStorage.getItem("stellar_token");
-    if (tok) precheckHeaders.Authorization = `Bearer ${tok}`;
-
-    if (wantsPrecheck) {
-      const p = fetchClubDetectThreeFrames(sendBlob, precheckHeaders).then((r) => {
-        clubPrecheckRef.current = r;
-        if (r) {
-          const cd: ClubDetection = {
-            club_type: r.club_type,
-            club_group: r.club_group,
-            confidence: r.confidence,
-            hand: r.hand,
-          };
-          setProcessingClub(cd);
-          processingClubRef.current = cd;
-        }
-      });
-      clubFallbackTimer = setTimeout(() => {
-        if (!processingClubRef.current) {
-          const fallback: ClubDetection = { club_type: "UNKNOWN", club_group: "IRON", confidence: 0 };
-          setProcessingClub(fallback);
-          processingClubRef.current = fallback;
-        }
-      }, 6000);
-      await Promise.race([p, new Promise<void>((r) => setTimeout(r, 2800))]);
-    }
-
     const proAbort = modeForRun === "pro" ? new AbortController() : null;
     proAnalyzeAbortRef.current = proAbort;
 
@@ -781,27 +740,8 @@ export default function AnalyzePage() {
         modeForRun === "lite" ? liteIdempotencyKeyRef.current : null,
       );
       clearInterval(progressInterval);
-      if (clubFallbackTimer) clearTimeout(clubFallbackTimer);
 
-      const pcMerge = clubPrecheckRef.current as ClubPrecheckSnapshot | null;
-      if (data.prediction && wantsPrecheck && pcMerge) {
-        const pc: ClubPrecheckSnapshot = pcMerge;
-        if (pc.club_type !== "UNKNOWN") {
-          data.prediction.club_type = pc.club_type;
-          data.prediction.club_group = pc.club_group;
-          data.prediction.club_detection_confidence = pc.confidence;
-        }
-        if (pc.hand === "R" || pc.hand === "L") {
-          data.prediction.hand = pc.hand;
-          const hc = data.prediction.hand_confidence ?? 0;
-          data.prediction.hand_confidence = Math.max(
-            hc,
-            pc.confidence > 0 ? Math.min(1, pc.confidence + 0.05) : 0.72,
-          );
-        }
-      }
-
-      /** 主分析 prediction；Pro 时已与三帧预检（单次 batch）合并。 */
+      /** 主分析 prediction（杆型由服务端与主流程同次推理合并）。 */
       if (data.prediction) {
         const p = data.prediction;
         const cd: ClubDetection = {
@@ -878,7 +818,6 @@ export default function AnalyzePage() {
       }
     } catch (err: unknown) {
       clearInterval(progressInterval);
-      if (clubFallbackTimer) clearTimeout(clubFallbackTimer);
       setProgress(0);
       setProcessingProScreenMode(false);
       const msg = err instanceof Error ? err.message : "";
