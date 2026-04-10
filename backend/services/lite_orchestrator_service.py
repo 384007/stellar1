@@ -183,6 +183,8 @@ async def run_lite_orchestrator(video_path: str, *, region: str = "global") -> d
             analysis_video,
             final_rows,
             out_dir,
+            poses=poses,
+            analysis_fps=vfps,
         )
         keyframes = _build_public_keyframes(final_rows, saved, vfps)
         if len(keyframes) != 8:
