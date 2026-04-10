@@ -8,7 +8,11 @@ import ScreenModeCapture from "@/components/ScreenModeCapture";
 import { preloadPoseModel } from "@/lib/mediapipe-assets";
 import { fetchWithRetry, makeFormData } from "@/lib/fetch-retry";
 import { readLiteAnalyzeResult } from "@/lib/read-lite-analyze-response";
-import { isVideoFile, uploadVideoForAnalysis } from "@/lib/upload-video";
+import {
+  appendLiteAnalyzeFileToFormData,
+  isVideoFile,
+  uploadVideoForAnalysis,
+} from "@/lib/upload-video";
 import type {
   LabMetrics,
   LabIssue,
@@ -400,8 +404,8 @@ export default function ShotLabPage() {
     try {
       const rid = crypto.randomUUID();
       const headersWithIdem = { ...headers, "X-Stellar-Idempotency-Key": rid };
-      const fd = makeFormData(file, file.name);
-      fd.append("request_id", rid);
+      const fd = new FormData();
+      appendLiteAnalyzeFileToFormData(fd, file, file.name, rid);
       const ctrl = new AbortController();
       const timeout = setTimeout(() => ctrl.abort(), 90_000);
       signal.addEventListener("abort", () => ctrl.abort());
