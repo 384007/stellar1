@@ -35,8 +35,10 @@ function normalizeClubJson(json: unknown): Record<string, string | number> {
 }
 
 /**
- * - Single ``frame`` → FastAPI ``POST /analyze/club-detect``
- * - ``frame_0`` + ``frame_1`` + ``frame_2`` → **one** ``POST /analyze/club-detect-batch`` (Modal 单次 HTTP)
+ * Lite Modal worker (``LITE_BACKEND_URL`` / default lite origin).
+ * Main Lite video flow should use ``/analyze/lite`` only (one run); this route is for standalone club checks.
+ * - Single ``frame`` → ``POST /analyze/club-detect``
+ * - ``frame_0`` + ``frame_1`` + ``frame_2`` → ``POST /analyze/club-detect-batch`` (one HTTP)
  */
 export async function POST(request: NextRequest) {
   try {
