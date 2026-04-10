@@ -81,21 +81,46 @@ def _candidates_top_impact(
     return sorted({int(x) for x in cand if 0 <= int(x) <= mx})
 
 
+def _pose_frame_indices_in_range(poses: List[dict], lo: int, hi: int) -> List[int]:
+    """MediaPipe samples may sit between lattice points — include them as candidates."""
+    out: List[int] = []
+    for p in poses:
+        if not isinstance(p, dict):
+            continue
+        raw = p.get("frame_index")
+        if raw is None:
+            continue
+        fi = int(raw)
+        if lo <= fi <= hi:
+            out.append(fi)
+    return sorted(set(out))
+
+
 def _angles_at_frame(
     frame_index: int,
     vfps: float,
     poses: List[dict],
 ) -> Dict[str, float]:
-    if not poses or vfps <= 1e-6:
+    """
+    Nearest pose sample by **decode frame_index** (same index space as SwingNet / lattice).
+    Falls back to timestamp only if ``frame_index`` is missing on poses (legacy).
+    """
+    if not poses:
         return {}
-    t_target = float(frame_index) / vfps
+    fi_t = int(frame_index)
     best: dict | None = None
-    best_d = 1e9
+    best_d = 10**9
     for p in poses:
         if not isinstance(p, dict):
             continue
-        t = float(p.get("timestamp", -1e9))
-        d = abs(t - t_target)
+        raw = p.get("frame_index")
+        if raw is not None:
+            d = abs(int(raw) - fi_t)
+        elif vfps > 1e-6:
+            t = float(p.get("timestamp", -1e9))
+            d = abs(round(t * vfps) - fi_t)
+        else:
+            d = 10**9
         if d < best_d:
             best_d = d
             best = p
@@ -174,7 +199,16 @@ def is_mid_downswing_suspicious(
 
 # Within this margin of the best pose score, treat frames as tied and prefer corridor mid (true mid-downswing).
 _SCORE_NEAR_BEST = 0.035
-_CORRIDOR_TARGET_REL = 0.42
+_CORRIDOR_TARGET_REL = 0.44
+
+
+def _blend_top_impact_angles(ang_top: Dict[str, float], ang_imp: Dict[str, float]) -> Dict[str, float]:
+    """Kinematic mid-downswing is slightly past halfway toward Impact (not arithmetic Top midpoint)."""
+    keys = set(ang_top) & set(ang_imp)
+    if not keys:
+        return {}
+    w_top, w_imp = 0.40, 0.60
+    return {k: ang_top[k] * w_top + ang_imp[k] * w_imp for k in keys}
 
 
 def _score_mid_down_candidate_mediapipe(
@@ -187,16 +221,23 @@ def _score_mid_down_candidate_mediapipe(
     vfps: float,
     poses: List[dict],
 ) -> float:
-    """Prefer frames whose pose reads as between Top and Impact (not still at Top, not yet Impact), in the corridor."""
+    """
+    Prefer pose angles close to a Top→Impact blend (true ``between`` phase), plus mild corridor shaping.
+    """
     ang_c = _angles_at_frame(idx, vfps, poses)
     rel = _norm_along_corridor(idx, top, imp)
-    corridor_bonus = 1.0 - abs(rel - 0.45) * 0.9
-    sep_top = _angle_l1(ang_c, ang_top) if ang_top else 10.0
-    sep_imp = _angle_l1(ang_c, ang_imp) if ang_imp else 10.0
-    # Mid-downswing should differ from both anchors; balance separation from Top vs Impact.
-    geom_sep = math.sqrt(max(1e-6, sep_top) * max(1e-6, sep_imp))
-    pose_sep_norm = min(1.0, geom_sep / 35.0)
-    return 0.78 * pose_sep_norm + 0.22 * corridor_bonus
+    corridor_bonus = max(0.0, min(1.0, 1.0 - abs(rel - _CORRIDOR_TARGET_REL) * 1.05))
+    target = _blend_top_impact_angles(ang_top, ang_imp)
+    if ang_c and target:
+        l1 = _angle_l1(ang_c, target)
+        blend_fit = math.exp(-min(l1, 90.0) / 24.0)
+    else:
+        blend_fit = 0.15
+    sep_top = _angle_l1(ang_c, ang_top) if ang_top and ang_c else 0.0
+    sep_imp = _angle_l1(ang_c, ang_imp) if ang_imp and ang_c else 0.0
+    if ang_c and ang_top and ang_imp and sep_top < 3.0 and sep_imp < 3.0:
+        blend_fit *= 0.35
+    return 0.68 * blend_fit + 0.32 * corridor_bonus
 
 
 def _pick_best_mid_down_frame(
@@ -330,8 +371,18 @@ def refine_mid_downswing_with_pose_motion(
         dbg["final_mds"] = mds
         return working, fail, dbg
 
-    cand = _candidates_top_impact(lo_c, hi_c, analysis_frames, max_frame_index=hi)
-    cand = [c for c in cand if lo_c <= c <= hi_c]
+    cand_set = set(_candidates_top_impact(lo_c, hi_c, analysis_frames, max_frame_index=hi))
+    cand_set = {int(x) for x in cand_set if lo_c <= int(x) <= hi_c}
+    pose_in_corridor = _pose_frame_indices_in_range(pose_list, lo_c, hi_c)
+    cand_set |= {int(x) for x in pose_in_corridor}
+    cand = sorted(cand_set)
+    if len(cand) > _MAX_CAND:
+        step = max(1, len(cand) // _MAX_CAND)
+        cand = cand[::step]
+        for pf in pose_in_corridor:
+            if lo_c <= int(pf) <= hi_c and int(pf) not in cand:
+                cand.append(int(pf))
+        cand = sorted(set(cand))[:_MAX_CAND]
 
     if not cand:
         fail.append("mid_downswing_semantic_invalid")
