@@ -71,6 +71,65 @@ def _plus_keyframe_pack_block_reasons(
     return joined, joined
 
 
+def _pack_plus_visual_obs_bundle(
+    raw: Any,
+    *,
+    source: str,
+    phase_labels_trusted: bool,
+    issues: list[str],
+    visible_count: int,
+) -> dict[str, Any]:
+    """Shape Gemini ``gemini_visual_observation`` subtree like ``analyze_plus_visual_observation`` output."""
+    if not isinstance(raw, dict):
+        return {
+            "available": False,
+            "mode": "observation_only",
+            "source": source,
+            "phase_labels_trusted": False,
+            "summary_zh": "",
+            "summary_en": "",
+            "bullets_zh": [],
+            "bullets_en": [],
+            "frame_notes": [],
+            "issues": list(issues or []),
+            "validation_issues": list(issues or []),
+            "used_as_authoritative_source": False,
+        }
+    summary_zh = str(raw.get("summary_zh") or "").strip()
+    summary_en = str(raw.get("summary_en") or "").strip()
+    bullets_zh = [str(x).strip() for x in list(raw.get("bullets_zh") or []) if str(x).strip()]
+    bullets_en = [str(x).strip() for x in list(raw.get("bullets_en") or []) if str(x).strip()]
+    raw_notes = list(raw.get("frame_notes") or [])
+    frame_notes: list[dict[str, Any]] = []
+    for i in range(max(0, visible_count)):
+        src = raw_notes[i] if i < len(raw_notes) and isinstance(raw_notes[i], dict) else {}
+        frame_notes.append(
+            {
+                "index": i + 1,
+                "label": None,
+                "label_trusted": bool(phase_labels_trusted),
+                "note_zh": str(src.get("note_zh") or "").strip()
+                or f"第{i + 1}张：与主分析同次模型输出。",
+                "note_en": str(src.get("note_en") or "").strip()
+                or f"Frame {i + 1}: same single vision call as formal Plus.",
+            }
+        )
+    return {
+        "available": bool(summary_zh or summary_en or bullets_zh or bullets_en),
+        "mode": "authoritative_phase_report" if phase_labels_trusted else "observation_only",
+        "source": source,
+        "phase_labels_trusted": bool(phase_labels_trusted),
+        "summary_zh": summary_zh or "与主分析同次视觉输出。",
+        "summary_en": summary_en or "Unified vision output with formal Plus analysis.",
+        "bullets_zh": bullets_zh[:8] or ["与主分析同次 Gemini 调用生成。"],
+        "bullets_en": bullets_en[:8] or ["Generated in the same Gemini call as formal Plus."],
+        "frame_notes": frame_notes,
+        "issues": list(issues or []),
+        "validation_issues": list(issues or []),
+        "used_as_authoritative_source": False,
+    }
+
+
 def _merge_gemini_observation_into_withheld_ai_result(
     ai_result: dict,
     obs: dict,
@@ -564,6 +623,19 @@ async def analyze_plus(
                 len(ai_frames),
             )
 
+        def _plus_has_missing_images(rows: list[dict]) -> bool:
+            return any(not str(k.get("image_base64") or "").strip() for k in rows or [])
+
+        product_ready_pre = bool(
+            gate_pass_kf
+            and not partial_mode
+            and str(kf_src or "") != "smart_gate_failed"
+            and not _plus_has_missing_images(keyframes)
+        )
+        labels_trusted_pre = bool(
+            gate_pass_kf and phase_evaluations_reliable and not partial_mode and product_ready_pre
+        )
+
         mid_idx = len(poses) // 2
         representative_pose = poses[mid_idx]
 
@@ -611,7 +683,9 @@ async def analyze_plus(
                     "summary_zh": "",
                     "advanced_metrics": {},
                 }
+            _prefilled_obs = None
         else:
+            _nvis = len([x for x in ai_frames if str(x).strip()])
             ai_result = await _timed_plus_stage(
                 "analyze_swing_plus",
                 analyze_plus_fn(
@@ -624,8 +698,17 @@ async def analyze_plus(
                     region=region,
                     phase_images_reliable=phase_images_reliable,
                     phase_c_context=phase_c_prompt_ctx,
+                    include_visual_observation_bundle=bool(_nvis),
                 ),
                 PLUS_AI_TIMEOUT_S + 60.0,
+            )
+            _raw_obs = ai_result.pop("gemini_visual_observation", None)
+            _prefilled_obs = _pack_plus_visual_obs_bundle(
+                _raw_obs,
+                source="display_keyframes" if product_ready_pre else "degraded_display_keyframes",
+                phase_labels_trusted=labels_trusted_pre,
+                issues=[],
+                visible_count=_nvis,
             )
 
         t2 = time.time()
@@ -647,26 +730,21 @@ async def analyze_plus(
                 hud["phase"] = pose["phase_data"]
             hud_frames.append(hud)
 
-        from services.club_detector import detect_club_three_frames_from_video
-
-        if tmp_path and os.path.isfile(tmp_path):
-            vision_club = await detect_club_three_frames_from_video(tmp_path, region=region)
-        else:
-            vision_club = {"club_type": "UNKNOWN", "club_group": "IRON", "confidence": 0.0}
         ai_dc = ai_result.get("detected_club") if isinstance(ai_result.get("detected_club"), dict) else {}
-        vt = str(vision_club.get("club_type") or "UNKNOWN").upper()
-        if vt != "UNKNOWN":
-            detected_club = {
+        vt = str(ai_dc.get("club_type") or "UNKNOWN").upper()
+        detected_club = (
+            {
                 "club_type": vt,
-                "club_group": str(vision_club.get("club_group") or "IRON"),
-                "confidence": float(vision_club.get("confidence") or 0.0),
+                "club_group": str(ai_dc.get("club_group") or "IRON"),
+                "confidence": float(ai_dc.get("confidence") or 0.0),
             }
-        else:
-            detected_club = ai_dc if ai_dc else {
+            if vt != "UNKNOWN"
+            else {
                 "club_type": "UNKNOWN",
                 "club_group": "IRON",
                 "confidence": 0.0,
             }
+        )
         if isinstance(ai_result, dict):
             ai_result["detected_club"] = detected_club
         club_type = detected_club.get("club_type") if isinstance(detected_club, dict) else None
@@ -849,7 +927,16 @@ async def analyze_plus(
             _obs_labels = [str(k.get("phase") or "") or None for k in official_keyframes[: len(_obs_images)]]
             _obs_source = "display_keyframes" if product_ready else "degraded_display_keyframes"
         _labels_trusted = bool(final_gate_pass and phase_evaluations_reliable and not partial_mode and product_ready)
-        if _obs_images:
+        if _prefilled_obs is not None:
+            _gemini_obs_payload = dict(_prefilled_obs)
+            _gemini_obs_payload["phase_labels_trusted"] = _labels_trusted
+            logger.info(
+                "[PLUS] gemini_visual_observation_unified=1 available=%s source=%s frames=%d",
+                bool(_gemini_obs_payload.get("available")),
+                str(_gemini_obs_payload.get("source") or _obs_source),
+                len(_obs_images),
+            )
+        elif _obs_images:
             logger.info(
                 "[PLUS] gemini_visual_observation_invoked=1 source=%s frames=%d phase_labels_trusted=%s",
                 _obs_source,

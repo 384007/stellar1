@@ -585,8 +585,16 @@ Provide your analysis in the following JSON format ONLY (no markdown, no extra t
   "suggestions": ["suggestion 1", "suggestion 2", "suggestion 3"],
   "suggestions_zh": ["建议1", "建议2", "建议3"],
   "summary": "English summary (200 words max)",
-  "summary_zh": "中文总结（200字以内）"
+  "summary_zh": "中文总结（200字以内）",
+  "detected_club": {{
+    "club_type": "<UNKNOWN or 1W|3W|5W|3I|4I|5I|6I|7I|8I|9I|PW|AW|SW|LW|PT>",
+    "club_group": "<WOOD|IRON|WEDGE|PUTTER>",
+    "confidence": <0.0-1.0>,
+    "hand": "<R or L>"
+  }}
 }}
+
+If more than eight JPEGs are attached: images 1–8 are the phase strip (address→finish); images 9–11 (when present) are extra samples from ~25%, ~40%, and ~60% of the **source video** — use them only to refine detected_club, not to relabel which strip frame is which phase.
 
 Base your scoring on these biomechanical principles:
 - Grip: Neutral grip position, consistent pressure
@@ -977,6 +985,27 @@ Return ONLY valid JSON with the SAME schema as formal Pro v3 reports:
 keyframe_evaluations length MUST equal len(MOTION_CONTEXT.keyframes).
 """
 
+PROV3_DETECTED_CLUB_APPEND = """
+CLUB IMAGES (required in the SAME JSON object; narrative coaching still grounded only in MOTION_CONTEXT):
+Exactly three JPEGs are attached in chronological order from the same clip at approximately 25%, 40%, and 60% of the video duration.
+Use them ONLY to fill this top-level field (do not use them to override phase timing in MOTION_CONTEXT):
+  "detected_club": {{"club_type": "<1W|3W|...|UNKNOWN>", "club_group": "<WOOD|IRON|WEDGE|PUTTER>", "confidence": <0-1>, "hand": "<R|L>"}}
+If the club is not visible, use UNKNOWN, IRON, 0.0, R.
+"""
+
+PLUS_PROMPT_APPEND_GEMINI_VISUAL_OBS = """
+SECOND OUTPUT (same single JSON response — same eight phase images as above):
+Include top-level key "gemini_visual_observation" with this shape (observational commentary; may be softer than the formal Plus block):
+{{
+  "summary_zh": "<short>",
+  "summary_en": "<short>",
+  "bullets_zh": ["...", "..."],
+  "bullets_en": ["...", "..."],
+  "frame_notes": [{{"index": 1, "note_zh": "...", "note_en": "..."}}, ... one per image in order]
+}}
+Rules match the product visual-observer: if phase_images_reliable is false, avoid definitive per-phase claims; use uncertainty wording. frame_notes length should match the number of attached strip images (up to 8).
+"""
+
 IMAGE_ONLY_PROMPT = """You are an expert PGA-level golf coach and biomechanics analyst.
 
 CRITICAL RULE — DETECTION FIRST:
@@ -1207,14 +1236,22 @@ async def analyze_swing_lite(
     keyframe_images: Optional[list[str]] = None,
     region: str = "global",
     phase_images_reliable: bool = True,
+    club_sample_images_b64: Optional[list[str]] = None,
 ) -> dict:
-    """Lite: keyframe_images from phase strip; phase_images_reliable matches router phase_evaluations_reliable."""
+    """Lite: one vision call — optional three extra JPEGs (clip 25/40/60 positions) plus 8-strip for ``detected_club``."""
+    _ = region
     base = LITE_PROMPT.format(pose_data=json.dumps(pose_data, indent=2))
     prompt = base if phase_images_reliable else (base + LITE_PROMPT_APPEND_PHASE_UNRELIABLE)
-    images = list(keyframe_images or [])[:8]
+    strip = [x for x in (keyframe_images or []) if isinstance(x, str) and x.strip()][:8]
+    extras = [x for x in (club_sample_images_b64 or []) if isinstance(x, str) and x.strip()][:3]
+    while len(extras) < 3 and extras:
+        extras.append(extras[-1])
+    extras = extras[:3]
+    images = strip + extras
+    label = "lite_unified" if extras else "lite"
     try:
         text, provider, key_slot = await _call_vision_ai(
-            prompt, images, 2048, 0.3, "lite", timeout_s=LITE_AI_TIMEOUT_S,
+            prompt, images, 2304, 0.3, label, timeout_s=LITE_AI_TIMEOUT_S,
         )
         out = extract_json_from_response(text)
         out["ai_provider"] = provider
@@ -1283,8 +1320,9 @@ async def analyze_prov3_motion_report_only(
     max_tokens: int = 10240,
     call_label: str = "prov3_report",
     report_mode: str = "formal",
+    club_images_b64: Optional[list[str]] = None,
 ) -> dict:
-    """Pro v3: text-only report from motion keyframe metadata (no images)."""
+    """Pro v3: motion JSON report; optional 3 club JPEGs in the **same** vision call as the report."""
     _ = region
     if (report_mode or "").strip().lower() == "limited":
         template = PROV3_REPORT_LIMITED_PROMPT
@@ -1295,9 +1333,15 @@ async def analyze_prov3_motion_report_only(
     prompt = template.format(
         motion_context=json.dumps(motion_context, indent=2, ensure_ascii=False),
     )
+    imgs: list[str] = [x for x in (club_images_b64 or []) if isinstance(x, str) and x.strip()][:3]
+    while len(imgs) < 3 and imgs:
+        imgs.append(imgs[-1])
+    imgs = imgs[:3]
+    if imgs:
+        prompt = prompt + PROV3_DETECTED_CLUB_APPEND
     try:
         text, provider, key_slot = await _call_vision_ai(
-            prompt, [], max_tokens, temp, call_label, timeout_s=PRO_AI_TIMEOUT_S,
+            prompt, imgs, max_tokens, temp, call_label, timeout_s=PRO_AI_TIMEOUT_S,
         )
         out = extract_json_from_response(text)
         out["ai_provider"] = provider
@@ -1315,18 +1359,24 @@ async def analyze_swing_plus(
     region: str = "global",
     phase_images_reliable: bool = True,
     phase_c_context: Optional[dict[str, Any]] = None,
+    *,
+    include_visual_observation_bundle: bool = False,
 ) -> dict:
-    """Plus: images are the 8 phase keyframes (same as UI); reliable == phase_evaluations_reliable from routers."""
+    """Plus: one vision call; optional ``gemini_visual_observation`` subtree in the same JSON."""
+    _ = region
     base = PLUS_PROMPT.format(pose_data=json.dumps(pose_data, indent=2))
     prompt = base if phase_images_reliable else (base + PLUS_PROMPT_APPEND_PHASE_UNRELIABLE)
     if phase_c_context:
         prompt = prompt + PLUS_PROMPT_APPEND_PHASE_C.format(
             phase_c_json=json.dumps(phase_c_context, ensure_ascii=False, separators=(",", ":")),
         )
+    if include_visual_observation_bundle:
+        prompt = prompt + PLUS_PROMPT_APPEND_GEMINI_VISUAL_OBS
     images = list(keyframe_images or [])[:8]
+    label = "plus_unified" if include_visual_observation_bundle else "plus"
     try:
         text, provider, key_slot = await _call_vision_ai(
-            prompt, images, 8192, 0.2, "plus", timeout_s=PLUS_AI_TIMEOUT_S,
+            prompt, images, 9216, 0.2, label, timeout_s=PLUS_AI_TIMEOUT_S,
         )
         out = _normalize_plus_result(extract_json_from_response(text))
         if not phase_images_reliable:

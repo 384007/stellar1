@@ -10,6 +10,7 @@ import cv2
 import numpy as np
 
 from services.gemini_service import extract_json_from_response
+from services.keyframe_service import PHASE_ORDER
 from services.video_utils import get_video_rotation
 
 logger = logging.getLogger(__name__)
@@ -80,59 +81,132 @@ async def select_frames_with_window_ai(
     region: str,
     max_candidates: int = 5,
 ) -> dict[str, dict[str, Any]]:
-    """Returns phase -> {pose_idx, confidence, short_reason, candidate_pose_indices}."""
+    """One batched vision call for all ``PHASE_ORDER`` windows (same Modal run as the rest of Pro chain)."""
+    _ = region
     from services.gemini_service import _call_vision_ai
 
-    out: dict[str, dict[str, Any]] = {}
-    for w in windows:
-        phase = str(w.get("phase") or "")
+    win_by_phase = {str(w.get("phase") or ""): w for w in windows}
+    bundles: list[dict[str, Any]] = []
+    all_images: list[str] = []
+
+    for phase in PHASE_ORDER:
+        w = win_by_phase.get(phase)
+        if not w:
+            bundles.append({"phase": phase, "empty": True, "n": 0, "pis": []})
+            continue
         lo = int(w["start_pose_idx"])
         hi = int(w["end_pose_idx"])
-        imgs, pis = _extract_candidates_for_window(analysis_video_path, poses, lo, hi, max_candidates)
+        imgs, pis = _extract_candidates_for_window(
+            analysis_video_path, poses, lo, hi, max_candidates,
+        )
         if not imgs or not pis:
             center = int(w.get("center_pose_idx", (lo + hi) // 2))
-            out[phase] = {
-                "pose_idx": center,
-                "confidence": 0.35,
-                "short_reason": "no_candidates_used_center",
-                "candidate_pose_indices": [center],
-            }
-            logger.info("[PRO][window_ai] phase=%s fallback=center idx=%s", phase, center)
+            imgs2, pis2 = _extract_candidates_for_window(
+                analysis_video_path, poses, center, center, 1,
+            )
+            if imgs2 and pis2:
+                st = len(all_images)
+                all_images.extend(imgs2)
+                bundles.append({"phase": phase, "start": st, "n": len(imgs2), "pis": pis2, "empty": False})
+            else:
+                bundles.append({"phase": phase, "empty": True, "n": 0, "pis": [center]})
+            continue
+        st = len(all_images)
+        all_images.extend(imgs)
+        bundles.append({"phase": phase, "start": st, "n": len(imgs), "pis": pis, "empty": False})
+
+    out: dict[str, dict[str, Any]] = {}
+
+    def _center_fallback(phase: str) -> dict[str, Any]:
+        w = win_by_phase.get(phase) or {}
+        lo = int(w.get("start_pose_idx", 0))
+        hi = int(w.get("end_pose_idx", 0))
+        center = int(w.get("center_pose_idx", (lo + hi) // 2))
+        return {
+            "pose_idx": center,
+            "confidence": 0.35,
+            "short_reason": "no_candidates_used_center",
+            "candidate_pose_indices": [center],
+        }
+
+    if not all_images:
+        for ph in PHASE_ORDER:
+            out[ph] = _center_fallback(ph)
+        return out
+
+    lines: list[str] = []
+    for b in bundles:
+        ph = str(b["phase"])
+        if b.get("empty"):
+            lines.append(f'- "{ph}": no candidate JPEGs — respond best_candidate_index=0 (local index).')
+        else:
+            s, n = int(b["start"]), int(b["n"])
+            lines.append(
+                f'- "{ph}": candidate JPEGs are concatenated images[{s}]..[{s + n - 1}] '
+                f"({n} frames, temporal order). Local indices 0..{n - 1}."
+            )
+    manifest = "\n".join(lines)
+    order_csv = ", ".join(PHASE_ORDER)
+    prompt = f"""You are selecting the best keyframe (one pose index) per golf swing phase from candidate thumbnails.
+
+{manifest}
+
+Return ONLY valid JSON:
+{{"picks": [
+  {{"phase": "<phase_id>", "best_candidate_index": <int, 0-based within that phase's block>, "confidence": <0..1>, "short_reason": "<brief English>"}}
+]}}
+You MUST output exactly {len(PHASE_ORDER)} objects in picks, in this phase order: {order_csv}.
+For phases marked "no candidate JPEGs", still output that phase with best_candidate_index 0 and confidence around 0.35.
+"""
+
+    by_phase: dict[str, dict[str, Any]] = {}
+    try:
+        batched_timeout = max(_PRO_WINDOW_AI_TIMEOUT_S * 2.5, 180.0)
+        text, _prov, _slot = await _call_vision_ai(
+            prompt,
+            all_images,
+            1536,
+            0.15,
+            "pro_window_batched",
+            timeout_s=batched_timeout,
+        )
+        js = extract_json_from_response(text)
+        picks_raw = js.get("picks")
+        if isinstance(picks_raw, list):
+            for item in picks_raw:
+                if isinstance(item, dict) and item.get("phase"):
+                    by_phase[str(item["phase"])] = item
+    except Exception as exc:
+        logger.warning("[PRO][window_ai] batched_call_failed err=%s — center fallbacks", exc)
+
+    for b in bundles:
+        phase = str(b["phase"])
+        w = win_by_phase.get(phase) or {}
+        lo = int(w.get("start_pose_idx", 0))
+        hi = int(w.get("end_pose_idx", 0))
+        if b.get("empty"):
+            pis_fb = list(b.get("pis") or [])
+            if pis_fb:
+                c0 = int(pis_fb[0])
+                out[phase] = {
+                    "pose_idx": c0,
+                    "confidence": 0.35,
+                    "short_reason": "no_candidates_used_center",
+                    "candidate_pose_indices": pis_fb,
+                }
+            else:
+                out[phase] = _center_fallback(phase)
+            logger.info("[PRO][window_ai] phase=%s fallback=center (empty bundle)", phase)
             continue
 
-        n = len(imgs)
-        prompt = (
-            f'Golf swing phase "{phase}". Frames are in temporal order with candidate indices '
-            f"0..{n - 1}.\n"
-            "Pick the single frame that best represents this phase for coaching.\n"
-            "Return ONLY valid JSON: "
-            '{"best_candidate_index": <int 0..'
-            f"{n - 1}"
-            '>, "confidence": <0..1>, "short_reason": "<brief English>"}\n'
-            "Do not redefine phases or describe other parts of the swing."
-        )
-        try:
-            text, _prov, _slot = await _call_vision_ai(
-                prompt,
-                imgs,
-                512,
-                0.15,
-                f"pro_window_{phase}",
-                timeout_s=_PRO_WINDOW_AI_TIMEOUT_S,
-            )
-            js = extract_json_from_response(text)
-            bi = int(js.get("best_candidate_index", n // 2))
-            bi = max(0, min(n - 1, bi))
-            chosen_pi = pis[bi]
-            conf = float(js.get("confidence", 0.7))
-            reason = str(js.get("short_reason", "ai_pick"))[:200]
-        except Exception as exc:
-            logger.warning("[PRO][window_ai] phase=%s ai_fail=%s", phase, exc)
-            bi = n // 2
-            chosen_pi = pis[bi]
-            conf = 0.45
-            reason = "ai_error_center_bias"
-
+        pis = list(b["pis"])
+        n = int(b["n"])
+        pobj = by_phase.get(phase) or {}
+        bi = int(pobj.get("best_candidate_index", n // 2))
+        bi = max(0, min(n - 1, bi))
+        chosen_pi = pis[bi]
+        conf = float(pobj.get("confidence", 0.7))
+        reason = str(pobj.get("short_reason", "batched_ai_pick"))[:200]
         out[phase] = {
             "pose_idx": int(chosen_pi),
             "confidence": round(conf, 4),
@@ -140,10 +214,14 @@ async def select_frames_with_window_ai(
             "candidate_pose_indices": pis,
         }
         logger.info(
-            "[PRO][window_ai] phase=%s stage=done picked_pose_idx=%s conf=%.2f",
+            "[PRO][window_ai] phase=%s batched picked_pose_idx=%s conf=%.2f",
             phase,
             chosen_pi,
             conf,
         )
+
+    for ph in PHASE_ORDER:
+        if ph not in out:
+            out[ph] = _center_fallback(ph)
 
     return out

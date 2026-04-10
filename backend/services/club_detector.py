@@ -63,9 +63,42 @@ Identification tips / 识别要点:
 - If the club head is not clearly visible but a person is swinging, estimate from shaft length
 - Handedness: R = right-handed, L = left-handed; default R if uncertain (无法判断时默认 R)"""
 
+CLUB_DETECT_MULTIFRAME_PROMPT = """You are an expert golf equipment and stance analyst.
+
+You are given THREE JPEG images from the SAME golf swing clip, in chronological order:
+Image 1 ≈ 25% through the video, Image 2 ≈ 40%, Image 3 ≈ 60%.
+Use ALL images together (majority / clearest evidence) to decide club type and handedness.
+
+FIRST: If no golf club is clearly visible in any frame, return UNKNOWN.
+
+首先判断三帧中是否有人持有或挥动高尔夫球杆；若均看不清球杆，返回 UNKNOWN。
+
+Possible club types (球杆型号):
+- UNKNOWN: no golf club visible
+- WOOD (木杆): 1W, 3W, 5W
+- IRON (铁杆): 3I, 4I, 5I, 6I, 7I, 8I, 9I
+- WEDGE (挖起杆): PW, AW, SW, LW
+- PUTTER (推杆): PT
+
+Respond with ONLY this JSON (no markdown, no backticks):
+{
+  "club_type": "<UNKNOWN or one of: 1W, 3W, 5W, 3I, 4I, 5I, 6I, 7I, 8I, 9I, PW, AW, SW, LW, PT>",
+  "confidence": <float 0.0 to 1.0>,
+  "hand": "<R or L>"
+}
+
+Identification tips / 识别要点: same as single-image — woods large round heads, irons thin blades,
+wedges high loft, putters flat face; handedness R/L, default R if uncertain."""
+
 
 def _frame_to_base64(frame: np.ndarray) -> str:
     _, buf = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
+    return base64.b64encode(buf.tobytes()).decode()
+
+
+def encode_bgr_frame_jpeg_b64(frame: np.ndarray, *, quality: int = 85) -> str:
+    """Public JPEG base64 for pipelines that merge club frames into a single Gemini call."""
+    _, buf = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, int(quality)])
     return base64.b64encode(buf.tobytes()).decode()
 
 
@@ -180,14 +213,74 @@ def read_bgr_frame_at_percent(video_path: str, pct: float) -> np.ndarray | None:
         cap.release()
 
 
+def _three_jpeg_b64s_from_frames(frames: list[np.ndarray]) -> list[str]:
+    """Up to three base64 JPEG payloads; pad to length 3 by repeating last (for one multimodal call)."""
+    imgs: list[str] = []
+    for fr in frames[:3]:
+        imgs.append(_frame_to_base64(fr))
+    while len(imgs) < 3:
+        imgs.append(imgs[-1])
+    return imgs[:3]
+
+
+async def _detect_club_multiframe_gemini(images_b64: list[str]) -> dict:
+    from services.gemini_service import run_gemini_vision
+
+    text, _key_slot = await run_gemini_vision(
+        CLUB_DETECT_MULTIFRAME_PROMPT,
+        images_b64[:3],
+        max_tokens=384,
+        temperature=0.2,
+    )
+    return _parse_club_response(text)
+
+
+async def _detect_club_multiframe_qwen(images_b64: list[str]) -> dict:
+    qwen_key = os.getenv("QWEN_API_KEY", "")
+    if not qwen_key:
+        raise RuntimeError("QWEN_API_KEY not configured")
+
+    from openai import AsyncOpenAI
+
+    from services.gemini_service import QWEN_TIMEOUT_S
+
+    qwen_base_url = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+    qwen_model = "qwen-vl-max-latest"
+    client = AsyncOpenAI(
+        api_key=qwen_key,
+        base_url=qwen_base_url,
+        timeout=QWEN_TIMEOUT_S,
+    )
+    content: list[dict] = [{"type": "text", "text": CLUB_DETECT_MULTIFRAME_PROMPT}]
+    for b64 in images_b64[:3]:
+        content.append({
+            "type": "image_url",
+            "image_url": {"url": f"data:image/jpeg;base64,{b64}"},
+        })
+    resp = await client.chat.completions.create(
+        model=qwen_model,
+        messages=[{"role": "user", "content": content}],
+        max_tokens=384,
+        temperature=0.2,
+    )
+    raw = resp.choices[0].message.content or ""
+    raw = re.sub(r"<think>[\s\S]*?</think>", "", raw).strip()
+    return _parse_club_response(raw)
+
+
+def _club_out_public(d: dict) -> dict:
+    return {k: v for k, v in d.items() if k != "ai_provider"}
+
+
 async def detect_club_three_frames_from_video(video_path: str, region: str = "global") -> dict:
     """
-    Sample 25% / 40% / 60% of the clip, run ``detect_club`` on each, aggregate.
+    Sample 25% / 40% / 60% of the clip, **one** multimodal vision call (Gemini or Qwen), not three.
 
-    Use inside a single product pipeline (Lite / Plus / Pro) — no separate HTTP / Modal hop.
+    Keeps Lite / Plus / Pro to **one** club-related vision round-trip on top of the product's own AI call.
     """
+    _unknown = {"club_type": "UNKNOWN", "club_group": "IRON", "confidence": 0.0, "hand": "R"}
     if not video_path or not os.path.isfile(video_path):
-        return {"club_type": "UNKNOWN", "club_group": "IRON", "confidence": 0.0, "hand": "R"}
+        return dict(_unknown)
 
     pcts = (0.25, 0.4, 0.6)
     frames: list[np.ndarray] = []
@@ -200,16 +293,39 @@ async def detect_club_three_frames_from_video(video_path: str, region: str = "gl
         if fr is not None and fr.size > 0:
             frames = [fr, fr, fr]
     if not frames:
-        return {"club_type": "UNKNOWN", "club_group": "IRON", "confidence": 0.0, "hand": "R"}
+        return dict(_unknown)
 
-    outs: list[dict] = []
-    for fr in frames:
-        outs.append(await detect_club(fr, region))
-    merged = aggregate_club_detect_frames(outs)
-    hand = merged.get("hand")
-    if hand not in ("R", "L"):
-        merged["hand"] = "R"
-    return merged
+    try:
+        imgs = _three_jpeg_b64s_from_frames(frames)
+    except Exception as e:
+        logger.error("Club multiframe encode failed: %s", e)
+        return dict(_unknown)
+
+    try:
+        out = await _detect_club_multiframe_gemini(imgs)
+        logger.info("[ai] club_detect_multiframe provider=gemini")
+        hand = out.get("hand")
+        if hand not in ("R", "L"):
+            out["hand"] = "R"
+        return _club_out_public(out)
+    except Exception as e:
+        logger.warning("Gemini multiframe club detection failed: %s", e)
+
+    if os.getenv("QWEN_API_KEY", ""):
+        try:
+            out = await _detect_club_multiframe_qwen(imgs)
+            logger.info("[ai] club_detect_multiframe provider=qwen")
+            hand = out.get("hand")
+            if hand not in ("R", "L"):
+                out["hand"] = "R"
+            return _club_out_public(out)
+        except Exception as e2:
+            logger.warning("Qwen multiframe club detection failed: %s", e2)
+
+    # Last resort: single middle frame, one vision call (not three sequential).
+    mid = frames[len(frames) // 2]
+    out = await detect_club(mid, region)
+    return _club_out_public(out)
 
 
 async def _detect_club_gemini(img_b64: str) -> dict:
