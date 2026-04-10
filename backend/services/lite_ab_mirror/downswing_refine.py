@@ -1,4 +1,7 @@
-"""Lite A-only: optional Mid-downswing correction using poses + timeline + motions (no Vision API)."""
+"""Lite A-only: after a single 8-event A infer, optionally fix only ``Mid-downswing.frame_index`` using MediaPipe pose.
+
+Does not call A again, does not build a second keyframe set, and does not re-stage the other seven events.
+"""
 
 from __future__ import annotations
 
@@ -29,6 +32,7 @@ def _rows_by_event(rows: List[dict]) -> Dict[str, dict]:
 
 
 def _ordered_rows(rows: List[dict]) -> List[dict]:
+    """Order as EVENT_SEQUENCE; deep-copy rows so other events stay unchanged except where we assign."""
     by_e = _rows_by_event(rows)
     ordered: List[dict] = []
     for ev in EVENT_SEQUENCE:
@@ -36,47 +40,6 @@ def _ordered_rows(rows: List[dict]) -> List[dict]:
             ordered.append(copy.deepcopy(by_e[ev]))
         else:
             ordered.append({"event_name": ev, "frame_index": 0, "confidence": 0.25})
-    return ordered
-
-
-def _enforce_strict_monotonic(rows: List[dict], max_idx: int) -> None:
-    n = len(rows)
-    hi = max(0, int(max_idx))
-    prev = -1
-    for i in range(n):
-        slack = n - 1 - i
-        upper = hi - slack
-        fi = int(rows[i].get("frame_index", 0))
-        fi = max(prev + 1, min(fi, upper))
-        rows[i]["frame_index"] = fi
-        prev = fi
-
-
-def _spread_even_if_needed(rows: List[dict], max_idx: int) -> None:
-    hi = max(1, int(max_idx))
-    n = len(rows)
-    for i in range(n):
-        rows[i]["frame_index"] = int(round(i * hi / max(1, n - 1)))
-        rows[i]["confidence"] = float(rows[i].get("confidence") or 0.25)
-    _enforce_strict_monotonic(rows, hi)
-
-
-def ensure_eight_keyframe_rows(
-    rows: List[dict],
-    *,
-    max_frame_index: int,
-) -> List[dict]:
-    ordered = _ordered_rows(rows)
-    hi = max(0, int(max_frame_index))
-    if hi <= 0:
-        for i, row in enumerate(ordered):
-            row["frame_index"] = i
-        return ordered
-    known = [int(r.get("frame_index", 0)) for r in ordered if float(r.get("confidence", 0) or 0) > 0.05]
-    if not known or max(known) - min(known) < 2:
-        _spread_even_if_needed(ordered, hi)
-        return ordered
-    _enforce_strict_monotonic(ordered, hi)
     return ordered
 
 
@@ -116,33 +79,6 @@ def _candidates_top_impact(
         span = hi - lo + 1
         cand = list(range(lo, hi + 1)) if span <= _MAX_CAND else _linspace(lo, hi, _MAX_CAND)
     return sorted({int(x) for x in cand if 0 <= int(x) <= mx})
-
-
-def _nearest_timeline_k(frame_index: int, timeline: List[dict]) -> int:
-    if not timeline:
-        return 0
-    best_k = 0
-    best_d = 10**9
-    for k, t in enumerate(timeline):
-        fi = int(t.get("frame_index", -1))
-        d = abs(fi - int(frame_index))
-        if d < best_d:
-            best_d = d
-            best_k = k
-    return best_k
-
-
-def motion_value_at_frame(
-    frame_index: int,
-    timeline: List[dict],
-    motions: Sequence[float],
-) -> float:
-    if not timeline or not motions:
-        return 0.0
-    k = _nearest_timeline_k(frame_index, timeline)
-    if k >= len(motions):
-        k = len(motions) - 1
-    return float(motions[k])
 
 
 def _angles_at_frame(
@@ -185,12 +121,11 @@ def _angle_l1(a: Dict[str, float], b: Dict[str, float]) -> float:
 
 
 def _clamp_mid_downswing_only(by: Dict[str, dict], hi: int) -> None:
-    """Keep all other events unchanged; only clamp Mid-downswing to stay between neighbors."""
-    mbs = int(by["Mid-backswing"]["frame_index"])
+    """Only adjust Mid-downswing; keep it strictly between Top and Impact (exclusive) and in range."""
     top = int(by["Top"]["frame_index"])
     mds = int(by["Mid-downswing"]["frame_index"])
     imp = int(by["Impact"]["frame_index"])
-    mds = max(mds, mbs + 1, top + 1)
+    mds = max(mds, top + 1)
     mds = min(mds, imp - 1)
     mds = max(0, min(mds, hi))
     by["Mid-downswing"]["frame_index"] = mds
@@ -206,7 +141,6 @@ def is_mid_downswing_suspicious(
     mds: int,
     top: int,
     imp: int,
-    hint_fi: int | None,
     *,
     ang_mds: Dict[str, float],
     ang_top: Dict[str, float],
@@ -224,43 +158,29 @@ def is_mid_downswing_suspicious(
         return True
     if ang_imp and _angle_l1(ang_mds, ang_imp) < _ANGLE_TOO_LIKE_IMP_DEG:
         return True
-    if hint_fi is not None and corridor >= 8:
-        # Far from expected downswing band around motion peak (still between top/imp)
-        band = max(5, corridor // 4)
-        if abs(mds - hint_fi) > band + max(6, corridor // 3):
-            return True
     return False
 
 
-def _score_mid_down_candidate(
+def _score_mid_down_candidate_mediapipe(
     idx: int,
     *,
     top: int,
     imp: int,
-    hint_fi: int | None,
-    timeline: List[dict],
-    motions: Sequence[float],
     ang_top: Dict[str, float],
     ang_imp: Dict[str, float],
     vfps: float,
     poses: List[dict],
 ) -> float:
+    """Prefer frames whose pose reads as between Top and Impact (not still at Top, not yet Impact), in the corridor."""
     ang_c = _angles_at_frame(idx, vfps, poses)
     rel = _norm_along_corridor(idx, top, imp)
-    # Prefer mid-corridor; weak — not dominant
     corridor_bonus = 1.0 - abs(rel - 0.45) * 0.9
-    mot = motion_value_at_frame(idx, timeline, motions)
-    mx_mot = max((float(m) for m in motions), default=1.0) or 1.0
-    mot_n = min(1.0, mot / mx_mot)
     sep_top = _angle_l1(ang_c, ang_top) if ang_top else 10.0
     sep_imp = _angle_l1(ang_c, ang_imp) if ang_imp else 10.0
-    sep = min(sep_top, sep_imp)
-    pose_sep = min(1.0, (sep_top + sep_imp) / 40.0)
-    hint_b = 1.0
-    if hint_fi is not None:
-        span = max(1, imp - top)
-        hint_b = math.exp(-((idx - hint_fi) ** 2) / (2.0 * (max(4.0, span * 0.15)) ** 2))
-    return 0.42 * mot_n + 0.28 * pose_sep + 0.18 * corridor_bonus + 0.12 * hint_b
+    # Mid-downswing should differ from both anchors; balance separation from Top vs Impact.
+    geom_sep = math.sqrt(max(1e-6, sep_top) * max(1e-6, sep_imp))
+    pose_sep_norm = min(1.0, geom_sep / 35.0)
+    return 0.78 * pose_sep_norm + 0.22 * corridor_bonus
 
 
 def refine_mid_downswing_with_pose_motion(
@@ -269,36 +189,29 @@ def refine_mid_downswing_with_pose_motion(
     analysis_frames: List[dict],
     preprocess_meta: dict,
     poses: List[dict] | None,
-    timeline: List[dict] | None,
-    motions: List[float] | None,
-    impact_hint_frame_index: int | None,
     max_frame_index: int | None,
+    # Back-compat: ignored — A runs once; refine does not use motion/timeline or a second hint pass.
+    timeline: List[dict] | None = None,
+    motions: Sequence[float] | None = None,
+    impact_hint_frame_index: int | None = None,
 ) -> Tuple[List[dict], List[str], Dict[str, Any]]:
     """
-    Only ``Mid-downswing`` may change; all other events keep A infer indices (after ensure_8 monotonic).
+    Post-process A's single 8-row output: only ``Mid-downswing.frame_index`` may change.
+
+    Re-selection uses MediaPipe pose in the exclusive window (Top+1 … Impact-1). No second A infer.
     """
+    _ = (timeline, motions, impact_hint_frame_index)
+
     meta = dict(preprocess_meta or {})
     hi = max_frame_index if max_frame_index is not None else int(meta.get("max_frame_index", -1))
     if hi is None or hi < 0:
         hi = max((int(x.get("frame_index", 0)) for x in analysis_frames), default=0)
     vfps = float(meta.get("analysis_fps") or 30.0)
 
-    tl = list(timeline or [])
-    mo = list(motions or [])
     pose_list = list(poses or [])
 
-    # Preserve A infer indices for all events; only Mid-downswing may change later.
     working = _ordered_rows(rows)
     by = _rows_by_event(working)
-    hint = impact_hint_frame_index
-    if hint is None and tl and mo:
-        # fallback: peak motion index → frame
-        if len(mo) > 2:
-            sub = mo[1:] if len(mo) > 1 else mo
-            k = int(max(range(len(sub)), key=lambda i: sub[i]))
-            k = min(k + 1, len(tl) - 1)
-            hint = int(tl[k].get("frame_index", hi // 2))
-            hint = max(0, min(hint, hi))
 
     fail: List[str] = []
     dbg: Dict[str, Any] = {
@@ -321,7 +234,7 @@ def refine_mid_downswing_with_pose_motion(
     ang_mds = _angles_at_frame(mds, vfps, pose_list)
 
     suspicious = is_mid_downswing_suspicious(
-        mds, top, imp, hint, ang_mds=ang_mds, ang_top=ang_top, ang_imp=ang_imp
+        mds, top, imp, ang_mds=ang_mds, ang_top=ang_top, ang_imp=ang_imp
     )
 
     if not suspicious:
@@ -338,8 +251,7 @@ def refine_mid_downswing_with_pose_motion(
         return working, fail, dbg
 
     cand = _candidates_top_impact(lo_c, hi_c, analysis_frames, max_frame_index=hi)
-    mbs = int(by["Mid-backswing"]["frame_index"])
-    cand = [c for c in cand if c > max(mbs, top) and c < imp]
+    cand = [c for c in cand if lo_c <= c <= hi_c]
 
     if not cand:
         fail.append("mid_downswing_semantic_invalid")
@@ -350,13 +262,10 @@ def refine_mid_downswing_with_pose_motion(
     best = mds
     best_s = -1e9
     for idx in cand:
-        s = _score_mid_down_candidate(
+        s = _score_mid_down_candidate_mediapipe(
             idx,
             top=top,
             imp=imp,
-            hint_fi=hint,
-            timeline=tl,
-            motions=mo,
             ang_top=ang_top,
             ang_imp=ang_imp,
             vfps=vfps,
@@ -380,7 +289,6 @@ def refine_mid_downswing_with_pose_motion(
 
     out = [by[e] for e in EVENT_SEQUENCE]
 
-    # Post-check only for Mid-downswing plausibility (gate adds detail)
     mds2 = int(_rows_by_event(out)["Mid-downswing"]["frame_index"])
     t2 = int(_rows_by_event(out)["Top"]["frame_index"])
     i2 = int(_rows_by_event(out)["Impact"]["frame_index"])
@@ -403,7 +311,6 @@ def refine_mid_downswing_with_pose_motion(
 
 
 __all__ = [
-    "ensure_eight_keyframe_rows",
     "refine_mid_downswing_with_pose_motion",
-    "motion_value_at_frame",
+    "is_mid_downswing_suspicious",
 ]

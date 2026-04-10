@@ -1,10 +1,9 @@
-"""Lite keyframe pipeline: SwingNet A infer → Mid-downswing refine (pose/motion) → A quality gate (A-only, no B)."""
+"""Lite keyframe pipeline: SwingNet A runs once (8 events) → MediaPipe-only Mid-downswing fix → A gate."""
 
 from __future__ import annotations
 
 import copy
 import logging
-import os
 from typing import Any, Callable, Dict, List, Tuple
 
 from services.golfdb_swingnet_service import clear_swingnet_ctx
@@ -12,11 +11,6 @@ from services.lite_ab_mirror.a_extract import run_lite_a_infer_only
 from services.lite_ab_mirror.a_gate import run_lite_a_gate
 from services.lite_ab_mirror.constants import TRUST_HIGH, TRUST_LOW
 from services.lite_ab_mirror.downswing_refine import refine_mid_downswing_with_pose_motion
-from services.lite_timeline_motion import (
-    lite_build_uniform_timeline,
-    lite_impact_hint_from_timeline,
-    lite_motion_along_timeline,
-)
 from services.provider_registry import role_log
 
 logger = logging.getLogger(__name__)
@@ -51,24 +45,11 @@ def run_lite_ab_after_preprocess(
         max_idx = 0
     preprocess_meta["max_frame_index"] = max_idx
 
-    vfps = float(pre.get("analysis_fps") or 30.0)
-    duration_s = float(pre.get("duration_s") or 0.0)
-    timeline: List[dict] = []
-    motions: List[float] = []
-    impact_hint_fi: int | None = None
-    if total_frames > 0 and analysis_video and os.path.isfile(analysis_video):
-        timeline = lite_build_uniform_timeline(total_frames, vfps)
-        indices = [int(t.get("frame_index", 0)) for t in timeline]
-        if indices:
-            motions = lite_motion_along_timeline(analysis_video, indices)
-            hp = lite_impact_hint_from_timeline(indices, motions, vfps, duration_s or total_frames / max(vfps, 1e-6))
-            impact_hint_fi = int(round(float(hp.get("impact_hint_s") or 0.0) * vfps))
-            impact_hint_fi = max(0, min(impact_hint_fi, max_idx))
-
     try:
         if cancel_check:
             cancel_check()
 
+        # Single A inference — never call SwingNet twice in this pipeline.
         role_log("[ROLE=LITE_PIPELINE] lite_keyframes_infer_start (SwingNet)")
         infer = run_lite_a_infer_only(
             analysis_id=analysis_id,
@@ -88,9 +69,6 @@ def run_lite_ab_after_preprocess(
             analysis_frames=analysis_frames,
             preprocess_meta=preprocess_meta,
             poses=list(pre.get("poses") or []),
-            timeline=timeline,
-            motions=motions,
-            impact_hint_frame_index=impact_hint_fi,
             max_frame_index=max_idx,
         )
         logger.info(
