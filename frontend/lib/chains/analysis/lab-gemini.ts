@@ -1,5 +1,6 @@
 import { getCfEnvVal } from "@/lib/lab-config";
 import { rewriteGoogleUrl } from "@/lib/gemini-proxy";
+import { isVideoFile, normalizeVideoMimeForUpload } from "@/lib/upload-video";
 import { LAB_PROMPT } from "./lab-prompts";
 
 const QWEN_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions";
@@ -34,8 +35,10 @@ export async function labGeminiAnalysis(file: File, host: string, apiKey: string
   const buffer = await file.arrayBuffer();
   const bytes = new Uint8Array(buffer);
   const rawType = file.type || "";
-  const isVideo = rawType.startsWith("video/") || /\.(mp4|mov|webm|avi)$/i.test(file.name || "");
-  const mimeType = rawType === "video/quicktime" ? "video/mp4" : rawType || (isVideo ? "video/mp4" : "image/jpeg");
+  const isVideo = isVideoFile(file, file.name || "");
+  const mimeType = isVideo
+    ? normalizeVideoMimeForUpload(rawType, file.name || "video.mp4")
+    : rawType || "image/jpeg";
 
   let contentParts: unknown[];
 
@@ -130,8 +133,10 @@ export async function labQwenAnalysis(file: File): Promise<Record<string, unknow
   const bytes = new Uint8Array(buffer);
   const base64 = uint8ToBase64(bytes);
   const rawType = file.type || "";
-  const isVideo = rawType.startsWith("video/") || /\.(mp4|mov|webm|avi)$/i.test(file.name || "");
-  const mimeType = rawType === "video/quicktime" ? "video/mp4" : rawType || (isVideo ? "video/mp4" : "image/jpeg");
+  const isVideo = isVideoFile(file, file.name || "");
+  const mimeType = isVideo
+    ? normalizeVideoMimeForUpload(rawType, file.name || "video.mp4")
+    : rawType || "image/jpeg";
 
   const mediaPart = isVideo
     ? { type: "video_url", video_url: { url: `data:${mimeType};base64,${base64}` } }

@@ -3,9 +3,39 @@
  * return opaque `upload_token` for `/api/lab` or `/api/analyze`.
  */
 
+/** Broad extensions — browsers often omit MIME; iOS/Android may report empty type. */
+const VIDEO_FILENAME_EXT_PATTERN =
+  /\.(mp4|m4v|mov|qt|webm|mkv|avi|wmv|flv|3gp|3g2|ts|mts|m2ts|mpg|mpeg|vob|ogv|f4v|asf|divx|xvid|rm|rmvb|mxf|nut)$/i;
+
 export function isVideoFile(file: File | Blob, filename: string): boolean {
-  const t = (file as File).type || "";
-  return t.startsWith("video/") || /\.(mp4|mov|webm|avi)$/i.test(filename);
+  const t = ((file as File).type || "").trim().toLowerCase();
+  if (t.startsWith("video/")) return true;
+  if (t === "application/octet-stream" && VIDEO_FILENAME_EXT_PATTERN.test(filename)) return true;
+  return VIDEO_FILENAME_EXT_PATTERN.test(filename);
+}
+
+/**
+ * MIME for Gemini / R2: map quicktime → mp4; infer from filename when type missing.
+ */
+export function normalizeVideoMimeForUpload(rawType: string, filename: string): string {
+  const t = rawType?.trim() || "";
+  const base = t.split(";")[0]?.trim().toLowerCase() || "";
+  if (base.startsWith("video/")) {
+    if (base === "video/quicktime") return "video/mp4";
+    return base || "video/mp4";
+  }
+  const low = filename.toLowerCase();
+  if (low.endsWith(".webm")) return "video/webm";
+  if (low.endsWith(".mkv")) return "video/x-matroska";
+  if (low.endsWith(".mov") || low.endsWith(".qt")) return "video/mp4";
+  if (low.endsWith(".avi")) return "video/x-msvideo";
+  if (VIDEO_FILENAME_EXT_PATTERN.test(filename)) return "video/mp4";
+  return "video/mp4";
+}
+
+/** R2 / history metadata: pick a reasonable video/* from filename. */
+export function contentTypeForStoredVideo(filename: string): string {
+  return normalizeVideoMimeForUpload("", filename);
 }
 
 export interface UploadResult {
@@ -21,11 +51,7 @@ export async function uploadVideoForAnalysis(
   onProgress?: (pct: number) => void,
   signal?: AbortSignal,
 ): Promise<UploadResult> {
-  const rawType = (file as File).type || "";
-  const mimeType =
-    rawType === "video/quicktime"
-      ? "video/mp4"
-      : rawType || "video/mp4";
+  const mimeType = normalizeVideoMimeForUpload((file as File).type || "", filename || "video.mp4");
 
   onProgress?.(8);
 

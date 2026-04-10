@@ -101,6 +101,60 @@ def _parse_club_response(text: str) -> dict:
     return {"club_type": "UNKNOWN", "club_group": "IRON", "confidence": 0.0, "hand": "R"}
 
 
+def aggregate_club_detect_frames(frame_results: list[dict]) -> dict:
+    """
+    Merge 1–3 per-frame ``detect_club`` outputs (same voting rules as legacy browser).
+
+    Strips ``ai_provider`` from the merged HTTP response.
+    """
+    cleaned: list[dict] = []
+    for r in frame_results:
+        out = {k: v for k, v in r.items() if k != "ai_provider"}
+        cleaned.append(out)
+
+    valid = [c for c in cleaned if c.get("club_type") and str(c["club_type"]) != "UNKNOWN"]
+    if valid:
+        votes: dict[str, dict[str, float | int | str]] = {}
+        for r in valid:
+            ct = str(r["club_type"])
+            if ct not in votes:
+                votes[ct] = {
+                    "count": 0,
+                    "totalConf": 0.0,
+                    "group": str(r.get("club_group") or CLUB_GROUP_MAP.get(ct, "IRON")),
+                }
+            votes[ct]["count"] = int(votes[ct]["count"]) + 1  # type: ignore[assignment]
+            votes[ct]["totalConf"] = float(votes[ct]["totalConf"]) + float(r.get("confidence") or 0.0)  # type: ignore[assignment]
+        sorted_items = sorted(
+            votes.items(),
+            key=lambda x: (-int(x[1]["count"]), -float(x[1]["totalConf"])),  # type: ignore[arg-type]
+        )
+        winner_ct, w = sorted_items[0]
+        count = int(w["count"])
+        total_conf = float(w["totalConf"])
+        avg_conf = total_conf / max(count, 1)
+        hand_votes = {"R": 0, "L": 0}
+        for r in cleaned:
+            h = "L" if r.get("hand") == "L" else "R"
+            hand_votes[h] += 1
+        hand = "L" if hand_votes["L"] > hand_votes["R"] else "R"
+        return {
+            "club_type": winner_ct,
+            "club_group": str(w.get("group") or CLUB_GROUP_MAP.get(winner_ct, "IRON")),
+            "confidence": round(min(max(avg_conf, 0.0), 1.0), 4),
+            "hand": hand,
+        }
+
+    first = cleaned[0] if cleaned else {}
+    hand = "L" if first.get("hand") == "L" else "R"
+    return {
+        "club_type": "UNKNOWN",
+        "club_group": "IRON",
+        "confidence": 0.0,
+        "hand": hand,
+    }
+
+
 async def _detect_club_gemini(img_b64: str) -> dict:
     """Call Gemini (Developer API or Vertex) to identify the club."""
     from services.gemini_service import run_gemini_vision

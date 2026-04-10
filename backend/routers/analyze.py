@@ -22,6 +22,7 @@ from services.lite_singleflight import (
     complete_lite_analyze_failure,
     complete_lite_analyze_success,
 )
+from services.video_upload_suffix import temp_suffix_for_uploaded_video, temp_suffix_from_url
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -249,9 +250,7 @@ async def analyze_lite(
             if not file_bytes:
                 raise HTTPException(status_code=400, detail="Empty file")
             filename = getattr(uploaded_file, "filename", "video.mp4") or "video.mp4"
-            suffix = ".mov" if ".mov" in filename.lower() else ".mp4"
-            if ".webm" in filename.lower():
-                suffix = ".webm"
+            suffix = temp_suffix_for_uploaded_video(filename)
 
             status, cached = await begin_lite_analyze(request_id)
             if status == "cached":
@@ -284,7 +283,7 @@ async def analyze_lite(
                 resp = await client.get(video_url)
                 if resp.status_code != 200:
                     raise HTTPException(status_code=400, detail="Failed to download video")
-            suffix = ".mov" if ".mov" in video_url.lower() else ".mp4"
+            suffix = temp_suffix_from_url(video_url)
             with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
                 tmp.write(resp.content)
                 tmp_path = tmp.name
@@ -354,6 +353,65 @@ async def analyze_club_detect_multipart(
     )
 
 
+@router.post("/club-detect-batch")
+async def analyze_club_detect_batch_multipart(
+    request: Request,
+    frame_0: UploadFile = File(...),
+    frame_1: UploadFile = File(...),
+    frame_2: UploadFile = File(...),
+    current_user: Optional[dict] = Depends(get_current_user),
+):
+    """
+    Three JPEG frames in **one** HTTP request — runs ``detect_club`` on each, then merges.
+
+    One Modal/ASGI invocation; avoids three separate ``/analyze/club-detect`` calls from Edge.
+    """
+    from services.club_detector import aggregate_club_detect_frames, detect_club
+
+    async def _decode_one(up: UploadFile) -> Optional[np.ndarray]:
+        raw = await up.read()
+        if not raw:
+            return None
+        arr = np.frombuffer(raw, dtype=np.uint8)
+        img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+        return img
+
+    imgs: list[np.ndarray] = []
+    for uf in (frame_0, frame_1, frame_2):
+        im = await _decode_one(uf)
+        if im is not None:
+            imgs.append(im)
+
+    if not imgs:
+        return JSONResponse(
+            content={
+                "club_type": "UNKNOWN",
+                "club_group": "IRON",
+                "confidence": 0.0,
+                "hand": "R",
+            }
+        )
+
+    region = "CN" if (request.headers.get("CF-IPCountry") or "").upper() == "CN" else "global"
+    frame_results: list[dict] = []
+    for im in imgs:
+        out = await detect_club(im, region)
+        frame_results.append(out)
+
+    merged = aggregate_club_detect_frames(frame_results)
+    hand = merged.get("hand")
+    if hand not in ("R", "L"):
+        hand = "R"
+    return JSONResponse(
+        content={
+            "club_type": str(merged.get("club_type") or "UNKNOWN"),
+            "club_group": str(merged.get("club_group") or "IRON"),
+            "confidence": float(merged.get("confidence") or 0.0),
+            "hand": hand,
+        }
+    )
+
+
 @router.post("/vision-classic")
 async def vision_classic_multipart(
     request: Request,
@@ -393,12 +451,7 @@ async def vision_classic_multipart(
                 filename = getattr(uploaded, "filename", None) or "video.mp4"
 
         if file_bytes:
-            suffix = ".mp4"
-            low = filename.lower()
-            if ".mov" in low:
-                suffix = ".mov"
-            if ".webm" in low:
-                suffix = ".webm"
+            suffix = temp_suffix_for_uploaded_video(filename)
             fd, tmp_path = tempfile.mkstemp(suffix=suffix)
             try:
                 os.write(fd, file_bytes)

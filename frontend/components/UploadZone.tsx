@@ -2,6 +2,7 @@
 
 import { useState, useRef, useCallback } from "react";
 import { compressVideoForUpload } from "@/lib/video-compress";
+import { isVideoFile } from "@/lib/upload-video";
 
 interface UploadZoneProps {
   onUploadComplete: (file: File) => void;
@@ -27,8 +28,12 @@ export default function UploadZone({ onUploadComplete, lang, isPro, disabled }: 
       setError("");
       if (disabled) return;
 
-      if (!file.type.includes("video/")) {
-        setError(lang === "en" ? "Please upload a video file (MP4/MOV)" : "请上传视频文件（MP4/MOV）");
+      if (!isVideoFile(file, file.name)) {
+        setError(
+          lang === "en"
+            ? "Please upload a video file (MP4, MOV, WebM, MKV, etc.)"
+            : "请上传视频文件（MP4、MOV、WebM、MKV 等常见格式）",
+        );
         return;
       }
 
@@ -125,7 +130,7 @@ export default function UploadZone({ onUploadComplete, lang, isPro, disabled }: 
         <input
           ref={fileInputRef}
           type="file"
-          accept="video/mp4,video/quicktime,video/mov"
+          accept="video/*"
           onChange={handleChange}
           className="hidden"
           disabled={disabled}
@@ -171,8 +176,8 @@ export default function UploadZone({ onUploadComplete, lang, isPro, disabled }: 
               </p>
               <p className="mt-1 text-sm text-white/40">
                 {lang === "en"
-                  ? "or click to browse • MP4/MOV • Max 100MB"
-                  : "或点击浏览 • MP4/MOV • 最大100MB"}
+                  ? "or click to browse • common video formats • Max 100MB"
+                  : "或点击浏览 • 常见视频格式 • 最大100MB"}
               </p>
             </div>
           </div>

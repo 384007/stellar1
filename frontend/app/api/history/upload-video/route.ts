@@ -2,6 +2,8 @@ import { NextRequest, NextResponse } from "next/server";
 import { jwtVerify } from "jose";
 import { getRequestContext } from "@cloudflare/next-on-pages";
 
+import { normalizeVideoMimeForUpload } from "@/lib/upload-video";
+
 export const runtime = "edge";
 
 function getJwtSecret(): Uint8Array {
@@ -99,7 +101,7 @@ export async function POST(request: NextRequest) {
     const bytes = await file.arrayBuffer();
     await r2.put(key, bytes, {
       httpMetadata: {
-        contentType: file.type || "video/mp4",
+        contentType: normalizeVideoMimeForUpload(file.type || "", file.name || `${analysisId}.${ext}`),
         contentDisposition: `inline; filename="${file.name || `${analysisId}.${ext}`}"`,
       },
     });
@@ -117,6 +119,8 @@ function extFromContentType(request: NextRequest): string {
   const ct = (request.headers.get("content-type") || "").toLowerCase();
   if (ct.includes("quicktime")) return "mov";
   if (ct.includes("webm")) return "webm";
+  if (ct.includes("matroska")) return "mkv";
+  if (ct.includes("x-msvideo")) return "avi";
   return "mp4";
 }
 

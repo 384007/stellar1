@@ -14,6 +14,8 @@ from typing import Any, Optional
 
 import httpx
 
+from services.video_upload_suffix import is_likely_video_filename, looks_like_video_mime
+
 logger = logging.getLogger(__name__)
 
 ANALYSIS_PROMPT = """You are an expert PGA-level golf coach and biomechanics analyst.
@@ -117,7 +119,7 @@ def _qwen_classic_sync(tmp_path: str, mime_type: str, filename: str) -> dict[str
     with open(tmp_path, "rb") as f:
         b64 = base64.b64encode(f.read()).decode("ascii")
     ext = (filename or "").lower()
-    is_video = (mime_type or "").startswith("video/") or ext.endswith((".mp4", ".mov", ".webm", ".avi"))
+    is_video = looks_like_video_mime(mime_type) or is_likely_video_filename(filename)
     mt = "video/mp4" if mime_type == "video/quicktime" else (mime_type or ("video/mp4" if is_video else "image/jpeg"))
     media: dict[str, Any] = (
         {"type": "video_url", "video_url": {"url": f"data:{mt};base64,{b64}"}}

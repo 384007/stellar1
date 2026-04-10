@@ -135,7 +135,7 @@ export function resolveProModalUpstreamBase(
 
 /**
  * Lite-only worker (`modal deploy modal_app_lite` → ``main_lite:app``): ``/analyze/lite``,
- * ``/analyze/vision-classic``, ``/analyze/club-detect``, ``/analyze/recalculate``.
+ * ``/analyze/vision-classic``, ``/analyze/club-detect``, ``/analyze/club-detect-batch``, ``/analyze/recalculate``.
  *
  * Priority: ``LITE_BACKEND_URL`` → ``DEFAULT_LITE_MODAL_URL`` (never the Pro Modal URL).
  */

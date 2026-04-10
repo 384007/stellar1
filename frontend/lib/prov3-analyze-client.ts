@@ -1,5 +1,6 @@
 import { clientLikelyMainlandChinaUser } from "@/lib/client-region-hint";
 import { devInfo, devWarn } from "@/lib/dev-only-log";
+import { normalizeVideoMimeForUpload } from "@/lib/upload-video";
 
 /** Same-origin Pro v3 orchestration (upload → one Modal ``/analyze/start`` → R2 job poll). */
 /* Upload: always ``POST /api/history/upload-video`` (Edge R2 binding); browser never receives R2 presigned URLs. */
@@ -151,7 +152,7 @@ export async function runProv3AnalyzeMultipart(
     opts.onJobPhase?.("uploading");
     bumpAbort();
     const uploadId = crypto.randomUUID();
-    const mime = blob.type?.trim() || "video/mp4";
+    const mime = normalizeVideoMimeForUpload(blob.type?.trim() || "", filename || "video.mp4");
 
     const upRes = await fetch("/api/history/upload-video", {
       method: "POST",

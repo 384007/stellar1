@@ -17,6 +17,7 @@ from typing import Optional
 from routers.auth import get_current_user
 from routers.plus_analyze import _stellar_modal_upload_echo
 from services.json_sanitize import log_non_finite_if_any, sanitize_json_floats
+from services.video_upload_suffix import temp_suffix_for_uploaded_video, temp_suffix_from_url
 
 logger = logging.getLogger(__name__)
 _executor = ThreadPoolExecutor(max_workers=4)
@@ -266,9 +267,7 @@ async def analyze_pro(
                 raise HTTPException(status_code=400, detail="Empty file")
 
             filename = getattr(uploaded_file, "filename", "video.mp4") or "video.mp4"
-            suffix = ".mov" if ".mov" in filename.lower() else ".mp4"
-            if ".webm" in filename.lower():
-                suffix = ".webm"
+            suffix = temp_suffix_for_uploaded_video(filename)
 
             with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
                 tmp.write(file_bytes)
@@ -291,7 +290,7 @@ async def analyze_pro(
                 if resp.status_code != 200:
                     raise HTTPException(status_code=400, detail="Failed to download video")
 
-            suffix = ".mov" if ".mov" in video_url.lower() else ".mp4"
+            suffix = temp_suffix_from_url(video_url)
             with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
                 tmp.write(resp.content)
                 tmp_path = tmp.name

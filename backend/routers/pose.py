@@ -4,6 +4,8 @@ import httpx
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
+from services.video_upload_suffix import temp_suffix_from_url
+
 router = APIRouter()
 
 
@@ -33,9 +35,7 @@ async def extract_pose_video(req: PoseFromVideoRequest):
             if resp.status_code != 200:
                 raise HTTPException(status_code=400, detail="Failed to download video")
 
-        suffix = ".mp4"
-        if ".mov" in req.video_url.lower():
-            suffix = ".mov"
+        suffix = temp_suffix_from_url(req.video_url)
 
         with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
             tmp.write(resp.content)

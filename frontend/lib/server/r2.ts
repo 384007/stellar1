@@ -1,5 +1,7 @@
 import "server-only";
 
+import { contentTypeForStoredVideo } from "@/lib/upload-video";
+
 /**
  * Cloudflare R2 storage helpers (server-only).
  * R2 S3-compatible host string lives here — not in client-scanned ``lib/*.ts``.
@@ -92,7 +94,7 @@ export async function uploadVideoToR2(
   data: ArrayBuffer
 ): Promise<{ key: string; url: string }> {
   const key = generateVideoKey(userId, fileName);
-  const contentType = fileName.endsWith(".mov") ? "video/quicktime" : "video/mp4";
+  const contentType = contentTypeForStoredVideo(fileName);
 
   await uploadToR2(bucket, key, data, contentType);
 

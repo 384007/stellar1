@@ -43,6 +43,7 @@ import {
   reconcileProPageReanalyzeSession,
 } from "@/lib/reanalyze-from-history";
 import { loadProAnalysisById } from "@/lib/load-pro-analysis-by-id";
+import { isVideoFile } from "@/lib/upload-video";
 
 /**
  * IndexedDB video can land slightly after ``router.replace`` / session restore; PlusResultView skips IDB when
@@ -75,14 +76,6 @@ function scheduleProVideoFromIndexedDB(
       }
     }
   })();
-}
-
-function isVideoBlobForOverlay(blob: Blob, filename: string): boolean {
-  const t = (blob.type || "").toLowerCase();
-  if (t.startsWith("video/")) return true;
-  if (/\.(mp4|mov|webm|m4v|avi|mkv|3gp|qt)$/i.test(filename)) return true;
-  if (t === "application/octet-stream" && /\.(mp4|mov|webm|m4v|avi|mkv)$/i.test(filename)) return true;
-  return false;
 }
 
 interface ProAnalysisResult {
@@ -719,7 +712,7 @@ export default function ProPageClient({ deepLinkAnalysisId }: { deepLinkAnalysis
           devWarn("[pro] session snapshot before /pro/[id] navigation failed", e);
         }
       }
-      if (isVideoBlobForOverlay(uploadBlob, uploadFilename) && uploadBlob.size > 0) {
+      if (isVideoFile(uploadBlob as File, uploadFilename) && uploadBlob.size > 0) {
         setProVideoSrc(URL.createObjectURL(uploadBlob));
       }
       if (typeof window !== "undefined" && data.analysis_id) {

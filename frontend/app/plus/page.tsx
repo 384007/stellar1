@@ -7,6 +7,7 @@ import AnalysisWaiting from "@/components/AnalysisWaiting";
 import ScreenModeCapture from "@/components/ScreenModeCapture";
 import PlusResultView, { type PlusAnalysisResult } from "@/components/PlusResultView";
 import { devWarn } from "@/lib/dev-only-log";
+import { fetchClubDetectThreeFrames } from "@/lib/club-detect-batch-client";
 import { preloadPoseModel } from "@/lib/mediapipe-assets";
 import { saveAnalysisVideo } from "@/lib/video-store";
 import { makeFormData } from "@/lib/fetch-retry";
@@ -23,16 +24,12 @@ import {
   reanalyzeHistoryFilename,
   reanalyzePayloadProv3ScreenMode,
 } from "@/lib/reanalyze-from-history";
+import { isVideoFile } from "@/lib/upload-video";
 
 interface ClubDetection { club_type: string; club_group: string; confidence: number }
 
 type Stage = "upload" | "processing" | "results";
 type InputMode = "upload" | "capture" | "screen";
-
-function isVideoBlobForOverlay(blob: Blob, filename: string): boolean {
-  if (blob.type.startsWith("video/")) return true;
-  return /\.(mp4|mov|webm|m4v|avi)$/i.test(filename);
-}
 
 interface PlusUsageInfo {
   used: number;
@@ -274,10 +271,30 @@ export default function PlusPage() {
       });
     }, 800);
 
-    try {
-      const token = localStorage.getItem("stellar_token");
-      const authHeaders: Record<string, string> = token ? { Authorization: `Bearer ${token}` } : {};
+    const token = localStorage.getItem("stellar_token");
+    const authHeaders: Record<string, string> = token ? { Authorization: `Bearer ${token}` } : {};
 
+    let clubFallbackTimer: ReturnType<typeof setTimeout> | undefined;
+    void fetchClubDetectThreeFrames(blob, authHeaders).then((r) => {
+      if (r) {
+        const cd: ClubDetection = {
+          club_type: r.club_type,
+          club_group: r.club_group,
+          confidence: r.confidence,
+        };
+        setProcessingClub(cd);
+        processingClubRef.current = cd;
+      }
+    });
+    clubFallbackTimer = setTimeout(() => {
+      if (!processingClubRef.current) {
+        const fb: ClubDetection = { club_type: "UNKNOWN", club_group: "IRON", confidence: 0 };
+        setProcessingClub(fb);
+        processingClubRef.current = fb;
+      }
+    }, 6000);
+
+    try {
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), 360_000);
       const res = await fetch("/api/plus", {
@@ -301,6 +318,7 @@ export default function PlusPage() {
       setProgress(97);
       const data: PlusAnalysisResult = await res.json();
       clearInterval(progressInterval);
+      if (clubFallbackTimer) clearTimeout(clubFallbackTimer);
       setProgress(100);
       const pred = data.prediction as
         | { club_type?: string; club_group?: string; club_detection_confidence?: number; confidence?: number }
@@ -322,7 +340,7 @@ export default function PlusPage() {
       }
       if (data._plus_usage) setUsage(data._plus_usage);
       setResult(data);
-      if (isVideoBlobForOverlay(blob, filename) && blob.size > 0) {
+      if (isVideoFile(blob as File, filename) && blob.size > 0) {
         setSessionVideoSrc(URL.createObjectURL(blob));
       }
       setStage("results");
@@ -333,7 +351,9 @@ export default function PlusPage() {
         devWarn("[plus] history save failed:", e);
       }
     } catch (err: unknown) {
-      clearInterval(progressInterval); setProgress(0);
+      clearInterval(progressInterval);
+      if (clubFallbackTimer) clearTimeout(clubFallbackTimer);
+      setProgress(0);
       if (err instanceof DOMException && err.name === "AbortError") {
         setError(lang === "zh" ? "Plus 分析超时，请压缩视频后重试" : "Plus analysis timed out");
       } else {
