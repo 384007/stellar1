@@ -238,64 +238,6 @@ export default function PlusPage() {
     }
   }
 
-  function extractFrameFromBlob(blob: Blob): Promise<Blob | null> {
-    return new Promise((resolve) => {
-      const isVideo = blob.type.startsWith("video/") ||
-        /\.(mp4|mov|webm|avi|m4v)$/i.test((blob as File).name || "");
-      if (!isVideo && blob.type.startsWith("image/")) { resolve(blob); return; }
-      const video = document.createElement("video");
-      video.muted = true; video.playsInline = true; video.preload = "auto";
-      const url = URL.createObjectURL(blob);
-      video.src = url;
-      let resolved = false;
-      const cleanup = () => { try { URL.revokeObjectURL(url); } catch { /* */ } };
-      const done = (b: Blob | null) => { if (resolved) return; resolved = true; cleanup(); resolve(b); };
-      const timer = setTimeout(() => done(null), 10000);
-      const captureFrame = () => {
-        clearTimeout(timer);
-        try {
-          const w = video.videoWidth || 640, h = video.videoHeight || 480;
-          const canvas = document.createElement("canvas");
-          const scale = Math.min(640 / w, 1);
-          canvas.width = Math.round(w * scale); canvas.height = Math.round(h * scale);
-          const ctx = canvas.getContext("2d");
-          if (!ctx) { done(null); return; }
-          ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-          canvas.toBlob((b) => done(b), "image/jpeg", 0.8);
-        } catch { done(null); }
-      };
-      video.onseeked = captureFrame;
-      video.onloadeddata = () => {
-        if (video.duration && isFinite(video.duration) && video.duration > 0.5) video.currentTime = video.duration * 0.4;
-        else captureFrame();
-      };
-      video.onerror = () => { clearTimeout(timer); done(null); };
-      video.load();
-    });
-  }
-
-  async function detectClubFromBlob(blob: Blob) {
-    try {
-      const frameBlob = await extractFrameFromBlob(blob);
-      if (!frameBlob) return;
-      const fd = new FormData();
-      fd.append("frame", frameBlob, "frame.jpg");
-      const token = localStorage.getItem("stellar_token");
-      const headers: Record<string, string> = {};
-      if (token) headers["Authorization"] = `Bearer ${token}`;
-      const res = await fetch("/api/club-detect", { method: "POST", headers, body: fd });
-      if (!res.ok) return;
-      const club = await res.json();
-      const data: ClubDetection = {
-        club_type: club.club_type || "UNKNOWN",
-        club_group: club.club_group || "IRON",
-        confidence: club.confidence || 0,
-      };
-      setProcessingClub(data);
-      processingClubRef.current = data;
-    } catch { /* non-fatal */ }
-  }
-
   function handleProcessingClubChange(clubType: string) {
     setShowClubPicker(false);
     const groupMap: Record<string, string> = {};
@@ -332,14 +274,6 @@ export default function PlusPage() {
       });
     }, 800);
 
-    detectClubFromBlob(blob);
-    const clubFallbackTimer = setTimeout(() => {
-      if (!processingClubRef.current) {
-        const fb: ClubDetection = { club_type: "UNKNOWN", club_group: "IRON", confidence: 0 };
-        setProcessingClub(fb); processingClubRef.current = fb;
-      }
-    }, 6000);
-
     try {
       const token = localStorage.getItem("stellar_token");
       const authHeaders: Record<string, string> = token ? { Authorization: `Bearer ${token}` } : {};
@@ -366,8 +300,26 @@ export default function PlusPage() {
 
       setProgress(97);
       const data: PlusAnalysisResult = await res.json();
-      clearInterval(progressInterval); clearTimeout(clubFallbackTimer);
+      clearInterval(progressInterval);
       setProgress(100);
+      const pred = data.prediction as
+        | { club_type?: string; club_group?: string; club_detection_confidence?: number; confidence?: number }
+        | undefined;
+      if (pred) {
+        const cconf =
+          typeof pred.club_detection_confidence === "number"
+            ? pred.club_detection_confidence
+            : typeof pred.confidence === "number"
+              ? pred.confidence
+              : 0;
+        const cd: ClubDetection = {
+          club_type: typeof pred.club_type === "string" && pred.club_type ? pred.club_type : "UNKNOWN",
+          club_group: typeof pred.club_group === "string" && pred.club_group ? pred.club_group : "IRON",
+          confidence: cconf,
+        };
+        setProcessingClub(cd);
+        processingClubRef.current = cd;
+      }
       if (data._plus_usage) setUsage(data._plus_usage);
       setResult(data);
       if (isVideoBlobForOverlay(blob, filename) && blob.size > 0) {
@@ -381,7 +333,7 @@ export default function PlusPage() {
         devWarn("[plus] history save failed:", e);
       }
     } catch (err: unknown) {
-      clearInterval(progressInterval); clearTimeout(clubFallbackTimer); setProgress(0);
+      clearInterval(progressInterval); setProgress(0);
       if (err instanceof DOMException && err.name === "AbortError") {
         setError(lang === "zh" ? "Plus 分析超时，请压缩视频后重试" : "Plus analysis timed out");
       } else {

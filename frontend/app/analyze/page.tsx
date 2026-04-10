@@ -176,7 +176,7 @@ export default function AnalyzePage() {
   const [showExtendedHUD, setShowExtendedHUD] = useState(false);
   const [lang, setLang] = useState<"en" | "zh">("zh");
   const [activeTab, setActiveTab] = useState<"analysis" | "3d" | "comparison">("analysis");
-  /** 默认 Lite：避免未切换 Tab 就上传时仍按 Pro 预检 3×club-detect；与 ref 同步防竞态。 */
+  /** 默认 Lite：避免未切换 Tab 就上传时仍走 Pro 预检；与 ref 同步防竞态。 */
   const [analysisMode, setAnalysisMode] = useState<AnalysisMode>("lite");
   const analysisModeRef = useRef<AnalysisMode>("lite");
   const [username, setUsername] = useState("");
@@ -726,27 +726,6 @@ export default function AnalyzePage() {
       });
     }, 800);
 
-    let clubFallbackTimer: ReturnType<typeof setTimeout> | undefined;
-    /** Lite 仅走 ``POST /analyze/lite``；Pro 才预检 club-detect（ref 与 mode 双条件防竞态）。 */
-    const wantsEarlyClubHand = modeForRun === "pro" && analysisModeRef.current === "pro";
-    const clubDetectPromise = wantsEarlyClubHand
-      ? detectClubFromBlob(sendBlob, { enableHandPopup: true })
-      : Promise.resolve();
-    if (wantsEarlyClubHand) {
-      clubFallbackTimer = setTimeout(() => {
-        if (!processingClubRef.current) {
-          const fallback: ClubDetection = { club_type: "UNKNOWN", club_group: "IRON", confidence: 0 };
-          setProcessingClub(fallback);
-          processingClubRef.current = fallback;
-        }
-      }, 6000);
-    }
-
-    await Promise.race([
-      clubDetectPromise,
-      new Promise<void>((resolve) => setTimeout(resolve, 2800)),
-    ]);
-
     const proAbort = modeForRun === "pro" ? new AbortController() : null;
     proAnalyzeAbortRef.current = proAbort;
 
@@ -760,30 +739,29 @@ export default function AnalyzePage() {
         modeForRun === "lite" ? liteIdempotencyKeyRef.current : null,
       );
       clearInterval(progressInterval);
-      if (clubFallbackTimer) clearTimeout(clubFallbackTimer);
 
-      if (wantsEarlyClubHand) {
-        const userClub = processingClubRef.current as ClubDetection | null;
-        if (userClub && data.prediction) {
-          if (userClub.club_type !== "UNKNOWN") {
-            data.prediction.club_type = userClub.club_type;
-            data.prediction.club_group = userClub.club_group;
-            data.prediction.club_detection_confidence = userClub.confidence;
-          }
-          if (userClub.hand === "R" || userClub.hand === "L") {
-            data.prediction.hand = userClub.hand;
-            const hc = data.prediction.hand_confidence ?? 0;
-            data.prediction.hand_confidence = Math.max(
-              hc,
-              userClub.confidence > 0 ? Math.min(1, userClub.confidence + 0.05) : 0.72,
-            );
-          }
+      /** 单次主分析 run：杆型/左右手只来自本响应，不另发 ``/api/club-detect``。 */
+      if (data.prediction) {
+        const p = data.prediction;
+        const cd: ClubDetection = {
+          club_type: typeof p.club_type === "string" && p.club_type ? p.club_type : "UNKNOWN",
+          club_group: typeof p.club_group === "string" && p.club_group ? p.club_group : "IRON",
+          confidence: typeof p.club_detection_confidence === "number" ? p.club_detection_confidence : 0,
+          hand: p.hand === "L" || p.hand === "R" ? p.hand : undefined,
+        };
+        setProcessingClub(cd);
+        processingClubRef.current = cd;
+        if (p.hand === "R" || p.hand === "L") {
+          setDetectedHand(p.hand);
+          handRef.current = p.hand;
+          setShowHandPopup(false);
+        } else {
+          setDetectedHand("R");
+          setShowHandPopup(true);
         }
-      }
-
-      if (data.prediction?.hand && data.prediction.hand !== "UNKNOWN") {
-        setDetectedHand(data.prediction.hand);
-        handRef.current = data.prediction.hand;
+      } else {
+        setProcessingClub(null);
+        processingClubRef.current = null;
       }
 
       if (
@@ -839,7 +817,6 @@ export default function AnalyzePage() {
       }
     } catch (err: unknown) {
       clearInterval(progressInterval);
-      if (clubFallbackTimer) clearTimeout(clubFallbackTimer);
       setProgress(0);
       setProcessingProScreenMode(false);
       const msg = err instanceof Error ? err.message : "";
@@ -857,183 +834,6 @@ export default function AnalyzePage() {
     } finally {
       analysisInFlightRef.current = false;
       proAnalyzeAbortRef.current = null;
-    }
-  }
-
-  function extractFrameFromBlob(blob: Blob): Promise<Blob | null> {
-    return new Promise((resolve) => {
-      const isVideo = blob.type.startsWith("video/") ||
-        /\.(mp4|mov|webm|avi|m4v)$/i.test((blob as File).name || "");
-      if (!isVideo && blob.type.startsWith("image/")) {
-        resolve(blob);
-        return;
-      }
-      const video = document.createElement("video");
-      video.muted = true;
-      video.playsInline = true;
-      video.preload = "auto";
-      video.crossOrigin = "anonymous";
-      const url = URL.createObjectURL(blob);
-      video.src = url;
-      let resolved = false;
-      const cleanup = () => { try { URL.revokeObjectURL(url); } catch { /* */ } };
-      const done = (b: Blob | null) => { if (resolved) return; resolved = true; cleanup(); resolve(b); };
-      const timer = setTimeout(() => { devWarn("[club-detect] frame extraction timeout"); done(null); }, 10000);
-
-      const captureFrame = () => {
-        clearTimeout(timer);
-        try {
-          const w = video.videoWidth || 640;
-          const h = video.videoHeight || 480;
-          const canvas = document.createElement("canvas");
-          const scale = Math.min(640 / w, 1);
-          canvas.width = Math.round(w * scale);
-          canvas.height = Math.round(h * scale);
-          const ctx = canvas.getContext("2d");
-          if (!ctx) { done(null); return; }
-          ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-          canvas.toBlob((b) => done(b), "image/jpeg", 0.8);
-        } catch { done(null); }
-      };
-
-      video.onseeked = captureFrame;
-      video.onloadeddata = () => {
-        if (video.duration && isFinite(video.duration) && video.duration > 0.5) {
-          video.currentTime = video.duration * 0.4;
-        } else {
-          captureFrame();
-        }
-      };
-      video.onerror = () => { devWarn("[club-detect] video load error"); clearTimeout(timer); done(null); };
-      video.load();
-    });
-  }
-
-  function extractFrameAtPercent(blob: Blob, pct: number): Promise<Blob | null> {
-    return new Promise((resolve) => {
-      const isVideo = blob.type.startsWith("video/") || /\.(mp4|mov|webm|avi|m4v)$/i.test((blob as File).name || "");
-      if (!isVideo && blob.type.startsWith("image/")) { resolve(blob); return; }
-      const video = document.createElement("video");
-      video.muted = true; video.playsInline = true; video.preload = "auto"; video.crossOrigin = "anonymous";
-      const url = URL.createObjectURL(blob);
-      video.src = url;
-      let resolved = false;
-      const cleanup = () => { try { URL.revokeObjectURL(url); } catch { /* */ } };
-      const done = (b: Blob | null) => { if (resolved) return; resolved = true; cleanup(); resolve(b); };
-      const timer = setTimeout(() => done(null), 8000);
-      const captureFrame = () => {
-        clearTimeout(timer);
-        try {
-          const w = video.videoWidth || 640;
-          const h = video.videoHeight || 480;
-          const canvas = document.createElement("canvas");
-          const scale = Math.min(640 / w, 1);
-          canvas.width = Math.round(w * scale);
-          canvas.height = Math.round(h * scale);
-          const ctx = canvas.getContext("2d");
-          if (!ctx) { done(null); return; }
-          ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-          canvas.toBlob((b) => done(b), "image/jpeg", 0.8);
-        } catch { done(null); }
-      };
-      video.onseeked = captureFrame;
-      video.onloadeddata = () => {
-        if (video.duration && isFinite(video.duration) && video.duration > 0.5) {
-          video.currentTime = video.duration * pct;
-        } else captureFrame();
-      };
-      video.onerror = () => { clearTimeout(timer); done(null); };
-      video.load();
-    });
-  }
-
-  async function detectClubFromBlob(
-    blob: Blob,
-    options?: { enableHandPopup?: boolean },
-  ): Promise<void> {
-    /** 硬门禁：Lite 只允许 ``POST /analyze/lite`` 这一条分析链，禁止任何 ``/api/club-detect``（3 连发）。 */
-    if (analysisModeRef.current === "lite") {
-      return;
-    }
-    const enableHandPopup = options?.enableHandPopup ?? true;
-    try {
-      const token = localStorage.getItem("stellar_token");
-      const headers: Record<string, string> = {};
-      if (token) headers["Authorization"] = `Bearer ${token}`;
-
-      const framePcts = [0.25, 0.4, 0.6];
-      const frameBlobs = await Promise.all(framePcts.map(p => extractFrameAtPercent(blob, p)));
-      const validFrames = frameBlobs.filter((b): b is Blob => b != null && b.size > 0);
-      if (validFrames.length === 0) {
-        const single = await extractFrameFromBlob(blob);
-        if (single) validFrames.push(single);
-      }
-      if (validFrames.length === 0) {
-        devWarn("[club-detect] no frames extracted");
-        return;
-      }
-
-      const results = await Promise.all(validFrames.map(async (frameBlob) => {
-        try {
-          const fd = new FormData();
-          fd.append("frame", frameBlob, "frame.jpg");
-          const res = await fetch("/api/club-detect", { method: "POST", headers, body: fd });
-          if (!res.ok) return null;
-          return await res.json();
-        } catch { return null; }
-      }));
-
-      const valid = results.filter((r): r is { club_type: string; club_group: string; confidence: number; hand?: string } =>
-        r != null && r.club_type && r.club_type !== "UNKNOWN"
-      );
-
-      if (valid.length === 0) {
-        const first = results.find(r => r != null);
-        const hand = (first?.hand === "L" ? "L" : "R") as "R" | "L";
-        const fallback: ClubDetection = { club_type: "UNKNOWN", club_group: "IRON", confidence: 0, hand };
-        setProcessingClub(fallback);
-        processingClubRef.current = fallback;
-        if (!handConfirmed) {
-          setDetectedHand(hand);
-          handRef.current = hand;
-          if (enableHandPopup) setShowHandPopup(true);
-        }
-        return;
-      }
-
-      const votes: Record<string, { count: number; totalConf: number; group: string }> = {};
-      for (const r of valid) {
-        if (!votes[r.club_type]) votes[r.club_type] = { count: 0, totalConf: 0, group: r.club_group };
-        votes[r.club_type].count++;
-        votes[r.club_type].totalConf += r.confidence;
-      }
-      const sorted = Object.entries(votes).sort((a, b) => b[1].count - a[1].count || b[1].totalConf - a[1].totalConf);
-      const winner = sorted[0];
-      const avgConf = winner[1].totalConf / winner[1].count;
-
-      const handVotes = { R: 0, L: 0 };
-      for (const r of results.filter(Boolean)) {
-        const h = (r as { hand?: string }).hand === "L" ? "L" : "R";
-        handVotes[h]++;
-      }
-      const hand: "R" | "L" = handVotes.L > handVotes.R ? "L" : "R";
-
-      const data: ClubDetection = {
-        club_type: winner[0],
-        club_group: winner[1].group,
-        confidence: Math.round(avgConf * 100) / 100,
-        hand,
-      };
-      devLog("[club-detect] multi-frame result:", data, "votes:", votes);
-      setProcessingClub(data);
-      processingClubRef.current = data;
-      if (!handConfirmed) {
-        setDetectedHand(hand);
-        handRef.current = hand;
-        if (enableHandPopup) setShowHandPopup(true);
-      }
-    } catch (e) {
-      devWarn("[club-detect] error:", e);
     }
   }
 
@@ -1474,50 +1274,6 @@ export default function AnalyzePage() {
               onCancel={analysisMode === "pro" ? stopProAnalysis : undefined}
             />
 
-            {/* Pro / Lite: handedness confirmation during processing (after club detect when known). */}
-            {(analysisMode === "pro" || analysisMode === "lite") &&
-              showHandPopup &&
-              detectedHand &&
-              !handConfirmed &&
-              processingClub != null && (
-              <div className="fixed inset-0 z-[110] flex items-center justify-center bg-black/60 backdrop-blur-sm animate-fade-in">
-                <div className="mx-4 w-full max-w-sm rounded-2xl border border-brand-gold/30 bg-brand-dark/95 backdrop-blur-xl p-6 shadow-2xl">
-                  <p className="mb-1 text-center text-lg font-bold text-white">
-                    {lang === "zh" ? "检测到打球方式" : "Detected Swing Hand"}
-                  </p>
-                  <p className="mb-5 text-center text-sm text-white/50">
-                    {lang === "zh" ? "请确认以提高分析精度" : "Please confirm for better accuracy"}
-                  </p>
-                  <div className="flex gap-3 mb-4">
-                    <button
-                      onClick={() => { setDetectedHand("R"); handRef.current = "R"; }}
-                      className={`flex-1 rounded-xl border-2 py-4 text-center font-bold transition-all ${detectedHand === "R"
-                        ? "border-brand-gold bg-brand-gold/15 text-brand-gold"
-                        : "border-white/10 bg-white/5 text-white/40 hover:border-white/30"}`}
-                    >
-                      <span className="block text-2xl mb-1">🫱</span>
-                      {lang === "zh" ? "右手打球" : "Right-handed"}
-                    </button>
-                    <button
-                      onClick={() => { setDetectedHand("L"); handRef.current = "L"; }}
-                      className={`flex-1 rounded-xl border-2 py-4 text-center font-bold transition-all ${detectedHand === "L"
-                        ? "border-brand-gold bg-brand-gold/15 text-brand-gold"
-                        : "border-white/10 bg-white/5 text-white/40 hover:border-white/30"}`}
-                    >
-                      <span className="block text-2xl mb-1">🫲</span>
-                      {lang === "zh" ? "左手打球" : "Left-handed"}
-                    </button>
-                  </div>
-                  <button
-                    onClick={() => { void handleHandConfirm(); }}
-                    className="w-full rounded-xl bg-brand-gold py-3 text-sm font-bold text-black transition hover:bg-brand-gold/90"
-                  >
-                    {lang === "zh" ? "确认" : "Confirm"}
-                  </button>
-                </div>
-              </div>
-            )}
-
             {/* Lite：主分析 ``/analyze/lite`` 内带杆型/左右手；此处仅展示进度条，结果页再显示具体识别 */}
             {analysisMode === "lite" && (
               <div className="fixed bottom-6 left-4 right-4 z-50 animate-fade-in space-y-2">
@@ -1618,6 +1374,53 @@ export default function AnalyzePage() {
                 </div>
               </div>
             )}
+          </div>
+        )}
+
+        {(stage === "processing" || stage === "results") &&
+          (analysisMode === "pro" || analysisMode === "lite") &&
+          showHandPopup &&
+          detectedHand &&
+          !handConfirmed &&
+          processingClub != null && (
+          <div className="fixed inset-0 z-[110] flex items-center justify-center bg-black/60 backdrop-blur-sm animate-fade-in">
+            <div className="mx-4 w-full max-w-sm rounded-2xl border border-brand-gold/30 bg-brand-dark/95 backdrop-blur-xl p-6 shadow-2xl">
+              <p className="mb-1 text-center text-lg font-bold text-white">
+                {lang === "zh" ? "检测到打球方式" : "Detected Swing Hand"}
+              </p>
+              <p className="mb-5 text-center text-sm text-white/50">
+                {lang === "zh" ? "请确认以提高分析精度" : "Please confirm for better accuracy"}
+              </p>
+              <div className="flex gap-3 mb-4">
+                <button
+                  type="button"
+                  onClick={() => { setDetectedHand("R"); handRef.current = "R"; }}
+                  className={`flex-1 rounded-xl border-2 py-4 text-center font-bold transition-all ${detectedHand === "R"
+                    ? "border-brand-gold bg-brand-gold/15 text-brand-gold"
+                    : "border-white/10 bg-white/5 text-white/40 hover:border-white/30"}`}
+                >
+                  <span className="block text-2xl mb-1">🫱</span>
+                  {lang === "zh" ? "右手打球" : "Right-handed"}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => { setDetectedHand("L"); handRef.current = "L"; }}
+                  className={`flex-1 rounded-xl border-2 py-4 text-center font-bold transition-all ${detectedHand === "L"
+                    ? "border-brand-gold bg-brand-gold/15 text-brand-gold"
+                    : "border-white/10 bg-white/5 text-white/40 hover:border-white/30"}`}
+                >
+                  <span className="block text-2xl mb-1">🫲</span>
+                  {lang === "zh" ? "左手打球" : "Left-handed"}
+                </button>
+              </div>
+              <button
+                type="button"
+                onClick={() => { void handleHandConfirm(); }}
+                className="w-full rounded-xl bg-brand-gold py-3 text-sm font-bold text-black transition hover:bg-brand-gold/90"
+              >
+                {lang === "zh" ? "确认" : "Confirm"}
+              </button>
+            </div>
           </div>
         )}
 

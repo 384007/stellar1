@@ -402,33 +402,8 @@ def refine_mid_downswing_with_pose_motion(
     return out, fail, dbg
 
 
-def refine_lite_a_rows_with_phase_semantics(
-    rows: List[dict],
-    *,
-    analysis_frames: List[dict],
-    preprocess_meta: dict,
-    poses: List[dict] | None = None,
-    timeline: List[dict] | None = None,
-    motions: List[float] | None = None,
-    impact_hint_frame_index: int | None = None,
-    max_frame_index: int | None = None,
-) -> Tuple[List[dict], List[str], Dict[str, Any]]:
-    """Compatibility name — only mid-downswing may change."""
-    return refine_mid_downswing_with_pose_motion(
-        rows,
-        analysis_frames=analysis_frames,
-        preprocess_meta=preprocess_meta,
-        poses=poses,
-        timeline=timeline,
-        motions=motions,
-        impact_hint_frame_index=impact_hint_frame_index,
-        max_frame_index=max_frame_index,
-    )
-
-
 __all__ = [
     "ensure_eight_keyframe_rows",
     "refine_mid_downswing_with_pose_motion",
-    "refine_lite_a_rows_with_phase_semantics",
     "motion_value_at_frame",
 ]

@@ -11,7 +11,7 @@ from services.golfdb_swingnet_service import clear_swingnet_ctx
 from services.lite_ab_mirror.a_extract import run_lite_a_infer_only
 from services.lite_ab_mirror.a_gate import run_lite_a_gate
 from services.lite_ab_mirror.constants import TRUST_HIGH, TRUST_LOW
-from services.lite_ab_mirror.downswing_refine import refine_lite_a_rows_with_phase_semantics
+from services.lite_ab_mirror.downswing_refine import refine_mid_downswing_with_pose_motion
 from services.lite_timeline_motion import (
     lite_build_uniform_timeline,
     lite_impact_hint_from_timeline,
@@ -83,7 +83,7 @@ def run_lite_ab_after_preprocess(
         )
 
         rows = copy.deepcopy(infer.keyframes)
-        refined_rows, semantic_fail_reasons, sem_dbg = refine_lite_a_rows_with_phase_semantics(
+        refined_rows, refine_fail_reasons, refine_dbg = refine_mid_downswing_with_pose_motion(
             rows,
             analysis_frames=analysis_frames,
             preprocess_meta=preprocess_meta,
@@ -97,13 +97,13 @@ def run_lite_ab_after_preprocess(
             "%s %s downswing_refine action=%s reasons=%s dbg=%s",
             _LOG,
             _KF,
-            sem_dbg.get("action"),
-            semantic_fail_reasons,
-            {k: sem_dbg.get(k) for k in ("module", "action", "original_mds", "final_mds", "touched")},
+            refine_dbg.get("action"),
+            refine_fail_reasons,
+            {k: refine_dbg.get(k) for k in ("module", "action", "original_mds", "final_mds", "touched")},
         )
         role_log(
-            f"[ROLE=LITE_PIPELINE] {_KF} downswing_refine_done action={sem_dbg.get('action')!r} "
-            f"reasons={list(semantic_fail_reasons)!r}"
+            f"[ROLE=LITE_PIPELINE] {_KF} downswing_refine_done action={refine_dbg.get('action')!r} "
+            f"reasons={list(refine_fail_reasons)!r}"
         )
 
         if cancel_check:
@@ -113,13 +113,13 @@ def run_lite_ab_after_preprocess(
             fi = int(row.get("frame_index", 0))
             row["frame_index"] = max(0, min(fi, max_idx))
 
-        sem_for_gate = list(semantic_fail_reasons)
+        gate_extra_reasons = list(refine_fail_reasons)
         if infer.a_status == "fail":
             for r in infer.fail_reasons:
-                if r and r not in sem_for_gate:
-                    sem_for_gate.append(r)
+                if r and r not in gate_extra_reasons:
+                    gate_extra_reasons.append(r)
 
-        status, fail_reasons = run_lite_a_gate(refined_rows, semantic_fail_reasons=sem_for_gate)
+        status, fail_reasons = run_lite_a_gate(refined_rows, semantic_fail_reasons=gate_extra_reasons)
         logger.info("%s %s a_gate status=%s reasons=%s", _LOG, _KF, status, fail_reasons)
         role_log(
             f"[ROLE=LITE_PIPELINE] {_KF} a_gate status={status!r} reasons={list(fail_reasons)!r}"
