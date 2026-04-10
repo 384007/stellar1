@@ -137,6 +137,17 @@ def _norm_along_corridor(idx: int, top: int, imp: int) -> float:
     return (float(idx) - float(top)) / float(imp - top)
 
 
+def _poses_have_angle_data(poses: List[dict]) -> bool:
+    """True if any pose sample carries a non-empty ``angles`` dict (MediaPipe body lines)."""
+    for p in poses:
+        if not isinstance(p, dict):
+            continue
+        ang = p.get("angles")
+        if isinstance(ang, dict) and ang:
+            return True
+    return False
+
+
 def is_mid_downswing_suspicious(
     mds: int,
     top: int,
@@ -198,7 +209,8 @@ def refine_mid_downswing_with_pose_motion(
     """
     Post-process A's single 8-row output: only ``Mid-downswing.frame_index`` may change.
 
-    Re-selection uses MediaPipe pose in the exclusive window (Top+1 … Impact-1). No second A infer.
+    When MediaPipe pose carries ``angles``, always re-pick the best mid-downswing frame inside
+    (Top+1 … Impact-1) by pose score; other seven events are never modified. No second A infer.
     """
     _ = (timeline, motions, impact_hint_frame_index)
 
@@ -233,11 +245,14 @@ def refine_mid_downswing_with_pose_motion(
     ang_imp = _angles_at_frame(imp, vfps, pose_list)
     ang_mds = _angles_at_frame(mds, vfps, pose_list)
 
+    # With MediaPipe angles: always judge downswing in Top→Impact and pick best frame (only MDS row may change).
+    # Without angles: legacy path — only refine when structurally/pose suspicious.
+    always_pose_pick = _poses_have_angle_data(pose_list)
     suspicious = is_mid_downswing_suspicious(
         mds, top, imp, ang_mds=ang_mds, ang_top=ang_top, ang_imp=ang_imp
     )
 
-    if not suspicious:
+    if not always_pose_pick and not suspicious:
         dbg["action"] = "kept_mid_down_not_suspicious"
         dbg["final_mds"] = mds
         return working, fail, dbg
@@ -282,7 +297,13 @@ def refine_mid_downswing_with_pose_motion(
     )
     _clamp_mid_downswing_only(by, hi)
     dbg["touched"].append("Mid-downswing")
-    dbg["action"] = "refined_mid_down"
+    final_mds_i = int(by["Mid-downswing"]["frame_index"])
+    if always_pose_pick:
+        dbg["action"] = (
+            "refined_mid_down_pose_pick" if final_mds_i != mds else "pose_pick_best_equals_a"
+        )
+    else:
+        dbg["action"] = "refined_mid_down" if final_mds_i != mds else "refined_mid_down_unchanged"
     dbg["from_mds"] = mds
     dbg["to_mds"] = int(by["Mid-downswing"]["frame_index"])
     dbg["final_mds"] = dbg["to_mds"]
