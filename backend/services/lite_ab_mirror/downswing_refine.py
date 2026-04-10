@@ -172,6 +172,11 @@ def is_mid_downswing_suspicious(
     return False
 
 
+# Within this margin of the best pose score, treat frames as tied and prefer corridor mid (true mid-downswing).
+_SCORE_NEAR_BEST = 0.035
+_CORRIDOR_TARGET_REL = 0.42
+
+
 def _score_mid_down_candidate_mediapipe(
     idx: int,
     *,
@@ -192,6 +197,66 @@ def _score_mid_down_candidate_mediapipe(
     geom_sep = math.sqrt(max(1e-6, sep_top) * max(1e-6, sep_imp))
     pose_sep_norm = min(1.0, geom_sep / 35.0)
     return 0.78 * pose_sep_norm + 0.22 * corridor_bonus
+
+
+def _pick_best_mid_down_frame(
+    cand: List[int],
+    *,
+    mds: int,
+    top: int,
+    imp: int,
+    vfps: float,
+    poses: List[dict],
+    ang_top: Dict[str, float],
+    ang_imp: Dict[str, float],
+    suspicious: bool,
+) -> Tuple[int, float, str]:
+    """
+    Argmax pose score; among near-ties prefer ``rel`` closest to mid-corridor.
+    If ``suspicious``, exclude current ``mds`` when there is another candidate so MediaPipe can move the frame.
+    """
+    scored = [
+        (
+            idx,
+            _score_mid_down_candidate_mediapipe(
+                idx,
+                top=top,
+                imp=imp,
+                ang_top=ang_top,
+                ang_imp=ang_imp,
+                vfps=vfps,
+                poses=poses,
+            ),
+        )
+        for idx in cand
+    ]
+    if not scored:
+        return mds, -1e9, "empty"
+
+    pool = scored
+    strategy = "argmax"
+    if suspicious and len(cand) > 1:
+        alt = [(i, s) for i, s in scored if i != mds]
+        if alt:
+            pool = alt
+            strategy = "exclude_mds_when_suspicious"
+
+    best_s = max(s for _, s in pool)
+    tier = [(i, s) for i, s in pool if s >= best_s - _SCORE_NEAR_BEST]
+
+    def _corridor_key(t: Tuple[int, float]) -> Tuple[float, float, int]:
+        i, s = t
+        d = abs(_norm_along_corridor(i, top, imp) - _CORRIDOR_TARGET_REL)
+        return (d, -s, i)
+
+    tier.sort(key=_corridor_key)
+    best_i, best_sc = tier[0]
+    if len(tier) > 1:
+        if strategy == "argmax":
+            strategy = "near_tie_corridor"
+        elif strategy == "exclude_mds_when_suspicious":
+            strategy = "exclude_mds_near_tie_corridor"
+    return int(best_i), float(best_sc), strategy
 
 
 def refine_mid_downswing_with_pose_motion(
@@ -274,21 +339,61 @@ def refine_mid_downswing_with_pose_motion(
         dbg["final_mds"] = mds
         return working, fail, dbg
 
-    best = mds
-    best_s = -1e9
-    for idx in cand:
-        s = _score_mid_down_candidate_mediapipe(
-            idx,
-            top=top,
-            imp=imp,
-            ang_top=ang_top,
-            ang_imp=ang_imp,
-            vfps=vfps,
-            poses=pose_list,
-        )
-        if s > best_s:
-            best_s = s
-            best = idx
+    best, best_s, pick_strategy = _pick_best_mid_down_frame(
+        cand,
+        mds=mds,
+        top=top,
+        imp=imp,
+        vfps=vfps,
+        poses=pose_list,
+        ang_top=ang_top,
+        ang_imp=ang_imp,
+        suspicious=suspicious,
+    )
+
+    # A 的帧在 pose 上可能仍是 argmax，但时间轴上明显偏 Top / 偏 Impact：在其余帧里选「接近中段且分不太差」的替代。
+    if (
+        always_pose_pick
+        and int(best) == int(mds)
+        and len(cand) > 1
+        and imp > top + 2
+    ):
+        rel_m = _norm_along_corridor(mds, top, imp)
+        off_corridor = rel_m < _REL_MIN or rel_m > _REL_MAX or abs(rel_m - _CORRIDOR_TARGET_REL) > 0.12
+        if off_corridor:
+            others = [
+                idx
+                for idx in cand
+                if int(idx) != int(mds)
+            ]
+            if others:
+                rescored: List[Tuple[int, float]] = [
+                    (
+                        idx,
+                        _score_mid_down_candidate_mediapipe(
+                            idx,
+                            top=top,
+                            imp=imp,
+                            ang_top=ang_top,
+                            ang_imp=ang_imp,
+                            vfps=vfps,
+                            poses=pose_list,
+                        ),
+                    )
+                    for idx in others
+                ]
+                rescored.sort(
+                    key=lambda t: (
+                        abs(_norm_along_corridor(t[0], top, imp) - _CORRIDOR_TARGET_REL),
+                        -t[1],
+                    ),
+                )
+                alt_i, alt_s = rescored[0]
+                if alt_s >= best_s - 0.07:
+                    best, best_s = int(alt_i), float(alt_s)
+                    pick_strategy = f"{pick_strategy}+corridor_rebias"
+
+    dbg["pose_pick_strategy"] = pick_strategy
 
     by["Mid-downswing"]["frame_index"] = int(best)
     by["Mid-downswing"]["confidence"] = max(
