@@ -32,7 +32,7 @@ permissions:
   pull-requests: write
 
 concurrency:
-  group: stellar1-pages-preview-${{ github.repository }}-${{ github.sha }}
+  group: stellar1-pages-preview-${{ github.repository }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
