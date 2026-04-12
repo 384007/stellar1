@@ -100,10 +100,14 @@ jobs:
           elif [ "${{ github.event_name }}" = "pull_request" ]; then
             BRANCH_NAME="pr-${{ github.event.pull_request.number }}"
           else
-            # push（无 PR 时）：用分支名生成稳定、合法的 Pages preview branch
+            # push：feat/modal-centric-backend-proxies → pr-50
             REF_NAME="${{ github.ref_name }}"
-            SAFE=$(echo "$REF_NAME" | tr '[:upper:]' '[:lower:]' | sed -e 's/[^a-z0-9._-]/-/g' -e 's/--*/-/g' | cut -c1-48)
-            BRANCH_NAME="push-${SAFE}"
+            if [ "$REF_NAME" = "feat/modal-centric-backend-proxies" ]; then
+              BRANCH_NAME="pr-50"
+            else
+              SAFE=$(echo "$REF_NAME" | tr '[:upper:]' '[:lower:]' | sed -e 's/[^a-z0-9._-]/-/g' -e 's/--*/-/g' | cut -c1-48)
+              BRANCH_NAME="push-${SAFE}"
+            fi
           fi
           echo "Using Cloudflare Pages branch: $BRANCH_NAME"
           LOG_FILE="$RUNNER_TEMP/wrangler-preview.log"
