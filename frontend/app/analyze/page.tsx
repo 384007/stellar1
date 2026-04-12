@@ -251,6 +251,15 @@ export default function AnalyzePage() {
     "PT": "推杆",
   };
 
+  const litePredictionView = useMemo(() => {
+    const pred = result?.prediction;
+    const clubType = pred?.club_type || "UNKNOWN";
+    const hand = pred?.hand || "UNKNOWN";
+    const handConfidence = typeof pred?.hand_confidence === "number" ? pred.hand_confidence : 0;
+    const lowHandConfidence = hand !== "R" && hand !== "L" ? true : handConfidence < 0.6;
+    return { clubType, hand, handConfidence, lowHandConfidence };
+  }, [result]);
+
 
   useEffect(() => {
     const token = localStorage.getItem("stellar_token");
@@ -755,14 +764,22 @@ export default function AnalyzePage() {
         if (p.hand === "R" || p.hand === "L") {
           setDetectedHand(p.hand);
           handRef.current = p.hand;
-          setShowHandPopup(false);
+          setShowHandPopup(Boolean((p.hand_confidence ?? 0) < 0.6));
         } else {
           setDetectedHand("R");
           setShowHandPopup(true);
         }
       } else {
-        setProcessingClub(null);
-        processingClubRef.current = null;
+        const fallbackClub: ClubDetection = {
+          club_type: "UNKNOWN",
+          club_group: "IRON",
+          confidence: 0,
+          hand: undefined,
+        };
+        setProcessingClub(fallbackClub);
+        processingClubRef.current = fallbackClub;
+        setDetectedHand("R");
+        setShowHandPopup(true);
       }
 
       if (
@@ -1283,15 +1300,22 @@ export default function AnalyzePage() {
                   clubType={processingClub?.club_type}
                   clubConfidence={processingClub?.confidence}
                   hand={(processingClub?.hand as "R" | "L" | "UNKNOWN" | undefined) ?? detectedHand ?? "UNKNOWN"}
-                  pending={processingClub == null}
+                  pending={true}
                 />
-                <div className="flex justify-center">
+                <div className="flex justify-center gap-2">
                   <button
                     type="button"
                     onClick={() => setShowClubPicker(true)}
                     className="rounded-xl border border-brand-purple/35 bg-brand-purple/15 px-4 py-2 text-xs font-medium text-brand-purple transition hover:bg-brand-purple/25"
                   >
                     {lang === "zh" ? "修改球杆" : "Change club"}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setShowHandPopup(true)}
+                    className="rounded-xl border border-brand-purple/35 bg-brand-purple/15 px-4 py-2 text-xs font-medium text-brand-purple transition hover:bg-brand-purple/25"
+                  >
+                    {lang === "zh" ? "确认左右手" : "Confirm hand"}
                   </button>
                 </div>
               </div>
@@ -1382,8 +1406,7 @@ export default function AnalyzePage() {
           (analysisMode === "pro" || analysisMode === "lite") &&
           showHandPopup &&
           detectedHand &&
-          !handConfirmed &&
-          processingClub != null && (
+          !handConfirmed && (
           <div className="fixed inset-0 z-[110] flex items-center justify-center bg-black/60 backdrop-blur-sm animate-fade-in">
             <div className="mx-4 w-full max-w-sm rounded-2xl border border-brand-gold/30 bg-brand-dark/95 backdrop-blur-xl p-6 shadow-2xl">
               <p className="mb-1 text-center text-lg font-bold text-white">
@@ -1494,18 +1517,34 @@ export default function AnalyzePage() {
               <div className="space-y-2">
                 <ClubHandSummaryBar
                   lang={lang}
-                  clubType={result.prediction.club_type}
+                  clubType={litePredictionView.clubType}
                   clubConfidence={result.prediction.club_detection_confidence}
-                  hand={result.prediction.hand}
+                  hand={litePredictionView.hand as "R" | "L" | "UNKNOWN"}
                   pending={false}
                 />
-                <button
-                  type="button"
-                  onClick={() => setShowClubPicker(true)}
-                  className="w-full rounded-xl border border-brand-purple/35 bg-brand-purple/10 py-2.5 text-xs font-medium text-brand-purple transition hover:bg-brand-purple/20"
-                >
-                  {lang === "zh" ? "修改球杆" : "Change club"}
-                </button>
+                <div className="grid grid-cols-2 gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setShowClubPicker(true)}
+                    className="w-full rounded-xl border border-brand-purple/35 bg-brand-purple/10 py-2.5 text-xs font-medium text-brand-purple transition hover:bg-brand-purple/20"
+                  >
+                    {lang === "zh" ? "修改球杆" : "Change club"}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setShowHandPopup(true)}
+                    className="w-full rounded-xl border border-brand-purple/35 bg-brand-purple/10 py-2.5 text-xs font-medium text-brand-purple transition hover:bg-brand-purple/20"
+                  >
+                    {lang === "zh" ? "确认左右手" : "Confirm hand"}
+                  </button>
+                </div>
+                {litePredictionView.lowHandConfidence && (
+                  <p className="text-xs text-yellow-300/90">
+                    {lang === "zh"
+                      ? "左右手识别置信度较低，请确认。"
+                      : "Handedness confidence is low. Please confirm."}
+                  </p>
+                )}
               </div>
             )}
 

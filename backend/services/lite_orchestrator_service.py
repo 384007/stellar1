@@ -231,14 +231,13 @@ async def run_lite_orchestrator(video_path: str, *, region: str = "global") -> d
             poses=poses,
             impact_pose_idx=impact_pose_idx,
         )
+        prediction["hand"] = hand if hand in ("R", "L") else "UNKNOWN"
+        prediction["hand_confidence"] = float(hand_info.get("confidence") or 0.0)
+        prediction["club_type"] = ct if ct != "UNKNOWN" else "UNKNOWN"
+        prediction["club_group"] = cg if ct != "UNKNOWN" else "IRON"
+        prediction["club_detection_confidence"] = cconf if ct != "UNKNOWN" else 0.0
         if ct != "UNKNOWN":
-            prediction["club_type"] = ct
-            prediction["club_group"] = cg
-            prediction["club_detection_confidence"] = cconf
             prediction = calibrate_prediction(prediction, club_type=ct, club_group=cg)
-        else:
-            prediction.setdefault("club_type", "UNKNOWN")
-            prediction.setdefault("club_group", "IRON")
 
         tracking_quality = 1.0 if len(poses) >= 30 else (0.65 if len(poses) >= 15 else 0.35)
         analysis_reliability = cap_confidence(
