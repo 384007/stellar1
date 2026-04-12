@@ -37,13 +37,7 @@ concurrency:
 
 jobs:
   pages-preview:
-    # Note: `secrets` is not allowed in job-level `if` (GitHub parses the workflow before secrets exist).
-    # push：仅本仓库分支；fork 的 PR 仍仅在同仓库 PR 时跑（与原先一致）。
-    if: >-
-      github.event_name == 'workflow_dispatch' ||
-      github.event_name == 'push' ||
-      (github.event_name == 'pull_request' &&
-        github.event.pull_request.head.repo.full_name == github.repository)
+    if: github.event_name == 'workflow_dispatch' || github.event_name == 'push' || github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     defaults:
       run:
