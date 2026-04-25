@@ -5,7 +5,7 @@ import math
 import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
 
 import cv2
 import mediapipe as mp
@@ -399,11 +399,11 @@ def _compute_metrics(
         "confidence": round(confidence, 3),
         "estimated_note": "video-based estimate",
         "scores": {
-            "score_path_smoothness": round(score_path, 1),
-            "score_club_speed": round(min(100.0, club_mph), 1),
-            "score_tempo": round(score_tempo, 1),
-            "score_body_stability": round(score_body, 1),
-            "score_impact": round(score_impact, 1),
+            "path_smoothness_score": round(score_path, 1),
+            "club_speed_score": round(min(100.0, club_mph), 1),
+            "tempo_score": round(score_tempo, 1),
+            "body_stability_score": round(score_body, 1),
+            "impact_score": round(score_impact, 1),
             "overall_score": round(overall, 1),
         },
     }
@@ -418,12 +418,27 @@ def _extract_calibration(calibration_json: str | None) -> dict[str, Any] | None:
         return None
 
 
+def _strip_internal_fields(obj: Any) -> Any:
+    if isinstance(obj, dict):
+        hidden = {"source", "providers", "provider", "adapter", "debug", "stack", "traceback"}
+        out = {}
+        for k, v in obj.items():
+            if k in hidden:
+                continue
+            out[k] = _strip_internal_fields(v)
+        return out
+    if isinstance(obj, list):
+        return [_strip_internal_fields(x) for x in obj]
+    return obj
+
+
 def run_shot_tracer_reconstruct(
     video_path: str,
     front_view_path: str | None = None,
     side_view_path: str | None = None,
     calibration_json: str | None = None,
     mode: str = "single_video",
+    include_debug: bool = False,
 ) -> dict[str, Any]:
     cap = cv2.VideoCapture(video_path)
     if not cap.isOpened():
@@ -594,9 +609,9 @@ def run_shot_tracer_reconstruct(
         "ball_tracker": ball_track[0].source if ball_track else "opencv_motion_fallback",
         "3d": "mediapipe_world_landmarks",
     }
-    if mode == "trellis_asset" and os.getenv("STELLAR_TRELLIS_API_URL"):
+    if mode == "3d_scene" and os.getenv("STELLAR_TRELLIS_API_URL"):
         providers["3d_asset"] = "trellis"
-    if mode == "postshot_scene" and os.getenv("STELLAR_POSTSHOT_API_URL"):
+    if mode == "3d_scene" and os.getenv("STELLAR_POSTSHOT_API_URL"):
         providers["scene"] = "postshot"
 
     response = {
@@ -642,6 +657,10 @@ def run_shot_tracer_reconstruct(
         },
         "metrics": metrics,
         "providers": providers,
+        "display": {
+            "data_label": "Video-based Estimate",
+            "accuracy_notice": "Single-camera estimates are not radar measurements.",
+        },
         "limitations": [
             "single-camera video estimates are not radar-accurate",
             "professional ball speed/spin requires dual-camera, high-speed video, calibration, or radar hardware",
@@ -654,4 +673,6 @@ def run_shot_tracer_reconstruct(
             "calibration": bool(calibration),
         },
     }
-    return response
+    if include_debug:
+        return response
+    return _strip_internal_fields(response)

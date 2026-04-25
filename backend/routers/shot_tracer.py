@@ -4,7 +4,7 @@ import os
 import tempfile
 from pathlib import Path
 
-from fastapi import APIRouter, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, File, Form, HTTPException, Query, UploadFile
 
 from services.shot_tracer_reconstruct_service import run_shot_tracer_reconstruct
 
@@ -25,8 +25,9 @@ async def reconstruct_shot_tracer(
     side_view: UploadFile | None = File(None),
     calibration_json: str | None = Form(None),
     mode: str = Form("single_video"),
+    debug: int = Query(0),
 ):
-    allowed_modes = {"single_video", "dual_camera", "high_speed", "trellis_asset", "postshot_scene"}
+    allowed_modes = {"single_video", "dual_camera", "high_speed", "3d_scene"}
     if mode not in allowed_modes:
         raise HTTPException(status_code=400, detail=f"invalid mode: {mode}")
 
@@ -48,6 +49,7 @@ async def reconstruct_shot_tracer(
             side_view_path=side_path,
             calibration_json=calibration_json,
             mode=mode,
+            include_debug=bool(debug),
         )
         return data
     except HTTPException:

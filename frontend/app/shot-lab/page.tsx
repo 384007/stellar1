@@ -5,7 +5,8 @@ import { useRouter } from "next/navigation";
 import UploadZone from "@/components/UploadZone";
 import AnalysisWaiting from "@/components/AnalysisWaiting";
 import ScreenModeCapture from "@/components/ScreenModeCapture";
-import { preloadPoseModel } from "@/lib/mediapipe-assets";
+import AiShotTracerPanel from "@/components/shotlab/AiShotTracerPanel";
+import { preloadVisionPoseModel } from "@/lib/pose-preload";
 import { fetchWithRetry, makeFormData } from "@/lib/fetch-retry";
 import { readLiteAnalyzeResult } from "@/lib/read-lite-analyze-response";
 import {
@@ -30,11 +31,13 @@ import {
   reanalyzeHistoryFilename,
 } from "@/lib/reanalyze-from-history";
 import { devWarn } from "@/lib/dev-only-log";
+import { sanitizeShotTracerResultForUI, type ShotTracerUiResult } from "@/lib/shot-tracer-ui";
 
 type Stage = "upload" | "processing" | "results";
 type Lang = "en" | "zh";
 type InputMode = "upload" | "capture" | "screen";
 type ResultTab = "metrics" | "trajectory" | "issues" | "drills" | "report" | "compare" | "trend";
+type TracerStage = "idle" | "uploading" | "reconstructing" | "tracing" | "render3d" | "done" | "failed";
 
 interface LabResponse {
   job_id: string;
@@ -102,41 +105,6 @@ function ProLockCard({ lang, title, titleZh, description, descriptionZh }: {
       <a href="/pro-login" className="mt-3 inline-block rounded-lg bg-brand-gold/15 border border-brand-gold/25 px-4 py-1.5 text-xs font-semibold text-brand-gold transition hover:bg-brand-gold/25">
         {lang === "zh" ? "解锁 Pro" : "Unlock Pro"}
       </a>
-    </div>
-  );
-}
-
-function ShotTracerPlaceholder({ lang, locked }: { lang: Lang; locked: boolean }) {
-  return (
-    <div className="glass-card p-5 relative overflow-hidden">
-      <div className="mb-3 flex items-center justify-between">
-        <h3 className="text-base font-semibold text-white">{lang === "zh" ? "弹道轨迹" : "Shot Tracer"}</h3>
-        <span className="text-[9px] text-white/20 italic">{lang === "zh" ? "视频估算" : "video estimate"}</span>
-      </div>
-      <div className="relative h-40 rounded-xl bg-gradient-to-t from-green-900/20 via-transparent to-blue-900/10 border border-white/5 flex items-center justify-center">
-        <div className="absolute inset-0 overflow-hidden rounded-xl">
-          <svg className="w-full h-full" viewBox="0 0 400 160" fill="none" xmlns="http://www.w3.org/2000/svg">
-            <path
-              d="M 40 140 Q 120 20, 200 30 Q 280 40, 360 120"
-              stroke="rgba(234,179,8,0.3)"
-              strokeWidth="2"
-              strokeDasharray="6 4"
-              fill="none"
-            />
-            <circle cx="40" cy="140" r="4" fill="rgba(234,179,8,0.5)" />
-            <circle cx="360" cy="120" r="3" fill="rgba(234,179,8,0.3)" />
-          </svg>
-        </div>
-        {locked && (
-          <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/50 backdrop-blur-[3px] rounded-xl">
-            <span className="rounded-full bg-brand-gold/10 border border-brand-gold/20 px-3 py-1 text-[10px] font-bold text-brand-gold mb-2">PRO</span>
-            <p className="text-[10px] text-white/40">{lang === "zh" ? "完整弹道轨迹与叠加层" : "Full trajectory overlay"}</p>
-          </div>
-        )}
-        {!locked && (
-          <p className="text-xs text-white/30 z-10">{lang === "zh" ? "基础弹道预览（基于 AI 估算）" : "Basic trajectory (AI estimated)"}</p>
-        )}
-      </div>
     </div>
   );
 }
@@ -263,6 +231,12 @@ export default function ShotLabPage() {
   const [resultTab, setResultTab] = useState<ResultTab>("metrics");
   const [trendData, setTrendData] = useState<LabTrendPoint[]>([]);
   const [trendLoading, setTrendLoading] = useState(false);
+  const [lastUploadFile, setLastUploadFile] = useState<File | null>(null);
+  const [lastUploadVideoUrl, setLastUploadVideoUrl] = useState<string | null>(null);
+  const [shotTracerResult, setShotTracerResult] = useState<ShotTracerUiResult | null>(null);
+  const [shotTracerBusy, setShotTracerBusy] = useState(false);
+  const [shotTracerStage, setShotTracerStage] = useState<TracerStage>("idle");
+  const [shotTracerError, setShotTracerError] = useState("");
   const [compareSelectMode, setCompareSelectMode] = useState(false);
   const [compareIds, setCompareIds] = useState<string[]>([]);
   const [compareResult, setCompareResult] = useState<{ shots: Record<string, unknown>[]; diff: Record<string, { a: number | null; b: number | null; delta: number | null }> } | null>(null);
@@ -285,7 +259,7 @@ export default function ShotLabPage() {
     const storedLang = localStorage.getItem("stellar_lang");
     if (storedLang === "en" || storedLang === "zh") setLang(storedLang);
     setAuthChecked(true);
-    preloadPoseModel();
+    preloadVisionPoseModel();
   }, [router]);
 
   const loadHistory = useCallback(async () => {
@@ -533,6 +507,14 @@ export default function ShotLabPage() {
   }, [fetchUnifiedPrediction, lang, loadHistory]);
 
   const handleUpload = useCallback((file: File) => {
+    setLastUploadFile(file);
+    setShotTracerResult(null);
+    setShotTracerError("");
+    setShotTracerStage("idle");
+    setLastUploadVideoUrl((prev) => {
+      if (prev && prev.startsWith("blob:")) URL.revokeObjectURL(prev);
+      return isVideoFile(file, file.name) ? URL.createObjectURL(file) : null;
+    });
     void submitLabAnalysisFile(file);
   }, [submitLabAnalysisFile]);
 
@@ -562,6 +544,12 @@ export default function ShotLabPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [authChecked]);
 
+  useEffect(() => {
+    return () => {
+      if (lastUploadVideoUrl && lastUploadVideoUrl.startsWith("blob:")) URL.revokeObjectURL(lastUploadVideoUrl);
+    };
+  }, [lastUploadVideoUrl]);
+
   async function loadTrend() {
     const token = localStorage.getItem("stellar_token");
     if (!token || trendLoading) return;
@@ -574,6 +562,45 @@ export default function ShotLabPage() {
       }
     } catch { /* ignore */ }
     setTrendLoading(false);
+  }
+
+  async function runShotTracerReconstruction() {
+    if (!lastUploadFile) {
+      setShotTracerError(lang === "zh" ? "请先上传挥杆视频" : "Please upload a swing video first.");
+      return;
+    }
+    setShotTracerBusy(true);
+    setShotTracerError("");
+    setShotTracerStage("uploading");
+    try {
+      const fd = new FormData();
+      fd.append("file", lastUploadFile, lastUploadFile.name);
+      fd.append("mode", "single_video");
+
+      setShotTracerStage("reconstructing");
+      const res = await fetch("/api/shot-tracer/reconstruct", {
+        method: "POST",
+        body: fd,
+        signal: AbortSignal.timeout(360_000),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setShotTracerStage("failed");
+        setShotTracerError((data?.detail as string) || (lang === "zh" ? "AI 重建失败，请重试" : "AI reconstruction failed."));
+        return;
+      }
+      setShotTracerStage("tracing");
+      const cleaned = sanitizeShotTracerResultForUI(data);
+      setShotTracerResult(cleaned);
+      setShotTracerStage("render3d");
+      setTimeout(() => setShotTracerStage("done"), 350);
+      setResultTab("trajectory");
+    } catch (err) {
+      setShotTracerStage("failed");
+      setShotTracerError(err instanceof Error ? err.message : (lang === "zh" ? "AI 重建失败，请重试" : "AI reconstruction failed."));
+    } finally {
+      setShotTracerBusy(false);
+    }
   }
 
   async function handleCompare() {
@@ -666,6 +693,15 @@ export default function ShotLabPage() {
   }
 
   const result = labResponse?.result;
+  const shotTracerStatusText = (() => {
+    if (shotTracerStage === "uploading") return lang === "zh" ? "上传中" : "Uploading";
+    if (shotTracerStage === "reconstructing") return lang === "zh" ? "AI 重建中" : "AI reconstructing";
+    if (shotTracerStage === "tracing") return lang === "zh" ? "轨迹生成中" : "Generating trajectories";
+    if (shotTracerStage === "render3d") return lang === "zh" ? "3D 视图生成中" : "Building 3D view";
+    if (shotTracerStage === "done") return lang === "zh" ? "完成" : "Completed";
+    if (shotTracerStage === "failed") return lang === "zh" ? "失败，请重试" : "Failed, please retry";
+    return "";
+  })();
   const tier = labResponse?.tier || (isPro ? "pro" : "free");
   const fv = result?.fields_visibility;
 
@@ -1072,7 +1108,16 @@ export default function ShotLabPage() {
 
             {/* ── Trajectory Tab ── */}
             {resultTab === "trajectory" && (
-              <ShotTracerPlaceholder lang={lang} locked={fv?.trajectory_full === "locked"} />
+              <AiShotTracerPanel
+                lang={lang}
+                videoUrl={lastUploadVideoUrl}
+                result={shotTracerResult}
+                busy={shotTracerBusy}
+                statusText={shotTracerStatusText}
+                onRun={runShotTracerReconstruction}
+                runDisabled={!lastUploadFile}
+                error={shotTracerError}
+              />
             )}
 
             {/* ── Issues Tab ── */}

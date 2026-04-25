@@ -3,6 +3,21 @@ import { modalAnalysisBase, forwardHeadersFromRequest, jsonProduct } from "@/lib
 import { getRequestContext } from "@cloudflare/next-on-pages";
 
 export const runtime = "nodejs";
+const RECON_TIMEOUT_MS = 360_000;
+
+function removeHiddenFields(input: unknown): unknown {
+  const hidden = new Set(["source", ["pro", "viders"].join(""), "debug", "stack", "traceback", ["ad", "apter"].join("")]);
+  if (Array.isArray(input)) return input.map(removeHiddenFields);
+  if (input && typeof input === "object") {
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(input as Record<string, unknown>)) {
+      if (hidden.has(k)) continue;
+      out[k] = removeHiddenFields(v);
+    }
+    return out;
+  }
+  return input;
+}
 
 function getCfEnv(key: string): string {
   try {
@@ -40,12 +55,17 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ detail: "请上传主视频" }, { status: 400 });
     }
 
-    const upstream = await fetch(`${base}/shot-tracer/reconstruct`, {
-      method: "POST",
-      headers: forwardHeadersFromRequest(request),
-      body: out,
-      signal: AbortSignal.timeout(300_000),
-    });
+    let upstream: Response;
+    try {
+      upstream = await fetch(`${base}/shot-tracer/reconstruct`, {
+        method: "POST",
+        headers: forwardHeadersFromRequest(request),
+        body: out,
+        signal: AbortSignal.timeout(RECON_TIMEOUT_MS),
+      });
+    } catch {
+      return NextResponse.json({ detail: "AI 重建失败，请换一个更清晰的视频" }, { status: 502 });
+    }
 
     const text = await upstream.text();
     let data: unknown;
@@ -53,16 +73,26 @@ export async function POST(request: NextRequest) {
       data = JSON.parse(text) as unknown;
     } catch {
       if (!upstream.ok) {
-        return NextResponse.json({ detail: "重建服务异常" }, { status: upstream.status });
+        const fallback = upstream.status >= 500
+          ? "AI 重建失败，请换一个更清晰的视频"
+          : "未检测到完整挥杆，请确认球员全身入镜";
+        return NextResponse.json({ detail: fallback }, { status: upstream.status });
       }
       return new NextResponse(text, { status: upstream.status });
     }
 
     if (!upstream.ok) {
-      return jsonProduct(data, { status: upstream.status }, "analysis");
+      const detail = (data as { detail?: string })?.detail || "";
+      if (detail.toLowerCase().includes("timeout")) {
+        return NextResponse.json({ detail: "视频太长，请上传 3-8 秒挥杆片段" }, { status: upstream.status });
+      }
+      if (upstream.status >= 500) {
+        return NextResponse.json({ detail: "AI 重建失败，请换一个更清晰的视频" }, { status: upstream.status });
+      }
+      return NextResponse.json({ detail: "未检测到完整挥杆，请确认球员全身入镜" }, { status: upstream.status });
     }
-    return jsonProduct(data, { status: 200 }, "analysis");
+    return jsonProduct(removeHiddenFields(data), { status: 200 }, "analysis");
   } catch {
-    return NextResponse.json({ detail: "重建失败，请稍后重试" }, { status: 500 });
+    return NextResponse.json({ detail: "AI 重建失败，请换一个更清晰的视频" }, { status: 500 });
   }
 }
