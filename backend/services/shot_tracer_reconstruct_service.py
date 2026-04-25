@@ -3,15 +3,15 @@ from __future__ import annotations
 import json
 import math
 import os
+from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Deque, Iterable
 
 import cv2
+import httpx
 import mediapipe as mp
 import numpy as np
-import httpx
-from ultralytics import YOLO
 
 
 POSE_KEYS = {
@@ -30,6 +30,8 @@ POSE_KEYS = {
     "right_ankle": 28,
 }
 
+_FALLBACK_WINDOW_FRAMES = 60
+
 
 @dataclass
 class TrackPoint:
@@ -43,6 +45,7 @@ class TrackPoint:
 
 class ClubDetectorAdapter:
     name = "base"
+    unavailable_reason: str | None = None
 
     def detect(self, frame: np.ndarray, frame_index: int, pose: dict[str, Any] | None) -> tuple[TrackPoint | None, dict[str, Any] | None]:
         return None, None
@@ -50,16 +53,25 @@ class ClubDetectorAdapter:
 
 class BallTrackerAdapter:
     name = "base"
+    unavailable_reason: str | None = None
 
     def detect(self, frame: np.ndarray, frame_index: int) -> TrackPoint | None:
         return None
+
+
+def _load_yolo_model(weights_path: str) -> Any:
+    try:
+        from ultralytics import YOLO
+    except ImportError as exc:
+        raise RuntimeError("ultralytics is not installed; YOLO adapter disabled") from exc
+    return YOLO(weights_path)
 
 
 class YoloClubDetector(ClubDetectorAdapter):
     name = "yolo_club_head"
 
     def __init__(self, weights_path: str):
-        self.model = YOLO(weights_path)
+        self.model = _load_yolo_model(weights_path)
 
     def detect(self, frame: np.ndarray, frame_index: int, pose: dict[str, Any] | None) -> tuple[TrackPoint | None, dict[str, Any] | None]:
         result = self.model.predict(source=frame, verbose=False, conf=0.15)[0]
@@ -146,7 +158,7 @@ class YoloBallTracker(BallTrackerAdapter):
     name = "yolo_golf_ball"
 
     def __init__(self, weights_path: str):
-        self.model = YOLO(weights_path)
+        self.model = _load_yolo_model(weights_path)
 
     def detect(self, frame: np.ndarray, frame_index: int) -> TrackPoint | None:
         result = self.model.predict(source=frame, verbose=False, conf=0.1)[0]
@@ -245,8 +257,7 @@ def _path_to_svg(points: list[TrackPoint]) -> str:
     if not points:
         return ""
     cmds = [f"M {points[0].nx:.4f} {points[0].ny:.4f}"]
-    for p in points[1:]:
-        cmds.append(f"L {p.nx:.4f} {p.ny:.4f}")
+    cmds.extend(f"L {p.nx:.4f} {p.ny:.4f}" for p in points[1:])
     return " ".join(cmds)
 
 
@@ -257,18 +268,18 @@ def _polyfit_ball(points: list[TrackPoint]) -> list[TrackPoint]:
     ys = np.array([p.ny for p in points])
     coeffs = np.polyfit(xs, ys, deg=2)
     ys_fit = np.polyval(coeffs, xs)
-    out = []
-    for p, y in zip(points, ys_fit):
-        out.append(TrackPoint(p.frame_index, p.timestamp, float(p.nx), float(y), p.confidence, p.source))
-    return out
+    return [TrackPoint(p.frame_index, p.timestamp, float(p.nx), float(y), p.confidence, p.source) for p, y in zip(points, ys_fit)]
 
 
-def _motion_ball_fallback(frames: list[np.ndarray], start_idx: int, fps: float) -> list[TrackPoint]:
-    if len(frames) < 2:
+def _motion_ball_fallback(frames: Iterable[tuple[int, np.ndarray]], fps: float) -> list[TrackPoint]:
+    iterator = iter(frames)
+    try:
+        prev_idx, prev_frame = next(iterator)
+    except StopIteration:
         return []
-    prev_gray = cv2.cvtColor(frames[0], cv2.COLOR_BGR2GRAY)
+    prev_gray = cv2.cvtColor(prev_frame, cv2.COLOR_BGR2GRAY)
     track: list[TrackPoint] = []
-    for i, frame in enumerate(frames[1:], start=1):
+    for frame_idx, frame in iterator:
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         diff = cv2.absdiff(gray, prev_gray)
         _, th = cv2.threshold(diff, 28, 255, cv2.THRESH_BINARY)
@@ -283,8 +294,9 @@ def _motion_ball_fallback(frames: list[np.ndarray], start_idx: int, fps: float) 
                 best = (area, cx, cy)
         if best:
             _, cx, cy = best
-            track.append(TrackPoint(start_idx + i, (start_idx + i) / max(fps, 1e-6), float(cx / frame.shape[1]), float(cy / frame.shape[0]), 0.25, "opencv_motion_fallback"))
+            track.append(TrackPoint(frame_idx, frame_idx / max(fps, 1e-6), float(cx / frame.shape[1]), float(cy / frame.shape[0]), 0.25, "opencv_motion_fallback"))
         prev_gray = gray
+        prev_idx = frame_idx
     return track
 
 
@@ -310,8 +322,7 @@ def _infer_impact(club: list[TrackPoint], hands: list[TrackPoint], balls: list[T
             candidates.append((seq[i].frame_index, d * w))
     if not candidates:
         return 0
-    candidates.sort(key=lambda x: x[1], reverse=True)
-    return int(candidates[0][0])
+    return int(max(candidates, key=lambda x: x[1])[0])
 
 
 def _compute_metrics(
@@ -324,17 +335,17 @@ def _compute_metrics(
     calibration: dict[str, Any] | None,
 ) -> dict[str, Any]:
     px_to_m = float((calibration or {}).get("px_to_m", 0.0065))
+
     def top_speed(points: list[TrackPoint]) -> float:
         s = 0.0
         for i in range(1, len(points)):
             d = math.hypot(points[i].nx - points[i - 1].nx, points[i].ny - points[i - 1].ny)
             s = max(s, d)
         return s
-    club_px = top_speed(club)
-    ball_px = top_speed(ball)
+
     speed_factor = fps * max(poses[0].get("width", 1), 1) * px_to_m * 2.23694 if poses else 0.0
-    club_mph = club_px * speed_factor
-    ball_mph = ball_px * speed_factor * 1.35
+    club_mph = top_speed(club) * speed_factor
+    ball_mph = top_speed(ball) * speed_factor * 1.35
     launch = 0.0
     if len(ball) >= 2:
         a = ball[0]
@@ -347,9 +358,7 @@ def _compute_metrics(
     top_idx = min(range(len(hands)), key=lambda i: hands[i].ny) if hands else 0
     impact_ts = impact_idx / max(fps, 1e-6)
     top_ts = hands[top_idx].timestamp if hands else impact_ts * 0.6
-    backswing = max(top_ts, 0.01)
-    downswing = max(impact_ts - top_ts, 0.01)
-    tempo = backswing / downswing
+    tempo = max(top_ts, 0.01) / max(impact_ts - top_ts, 0.01)
 
     head_stability = 80.0
     shoulder_turn = 0.0
@@ -375,12 +384,7 @@ def _compute_metrics(
     score_body = float(np.clip((head_stability + (100 - abs(shoulder_turn - 85)) + (100 - abs(hip_turn - 42))) / 3.0, 0, 100))
     score_impact = max(0.0, 100.0 - abs(curve) * 2.0)
     overall = 0.25 * score_path + 0.20 * score_tempo + 0.20 * score_body + 0.20 * score_impact + 0.15 * (confidence * 100)
-
-    shape = "straight"
-    if curve > 5:
-        shape = "fade"
-    elif curve < -5:
-        shape = "draw"
+    shape = "fade" if curve > 5 else "draw" if curve < -5 else "straight"
 
     return {
         "estimated_club_head_speed_mph": round(club_mph, 1),
@@ -421,15 +425,19 @@ def _extract_calibration(calibration_json: str | None) -> dict[str, Any] | None:
 def _strip_internal_fields(obj: Any) -> Any:
     if isinstance(obj, dict):
         hidden = {"source", "providers", "provider", "adapter", "debug", "stack", "traceback"}
-        out = {}
-        for k, v in obj.items():
-            if k in hidden:
-                continue
-            out[k] = _strip_internal_fields(v)
-        return out
+        return {k: _strip_internal_fields(v) for k, v in obj.items() if k not in hidden}
     if isinstance(obj, list):
         return [_strip_internal_fields(x) for x in obj]
     return obj
+
+
+def _append_optional_adapter(target: list[Any], adapter_factory: Any, unavailable: list[str]) -> None:
+    try:
+        target.append(adapter_factory())
+    except RuntimeError as exc:
+        unavailable.append(str(exc))
+    except Exception as exc:
+        unavailable.append(f"{adapter_factory}: {exc}")
 
 
 def run_shot_tracer_reconstruct(
@@ -449,16 +457,13 @@ def run_shot_tracer_reconstruct(
     width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH) or 0)
     height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0)
     duration = (frame_count / fps) if fps > 0 else 0.0
-
     calibration = _extract_calibration(calibration_json)
 
+    unavailable_adapters: list[str] = []
     club_adapters: list[ClubDetectorAdapter] = []
     yolo_club_w = os.getenv("STELLAR_YOLO_CLUB_WEIGHTS", "")
     if yolo_club_w and Path(yolo_club_w).exists():
-        try:
-            club_adapters.append(YoloClubDetector(yolo_club_w))
-        except Exception:
-            pass
+        _append_optional_adapter(club_adapters, lambda: YoloClubDetector(yolo_club_w), unavailable_adapters)
     rf_key = os.getenv("STELLAR_ROBOFLOW_API_KEY", "")
     rf_club = os.getenv("STELLAR_ROBOFLOW_CLUB_MODEL", "")
     if rf_key and rf_club:
@@ -474,77 +479,71 @@ def run_shot_tracer_reconstruct(
         ball_adapters.append(RoboflowBallTracker(rf_key, rf_ball))
     yolo_ball_w = os.getenv("STELLAR_YOLO_BALL_WEIGHTS", "")
     if yolo_ball_w and Path(yolo_ball_w).exists():
-        try:
-            ball_adapters.append(YoloBallTracker(yolo_ball_w))
-        except Exception:
-            pass
+        _append_optional_adapter(ball_adapters, lambda: YoloBallTracker(yolo_ball_w), unavailable_adapters)
 
     pose = mp.solutions.pose.Pose(static_image_mode=False, model_complexity=1, min_detection_confidence=0.45, min_tracking_confidence=0.45)
-
     poses: list[dict[str, Any]] = []
     hands_track: list[TrackPoint] = []
     club_track: list[TrackPoint] = []
     club_shaft_track: list[dict[str, Any]] = []
     ball_track: list[TrackPoint] = []
-    frames: list[np.ndarray] = []
+    fallback_window: Deque[tuple[int, np.ndarray]] = deque(maxlen=max(_FALLBACK_WINDOW_FRAMES, int(max(fps, 1) * 2)))
 
     i = 0
-    while True:
-        ok, frame = cap.read()
-        if not ok:
-            break
-        frames.append(frame)
-        ts = i / max(fps, 1e-6)
-        rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        result = pose.process(rgb)
-        pose_row = {"frame_index": i, "timestamp": ts, "width": width, "height": height, "landmarks": {}, "world_landmarks": []}
-        if result.pose_landmarks:
-            for name, idx in POSE_KEYS.items():
-                lm = result.pose_landmarks.landmark[idx]
-                pose_row["landmarks"][name] = {"x": float(lm.x), "y": float(lm.y), "z": float(lm.z), "visibility": float(lm.visibility)}
-            if result.pose_world_landmarks:
+    try:
+        while True:
+            ok, frame = cap.read()
+            if not ok:
+                break
+            fallback_window.append((i, frame.copy()))
+            ts = i / max(fps, 1e-6)
+            rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            result = pose.process(rgb)
+            pose_row = {"frame_index": i, "timestamp": ts, "width": width, "height": height, "landmarks": {}, "world_landmarks": []}
+            if result.pose_landmarks:
                 for name, idx in POSE_KEYS.items():
-                    wlm = result.pose_world_landmarks.landmark[idx]
-                    pose_row["world_landmarks"].append({"name": name, "x": float(wlm.x), "y": float(wlm.y), "z": float(wlm.z), "visibility": float(wlm.visibility)})
-            lw = pose_row["landmarks"].get("left_wrist")
-            rw = pose_row["landmarks"].get("right_wrist")
-            if lw and rw:
-                hands_track.append(TrackPoint(i, ts, (lw["x"] + rw["x"]) * 0.5, (lw["y"] + rw["y"]) * 0.5, (lw["visibility"] + rw["visibility"]) * 0.5, "mediapipe_wrist"))
+                    lm = result.pose_landmarks.landmark[idx]
+                    pose_row["landmarks"][name] = {"x": float(lm.x), "y": float(lm.y), "z": float(lm.z), "visibility": float(lm.visibility)}
+                if result.pose_world_landmarks:
+                    for name, idx in POSE_KEYS.items():
+                        wlm = result.pose_world_landmarks.landmark[idx]
+                        pose_row["world_landmarks"].append({"name": name, "x": float(wlm.x), "y": float(wlm.y), "z": float(wlm.z), "visibility": float(wlm.visibility)})
+                lw = pose_row["landmarks"].get("left_wrist")
+                rw = pose_row["landmarks"].get("right_wrist")
+                if lw and rw:
+                    hands_track.append(TrackPoint(i, ts, (lw["x"] + rw["x"]) * 0.5, (lw["y"] + rw["y"]) * 0.5, (lw["visibility"] + rw["visibility"]) * 0.5, "mediapipe_wrist"))
+            poses.append(pose_row)
 
-        poses.append(pose_row)
+            club_p = None
+            shaft_p = None
+            for adapter in club_adapters:
+                club_p, shaft_p = adapter.detect(frame, i, pose_row)
+                if club_p is not None:
+                    break
+            if club_p:
+                club_track.append(club_p)
+            if shaft_p:
+                club_shaft_track.append(shaft_p)
 
-        club_p = None
-        shaft_p = None
-        for adapter in club_adapters:
-            club_p, shaft_p = adapter.detect(frame, i, pose_row)
-            if club_p is not None:
-                break
-        if club_p:
-            club_track.append(club_p)
-        if shaft_p:
-            club_shaft_track.append(shaft_p)
-
-        ball_p = None
-        for adapter in ball_adapters:
-            ball_p = adapter.detect(frame, i)
+            ball_p = None
+            for adapter in ball_adapters:
+                ball_p = adapter.detect(frame, i)
+                if ball_p:
+                    ball_p.timestamp = ts
+                    break
             if ball_p:
-                ball_p.timestamp = ts
-                break
-        if ball_p:
-            ball_track.append(ball_p)
-
-        i += 1
-
-    cap.release()
-    pose.close()
+                ball_track.append(ball_p)
+            i += 1
+    finally:
+        cap.release()
+        pose.close()
 
     hands_track = _ema(hands_track)
     club_track = _ema(club_track)
     ball_track = _ema(ball_track, 0.5)
-
     impact_idx = _infer_impact(club_track, hands_track, ball_track)
-    if len(ball_track) < 6 and frames:
-        motion = _motion_ball_fallback(frames[max(0, impact_idx): min(len(frames), impact_idx + 30)], impact_idx, fps)
+    if len(ball_track) < 6 and fallback_window:
+        motion = _motion_ball_fallback(fallback_window, fps)
         if motion:
             ball_track = motion
     ball_track = _polyfit_ball(ball_track)
@@ -555,7 +554,6 @@ def run_shot_tracer_reconstruct(
     else:
         top_frame_idx = max(1, int(frame_count * 0.45))
     impact_idx = max(impact_idx, top_frame_idx + 1)
-
     metrics = _compute_metrics(fps, impact_idx, hands_track, club_track, ball_track, poses, calibration)
 
     def _pose_body_row(p: dict[str, Any]) -> dict[str, Any]:
@@ -608,6 +606,7 @@ def run_shot_tracer_reconstruct(
         "club_detector": club_track[0].source if club_track else "mediapipe_pose_proxy",
         "ball_tracker": ball_track[0].source if ball_track else "opencv_motion_fallback",
         "3d": "mediapipe_world_landmarks",
+        "unavailable_optional_adapters": unavailable_adapters,
     }
     if mode == "3d_scene" and os.getenv("STELLAR_TRELLIS_API_URL"):
         providers["3d_asset"] = "trellis"
@@ -618,13 +617,7 @@ def run_shot_tracer_reconstruct(
         "status": "ok",
         "engine": "stellar_shot_tracer_v1",
         "real_video_reconstruction": True,
-        "video": {
-            "fps": round(fps, 3),
-            "duration_sec": round(duration, 3),
-            "frame_count": frame_count,
-            "width": width,
-            "height": height,
-        },
+        "video": {"fps": round(fps, 3), "duration_sec": round(duration, 3), "frame_count": frame_count, "width": width, "height": height},
         "phases": {
             "address_t": 0.0,
             "top_t": round(top_frame_idx / max(fps, 1e-6), 4),
@@ -650,10 +643,7 @@ def run_shot_tracer_reconstruct(
             ],
             "club_head_3d": club_3d,
             "ball_flight_3d": ball_3d,
-            "svg": {
-                "club_head": _path_to_svg(club_track),
-                "ball_flight": _path_to_svg(ball_track),
-            },
+            "svg": {"club_head": _path_to_svg(club_track), "ball_flight": _path_to_svg(ball_track)},
         },
         "metrics": metrics,
         "providers": providers,
@@ -667,11 +657,7 @@ def run_shot_tracer_reconstruct(
             "all speed/distance values are estimated from video-based reconstruction",
         ],
         "mode": mode,
-        "inputs": {
-            "front_view": bool(front_view_path),
-            "side_view": bool(side_view_path),
-            "calibration": bool(calibration),
-        },
+        "inputs": {"front_view": bool(front_view_path), "side_view": bool(side_view_path), "calibration": bool(calibration)},
     }
     if include_debug:
         return response
