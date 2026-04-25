@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { modalAnalysisBase, forwardHeadersFromRequest, jsonProduct } from "@/lib/chains";
 import { getRequestContext } from "@cloudflare/next-on-pages";
 
-export const runtime = "nodejs";
+export const runtime = "edge";
 const RECON_TIMEOUT_MS = 360_000;
 
 function removeHiddenFields(input: unknown): unknown {
