@@ -6,7 +6,7 @@ import os
 from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Deque, Iterable
+from typing import Any, Iterable
 
 import cv2
 import httpx
@@ -29,9 +29,6 @@ POSE_KEYS = {
     "left_ankle": 27,
     "right_ankle": 28,
 }
-
-_FALLBACK_WINDOW_FRAMES = 60
-
 
 @dataclass
 class TrackPoint:
@@ -59,19 +56,15 @@ class BallTrackerAdapter:
         return None
 
 
-def _load_yolo_model(weights_path: str) -> Any:
-    try:
-        from ultralytics import YOLO
-    except ImportError as exc:
-        raise RuntimeError("ultralytics is not installed; YOLO adapter disabled") from exc
-    return YOLO(weights_path)
-
-
 class YoloClubDetector(ClubDetectorAdapter):
     name = "yolo_club_head"
 
     def __init__(self, weights_path: str):
-        self.model = _load_yolo_model(weights_path)
+        try:
+            from ultralytics import YOLO
+        except ImportError as e:
+            raise RuntimeError("ultralytics is not installed; YOLO adapter disabled") from e
+        self.model = YOLO(weights_path)
 
     def detect(self, frame: np.ndarray, frame_index: int, pose: dict[str, Any] | None) -> tuple[TrackPoint | None, dict[str, Any] | None]:
         result = self.model.predict(source=frame, verbose=False, conf=0.15)[0]
@@ -158,7 +151,11 @@ class YoloBallTracker(BallTrackerAdapter):
     name = "yolo_golf_ball"
 
     def __init__(self, weights_path: str):
-        self.model = _load_yolo_model(weights_path)
+        try:
+            from ultralytics import YOLO
+        except ImportError as e:
+            raise RuntimeError("ultralytics is not installed; YOLO adapter disabled") from e
+        self.model = YOLO(weights_path)
 
     def detect(self, frame: np.ndarray, frame_index: int) -> TrackPoint | None:
         result = self.model.predict(source=frame, verbose=False, conf=0.1)[0]
@@ -487,7 +484,7 @@ def run_shot_tracer_reconstruct(
     club_track: list[TrackPoint] = []
     club_shaft_track: list[dict[str, Any]] = []
     ball_track: list[TrackPoint] = []
-    fallback_window: Deque[tuple[int, np.ndarray]] = deque(maxlen=max(_FALLBACK_WINDOW_FRAMES, int(max(fps, 1) * 2)))
+    fallback_frame_window = deque(maxlen=max(30, int(fps * 2)))
 
     i = 0
     try:
@@ -495,7 +492,7 @@ def run_shot_tracer_reconstruct(
             ok, frame = cap.read()
             if not ok:
                 break
-            fallback_window.append((i, frame.copy()))
+            fallback_frame_window.append((i, frame.copy()))
             ts = i / max(fps, 1e-6)
             rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             result = pose.process(rgb)
@@ -542,8 +539,8 @@ def run_shot_tracer_reconstruct(
     club_track = _ema(club_track)
     ball_track = _ema(ball_track, 0.5)
     impact_idx = _infer_impact(club_track, hands_track, ball_track)
-    if len(ball_track) < 6 and fallback_window:
-        motion = _motion_ball_fallback(fallback_window, fps)
+    if len(ball_track) < 6 and fallback_frame_window:
+        motion = _motion_ball_fallback(fallback_frame_window, fps)
         if motion:
             ball_track = motion
     ball_track = _polyfit_ball(ball_track)
