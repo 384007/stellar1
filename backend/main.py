@@ -374,7 +374,7 @@ def _env_truthy(*keys: str) -> bool:
 
 # Modal GPU image: skip legacy ``/stellar-pro`` router (smaller surface).
 _MODAL_PRO_SLIM = _env_truthy("STELLAR_MODAL_PRO_V3_ONLY")
-_EXPECTED_ROUTER_LOADS = 6 if _MODAL_PRO_SLIM else 7
+_EXPECTED_ROUTER_LOADS = 7 if _MODAL_PRO_SLIM else 8
 
 
 def _safe_load(module_path: str, prefix: str, tags: list[str]):
@@ -397,6 +397,7 @@ _safe_load("routers.news", "", ["News"])
 if not _MODAL_PRO_SLIM:
     _safe_load("routers.stellar_pro_api", "", ["stellar-pro"])
 _safe_load("routers.prov3_api", "", [])
+_safe_load("routers.shot_tracer", "", ["shot-tracer"])
 
 
 @app.head("/health")
