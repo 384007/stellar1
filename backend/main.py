@@ -539,10 +539,11 @@ async def health_check():
             },
         },
         "env": {
-            "GEMINI_API_KEY": "set" if gemini_key else "missing",
+            "ANALYSIS_AI_PROVIDER": "nvidia_primary_video_ai",
+            "GEMINI_API_KEY": "legacy-present-unused-by-analysis" if gemini_key else "missing",
             "NVIDIA_API_KEY": "set" if nvidia_key else "missing",
             "NVIDIA_VIDEO_MODEL": nvidia_video_model,
-            "GEMINI_BACKEND": gemini_backend,
+            "GEMINI_BACKEND": f"legacy-{gemini_backend}-unused-by-analysis",
             "VERTEX_AI_LOCATION": vertex_loc or None,
             "GEMINI_HTTPS_PROXY": "set" if proxy_on else "unset",
             "JWT_SECRET": "set" if jwt_secret else "using-default",
