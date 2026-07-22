@@ -416,6 +416,12 @@ async def health_check():
 
     gemini_key = os.getenv("GEMINI_API_KEY", "")
     nvidia_key = os.getenv("NVIDIA_API_KEY", "") or os.getenv("NVIDIA_KEY", "")
+    try:
+        from services.gemini_service import _nvidia_video_model as _effective_nvidia_video_model
+
+        nvidia_video_model = _effective_nvidia_video_model()
+    except Exception:
+        nvidia_video_model = "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning"
     jwt_secret = os.getenv("JWT_SECRET", "")
     frontend_url = os.getenv("FRONTEND_URL", "")
     gemini_backend = (os.getenv("GEMINI_BACKEND") or "").strip().lower() or "developer_api"
@@ -535,11 +541,7 @@ async def health_check():
         "env": {
             "GEMINI_API_KEY": "set" if gemini_key else "missing",
             "NVIDIA_API_KEY": "set" if nvidia_key else "missing",
-            "NVIDIA_VIDEO_MODEL": (
-                os.getenv("NVIDIA_VIDEO_MODEL")
-                or os.getenv("STELLAR_NVIDIA_VIDEO_MODEL")
-                or "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning"
-            ),
+            "NVIDIA_VIDEO_MODEL": nvidia_video_model,
             "GEMINI_BACKEND": gemini_backend,
             "VERTEX_AI_LOCATION": vertex_loc or None,
             "GEMINI_HTTPS_PROXY": "set" if proxy_on else "unset",
