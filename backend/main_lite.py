@@ -57,6 +57,7 @@ async def health_check():
             "/analyze/lite",
             "/analyze/recalculate",
             "/analyze/vision-classic",
+            "/analyze/vision-lab",
             "/analyze/club-detect",
             "/analyze/club-detect-batch",
         ],
