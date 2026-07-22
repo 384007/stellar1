@@ -46,13 +46,11 @@ def infer_a_candidates(
         )
         if kfs:
             return kfs
-        logger.warning("[prov3][A] %s inference failed — returning empty keyframes", PROV3_A_ENGINE_ID)
-        return []
+        raise RuntimeError("prov3_swingnet_inference_empty")
 
-    logger.warning(
-        "[prov3][A] SwingNet unavailable or input missing (enabled=%s, video=%s, analysis_id=%s)",
-        swingnet_enabled(),
-        bool(analysis_video and os.path.isfile(analysis_video)),
-        bool(analysis_id),
+    raise RuntimeError(
+        "prov3_swingnet_unavailable_or_input_missing:"
+        f"enabled={swingnet_enabled()}:"
+        f"video={bool(analysis_video and os.path.isfile(analysis_video))}:"
+        f"analysis_id={bool(analysis_id)}"
     )
-    return []

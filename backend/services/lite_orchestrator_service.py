@@ -15,13 +15,10 @@ from services.gemini_service import LITE_AI_TIMEOUT_S, analyze_swing_lite, cap_c
 from services.golfdb_swingnet_paths import swingnet_weights_configured
 from services.handedness_service import detect_handedness
 from services.club_detector import encode_bgr_frame_jpeg_b64, read_bgr_frame_at_percent
-from services.lite_a_extractor_service import run_lite_a_extract as run_lite_heuristic_a_extract
 from services.lite_ab_mirror.orchestrator import run_lite_ab_after_preprocess
-from services.lite_b_refiner_service import run_lite_b_refine as run_lite_heuristic_b_refine
 from services.lite_keyframe_export import lite_persist_keyframe_images
 from services.lite_preprocess_service import run_lite_preprocess
 from services.provider_registry import role_log
-from services.lite_timeline_motion import lite_build_uniform_timeline
 from services.shot_predictor import calibrate_prediction, predict_shot
 
 logger = logging.getLogger(__name__)
@@ -117,34 +114,9 @@ async def run_lite_orchestrator(video_path: str, *, region: str = "global") -> d
                 pre,
             )
         else:
-            role_log("[ROLE=LITE_PIPELINE] swingnet_disabled using_heuristic_ab")
-            logger.warning(
-                "%s SwingNet disabled (no checkpoint) — heuristic Lite A/B fallback",
-                _LOG,
-            )
-            pre_h = {
-                **pre,
-                "timeline": lite_build_uniform_timeline(
-                    int(pre["total_frames"]),
-                    float(pre["analysis_fps"]),
-                ),
-            }
-            a_out = await run_lite_heuristic_a_extract(pre_h, region=region)
-            ab_reasons = list(a_out.get("fail_reasons") or [])
-            if a_out["a_pass"]:
-                final_rows = a_out["rows"]
-                trust_tier = "high"
-                ab_phase_pass = True
-            else:
-                b_out = await asyncio.to_thread(run_lite_heuristic_b_refine, pre_h, a_out)
-                final_rows = b_out["rows"]
-                if b_out["b_pass"]:
-                    trust_tier = "medium"
-                    ab_phase_pass = True
-                else:
-                    trust_tier = "low"
-                    ab_phase_pass = False
-                    ab_reasons = ab_reasons + list(b_out.get("fail_reasons") or [])
+            role_log("[ROLE=LITE_PIPELINE] swingnet_disabled hard_fail")
+            logger.error("%s SwingNet checkpoint missing — Lite keyframes require SwingNet", _LOG)
+            raise RuntimeError("lite_swingnet_checkpoint_missing")
 
         if len(final_rows) < 8:
             logger.error("%s incomplete keyframes count=%s reasons=%s", _LOG, len(final_rows), ab_reasons)

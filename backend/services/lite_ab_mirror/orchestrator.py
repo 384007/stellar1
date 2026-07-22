@@ -9,7 +9,7 @@ from typing import Any, Callable, Dict, List, Tuple
 from services.golfdb_swingnet_service import clear_swingnet_ctx
 from services.lite_ab_mirror.a_extract import run_lite_a_infer_only
 from services.lite_ab_mirror.a_gate import run_lite_a_gate
-from services.lite_ab_mirror.constants import TRUST_HIGH, TRUST_LOW
+from services.lite_ab_mirror.constants import TRUST_HIGH
 from services.lite_ab_mirror.downswing_refine import refine_mid_downswing_with_pose_motion
 from services.provider_registry import role_log
 
@@ -62,6 +62,8 @@ def run_lite_ab_after_preprocess(
             f"[ROLE=LITE_PIPELINE] {_KF} infer_done status={infer.a_status!r} "
             f"reasons={list(infer.fail_reasons)!r}"
         )
+        if infer.a_status != "infer_ok":
+            raise RuntimeError(f"lite_swingnet_infer_failed:{','.join(infer.fail_reasons)}")
 
         rows = copy.deepcopy(infer.keyframes)
         refined_rows, refine_fail_reasons, refine_dbg = refine_mid_downswing_with_pose_motion(
@@ -102,10 +104,9 @@ def run_lite_ab_after_preprocess(
         role_log(
             f"[ROLE=LITE_PIPELINE] {_KF} a_gate status={status!r} reasons={list(fail_reasons)!r}"
         )
+        if status != "pass":
+            raise RuntimeError(f"lite_swingnet_keyframe_gate_failed:{','.join(fail_reasons)}")
 
-        phase_pass = status == "pass"
-        trust = TRUST_HIGH if phase_pass else TRUST_LOW
-        out_reasons: List[str] = [] if phase_pass else list(fail_reasons)
-        return refined_rows, trust, phase_pass, out_reasons
+        return refined_rows, TRUST_HIGH, True, []
     finally:
         clear_swingnet_ctx(analysis_id)

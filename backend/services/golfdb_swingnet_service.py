@@ -61,6 +61,25 @@ _DOWNLOAD_LOCK = threading.Lock()
 _DOWNLOAD_ATTEMPTED = False
 
 _SWINGNET_DRIVE_URL = "https://drive.google.com/uc?id=1MBIDwHSM8OKRbxS8YfyRLnUBAdt0nupW"
+_DEFAULT_SWINGNET_MAX_FRAMES = 1200
+_MAX_SWINGNET_MAX_FRAMES = 2400
+_MIN_ACCURATE_SAMPLE_FRAMES = 480
+
+
+def _env_int(name: str, default: int) -> int:
+    raw = (os.getenv(name) or "").strip()
+    if not raw:
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        logger.warning("[SwingNet] invalid integer env %s=%r; using %s", name, raw, default)
+        return default
+
+
+def _min_accurate_sample_frames() -> int:
+    raw = _env_int("STELLAR_SWINGNET_MIN_ACCURATE_FRAMES", _MIN_ACCURATE_SAMPLE_FRAMES)
+    return max(_MIN_ACCURATE_SAMPLE_FRAMES, min(raw, _DEFAULT_SWINGNET_MAX_FRAMES))
 
 
 def _runtime_is_modal() -> bool:
@@ -217,9 +236,19 @@ def _video_to_batch(
         adaptive_target = max(800, mid_target)
     else:
         adaptive_target = max(900, long_target)
-    # ``max_frames`` is the caller's hard sample budget. Lite uses this to
-    # finish on the CPU-backed Modal worker before a streamed request is cut off.
-    n_target = min(total, max(8, min(max_frames, adaptive_target)))
+    min_accurate = _min_accurate_sample_frames()
+    requested_cap = int(max_frames)
+    if requested_cap < min_accurate:
+        logger.warning(
+            "[SwingNet] requested sample cap %s below accuracy floor %s; using accuracy floor",
+            requested_cap,
+            min_accurate,
+        )
+    effective_cap = max(requested_cap, min_accurate)
+    n_target = min(total, max(8, min(effective_cap, adaptive_target)))
+    min_expected = min(total, min_accurate)
+    if n_target < min_expected:
+        raise RuntimeError(f"swingnet_sample_budget_too_low:{n_target}/{min_expected}")
     sample_indices = np.unique(np.linspace(0, total - 1, num=n_target, dtype=np.int64))
 
     frames: list[np.ndarray] = []
@@ -333,12 +362,12 @@ def _keyframes_from_probs_viterbi(
     """Joint path over eight events with pairwise + global decode gaps (Viterbi on candidate rows)."""
     n_rows = int(probs.shape[0])
     if n_rows < 8:
-        return _keyframes_from_probs_argmax_fallback(probs, sample_indices)
+        raise RuntimeError(f"swingnet_viterbi_too_few_rows:{n_rows}")
 
     max_c = min(n_rows, _VITERBI_ROWS_PER_EVENT)
     cand_rows: list[list[int]] = [_candidate_rows_for_class(probs, k, max_c) for k in range(8)]
     if any(len(x) == 0 for x in cand_rows):
-        return _keyframes_from_probs_argmax_fallback(probs, sample_indices)
+        raise RuntimeError("swingnet_viterbi_missing_candidates")
 
     cand_dec = [[int(sample_indices[r]) for r in rows] for rows in cand_rows]
     n_c = [len(x) for x in cand_rows]
@@ -396,8 +425,7 @@ def _keyframes_from_probs_viterbi(
     last = 7
     best_j = int(np.argmax(best[last]))
     if best[last][best_j] <= _NEG_INF / 2:
-        logger.warning("[SwingNet] Viterbi found no feasible path — argmax fallback")
-        return _keyframes_from_probs_argmax_fallback(probs, sample_indices)
+        raise RuntimeError("swingnet_viterbi_no_feasible_path")
 
     pick: list[int] = [0] * 8
     pick[last] = best_j
@@ -436,7 +464,7 @@ def _keyframes_from_probs_argmax_fallback(
     probs: np.ndarray,
     sample_indices: np.ndarray,
 ) -> list[dict[str, Any]]:
-    """Legacy: per-class argmax with row monotonicity (used only if Viterbi infeasible)."""
+    """Legacy diagnostic helper: per-class argmax with row monotonicity."""
     n_rows = int(probs.shape[0])
     rows = [int(np.argmax(probs[:, k])) for k in range(8)]
     for i in range(1, 8):
@@ -488,13 +516,13 @@ def run_swingnet_extract(
     analysis_fps: float = 240.0,
     max_extract_frames: int | None = None,
 ) -> list[dict[str, Any]] | None:
-    """Return Pro v3 A-layer keyframe dicts, or None to signal fallback.
+    """Return Pro v3 A-layer keyframe dicts.
 
     ``frame_index`` values are **decode indices** in ``video_path`` (the analysis MP4).
     ``analysis_fps`` is accepted for API symmetry with preprocess; indices do not depend on OpenCV fps.
 
     ``max_extract_frames`` caps SwingNet decode/LSTM length (default: env ``STELLAR_SWINGNET_EXTRACT_MAX_FRAMES`` or 1200).
-    Lite passes a lower cap via ``STELLAR_SWINGNET_LITE_MAX_FRAMES`` to finish before ~3–4m ingress cuts.
+    Lite uses the same accuracy floor; low caps are raised instead of producing coarse keyframes.
     """
     if not swingnet_enabled():
         return None
@@ -506,8 +534,8 @@ def run_swingnet_extract(
         role_log(f"[ROLE=LITE_PIPELINE] swingnet_model_ready device={device} building_frame_batch")
         cap = max_extract_frames
         if cap is None:
-            cap = int(os.getenv("STELLAR_SWINGNET_EXTRACT_MAX_FRAMES", "1200"))
-        cap = max(64, min(int(cap), 2400))
+            cap = _env_int("STELLAR_SWINGNET_EXTRACT_MAX_FRAMES", _DEFAULT_SWINGNET_MAX_FRAMES)
+        cap = max(_min_accurate_sample_frames(), min(int(cap), _MAX_SWINGNET_MAX_FRAMES))
         batch, sample_indices, fps, total = _video_to_batch(video_path, max_frames=cap)
         role_log(
             f"[ROLE=LITE_PIPELINE] swingnet_batch_ready T={batch.shape[1]} samples "
@@ -546,8 +574,8 @@ def run_swingnet_extract(
     except RuntimeError:
         raise
     except Exception as exc:
-        logger.warning("[SwingNet] A-path failed (%s)", exc)
-        return None
+        logger.exception("[SwingNet] A-path failed")
+        raise RuntimeError(f"swingnet_a_path_failed:{exc}") from exc
 
 
 def swingnet_b_refine(
