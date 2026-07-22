@@ -15,6 +15,7 @@ import {
   buildQuota,
   labError,
 } from "@/lib/lab-auth";
+import { jsonProduct } from "@/lib/chains";
 
 export const runtime = "edge";
 
@@ -67,9 +68,9 @@ export async function GET(
       response.result = filterForTier(stored, tier);
     }
 
-    return NextResponse.json(response);
+    return jsonProduct(response, undefined, "lab");
   } catch (err) {
     console.error("[lab] GET job error:", err);
-    return labError("INTERNAL", err instanceof Error ? err.message : "查询错误", 500);
+    return labError("INTERNAL", "查询失败，请稍后重试。", 500);
   }
 }

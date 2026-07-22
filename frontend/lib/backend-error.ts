@@ -1,4 +1,4 @@
-/** Format FastAPI / gateway JSON bodies for user-visible analyze errors. */
+/** Format gateway JSON bodies for user-visible analyze errors. */
 
 export type AnalyzeProduct = "plus" | "pro";
 export type AnalyzeLang = "zh" | "en";
@@ -19,7 +19,7 @@ function hintEn(code: string | undefined): string | null {
   return null;
 }
 
-/** Human-readable message from /analyze/* error JSON (handles nested FastAPI `detail` dict). */
+/** Human-readable message from /analyze/* error JSON (handles nested `detail` dict). */
 export function formatHttpAnalyzeError(
   status: number,
   body: unknown,
@@ -66,11 +66,7 @@ export function formatHttpAnalyzeError(
     const msg = typeof inner.message === "string" ? inner.message.trim() : "";
     if (msg) parts.push(msg);
     if (parts.length) return tail(parts.join(" · "));
-    try {
-      return tail(JSON.stringify(inner).slice(0, 600));
-    } catch {
-      return tail(String(inner));
-    }
+    return tail(lang === "zh" ? "请稍后重试" : "Please try again");
   }
 
   return tail(lang === "zh" ? "未知错误" : "Unknown error");

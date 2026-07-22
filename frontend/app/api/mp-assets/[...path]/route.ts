@@ -49,11 +49,7 @@ export async function GET(
     return NextResponse.json({ error: "not found" }, { status: 404 });
   }
 
-  const base = (
-    process.env.MEDIAPIPE_CDN_BASE ||
-    process.env.NEXT_PUBLIC_MEDIAPIPE_CDN_BASE ||
-    ""
-  ).trim().replace(/\/+$/, "");
+  const base = (process.env.MEDIAPIPE_CDN_BASE || "").trim().replace(/\/+$/, "");
 
   if (!base) {
     return NextResponse.json({ error: "R2 not configured" }, { status: 503 });

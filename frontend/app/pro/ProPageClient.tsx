@@ -6,14 +6,13 @@ import UploadZone from "@/components/UploadZone";
 import PlusResultView from "@/components/PlusResultView";
 import FrontErrorBoundary from "@/components/debug/FrontErrorBoundary";
 import ScreenModeCapture from "@/components/ScreenModeCapture";
+import { devError, devInfo, devWarn } from "@/lib/dev-only-log";
 import { preloadPoseModel } from "@/lib/mediapipe-assets";
 import AnalysisWaiting from "@/components/AnalysisWaiting";
 import type { PoseSnapshot } from "@/components/KeyframeStrip";
 import { getAnalysisVideoBlob, saveAnalysisVideo } from "@/lib/video-store";
 import { clientLikelyMainlandChinaUser } from "@/lib/client-region-hint";
 import {
-  DEFAULT_PROV3_MODAL_URL,
-  normalizeProv3UrlListsFromPrecheck,
   PRO_V3_EDGE_PRECHECK_PATH,
   requestProv3AnalyzeCancel,
   runProv3AnalyzeMultipart,
@@ -44,6 +43,7 @@ import {
   reconcileProPageReanalyzeSession,
 } from "@/lib/reanalyze-from-history";
 import { loadProAnalysisById } from "@/lib/load-pro-analysis-by-id";
+import { isVideoFile } from "@/lib/upload-video";
 
 /**
  * IndexedDB video can land slightly after ``router.replace`` / session restore; PlusResultView skips IDB when
@@ -76,14 +76,6 @@ function scheduleProVideoFromIndexedDB(
       }
     }
   })();
-}
-
-function isVideoBlobForOverlay(blob: Blob, filename: string): boolean {
-  const t = (blob.type || "").toLowerCase();
-  if (t.startsWith("video/")) return true;
-  if (/\.(mp4|mov|webm|m4v|avi|mkv|3gp|qt)$/i.test(filename)) return true;
-  if (t === "application/octet-stream" && /\.(mp4|mov|webm|m4v|avi|mkv)$/i.test(filename)) return true;
-  return false;
 }
 
 interface ProAnalysisResult {
@@ -185,9 +177,6 @@ export default function ProPageClient({ deepLinkAnalysisId }: { deepLinkAnalysis
   /** 对屏模式分析完成后先打开姿势诊断（报告文案）；上传主路径仍以视频分析为先。 */
   const prov3ScreenOpenDiagnosisTabRef = useRef(false);
 
-  const backendUrlsRef = useRef<string[]>(["https://stellar1-backend.onrender.com"]);
-  /** Default until Pro v3 precheck returns — avoids skipping Modal if user analyzes before precheck finishes. */
-  const modalUrlsRef = useRef<string[]>([DEFAULT_PROV3_MODAL_URL]);
   const cnNetworkHintRef = useRef(false);
   /** 防止双击/历史再次分析竞态导致重复 POST Modal。 */
   const analysisInFlightRef = useRef(false);
@@ -237,14 +226,8 @@ export default function ProPageClient({ deepLinkAnalysisId }: { deepLinkAnalysis
           window.location.href = "/pro-login";
           return;
         }
-        const lists = normalizeProv3UrlListsFromPrecheck(data);
-        if (lists.backendUrls.length) backendUrlsRef.current = lists.backendUrls;
-        modalUrlsRef.current = lists.modalUrls;
         cnNetworkHintRef.current = data.network_hint === "cn";
       })
-      .catch(() => {});
-
-    fetch("https://stellar1-backend.onrender.com/health", { signal: AbortSignal.timeout(60_000) })
       .catch(() => {});
 
     preloadPoseModel();
@@ -300,7 +283,7 @@ export default function ProPageClient({ deepLinkAnalysisId }: { deepLinkAnalysis
             // Session had payload but we skipped UI (e.g. analyze still marked in-flight, or Strict Mode
             // cancelled the first run). Fall through to history/API so the results page is not blank.
           } catch (e) {
-            console.warn("[pro] session result restore failed", e);
+            devWarn("[pro] session result restore failed", e);
           }
         }
 
@@ -357,7 +340,9 @@ export default function ProPageClient({ deepLinkAnalysisId }: { deepLinkAnalysis
         deepLinkStartedForRef.current = null;
       }
     };
-  }, [deepId, lang]);
+    // 仅 deepId 变化时重载记录；勿依赖 lang，避免重复拉取同一条目。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [deepId]);
 
   useEffect(() => {
     const explicitReanalyzeNav =
@@ -386,6 +371,10 @@ export default function ProPageClient({ deepLinkAnalysisId }: { deepLinkAnalysis
 
     void (async () => {
       try {
+        if (analysisInFlightRef.current) {
+          devWarn("[pro] reanalyze skipped while Pro analysis already in flight");
+          return;
+        }
         // History queues both URLs; timeline first is implemented inside fetchVideoBlobForHistoryReanalyze.
         const blob = await fetchVideoBlobForHistoryReanalyze(
           p.analysisId,
@@ -404,11 +393,12 @@ export default function ProPageClient({ deepLinkAnalysisId }: { deepLinkAnalysis
         if (sm) setInputMode("screen");
         await processBlob(blob, reanalyzeHistoryFilename(blob), sm);
       } catch (e) {
-        console.warn("[pro] reanalyze pipeline error:", e);
+        devWarn("[pro] reanalyze pipeline error:", e);
       }
     })();
+    // 勿依赖 lang：避免切换语言时重复 reconcile / 异步链。
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [deepId, lang]);
+  }, [deepId]);
 
   // Do not revoke proVideoSrc in a [proVideoSrc] effect cleanup: React Strict Mode runs that
   // cleanup while the URL is still needed, breaking the <video> src. Revoke only when replacing
@@ -454,7 +444,7 @@ export default function ProPageClient({ deepLinkAnalysisId }: { deepLinkAnalysis
         writeEntry(minimalProHistoryPayload(data));
         pruneLocalStellarHistoryRecords();
       } catch (e2) {
-        console.warn("[pro] local history save failed (quota or storage):", e2, e1);
+        devWarn("[pro] local history save failed (quota or storage):", e2, e1);
       }
     }
   }
@@ -498,7 +488,7 @@ export default function ProPageClient({ deepLinkAnalysisId }: { deepLinkAnalysis
         resultForApi = slimAnalysisResultForServerHistory(data) as Record<string, unknown>;
         JSON.stringify(resultForApi);
       } catch (e) {
-        console.warn("[pro] history API payload slim failed, using minimal fields:", e);
+        devWarn("[pro] history API payload slim failed, using minimal fields:", e);
         resultForApi = minimalProHistoryPayload(data);
       }
 
@@ -521,14 +511,14 @@ export default function ProPageClient({ deepLinkAnalysisId }: { deepLinkAnalysis
         if (saved.success !== false) {
           markLocalRecordSynced(data.analysis_id);
         } else {
-          console.warn("[history] pro save rejected:", saved.detail || saved);
+          devWarn("[history] pro save rejected:", saved.detail || saved);
         }
       } else {
         const errText = await res.text().catch(() => "");
-        console.warn("[history] pro save failed:", res.status, errText.slice(0, 400));
+        devWarn("[history] pro save failed:", res.status, errText.slice(0, 400));
       }
     } catch (e) {
-      console.warn("[history] pro save error:", e);
+      devWarn("[history] pro save error:", e);
     }
   }
 
@@ -549,7 +539,7 @@ export default function ProPageClient({ deepLinkAnalysisId }: { deepLinkAnalysis
       return;
     }
     if (analysisInFlightRef.current) {
-      console.warn("[pro] analyze already in flight, ignoring duplicate trigger");
+      devWarn("[pro] analyze already in flight, ignoring duplicate trigger");
       return;
     }
     analysisInFlightRef.current = true;
@@ -583,7 +573,7 @@ export default function ProPageClient({ deepLinkAnalysisId }: { deepLinkAnalysis
         uploadBlob = mp4File;
         uploadFilename = mp4File.name;
       } catch (e) {
-        console.warn("[pro] screen WebM→MP4 failed, using original container", e);
+        devWarn("[pro] screen WebM→MP4 failed, using original container", e);
       }
       setProWaitSubline("");
     }
@@ -600,8 +590,6 @@ export default function ProPageClient({ deepLinkAnalysisId }: { deepLinkAnalysis
       try {
         const cn = cnNetworkHintRef.current;
         const out = await runProv3AnalyzeMultipart(uploadBlob, uploadFilename, authHeaders, {
-          modalUrls: modalUrlsRef.current,
-          backendUrls: backendUrlsRef.current,
           cnNetworkHint: cn,
           unboundedJobPoll: cn || clientLikelyMainlandChinaUser(),
           screenMode: effectiveScreenMode,
@@ -659,12 +647,12 @@ export default function ProPageClient({ deepLinkAnalysisId }: { deepLinkAnalysis
         return;
       }
 
-      console.info("[pro] Pro v3 edge-job completed");
+      devInfo("[pro] Pro v3 edge-job completed");
       setProgress(96);
       setProWaitSubline("");
       setStage("rendering");
       await yieldUiBeforeHeavyParse();
-      console.info("[pro] result payload keys:", Object.keys(raw).length);
+      devInfo("[pro] result payload keys:", Object.keys(raw).length);
       let data: ProAnalysisResult;
       try {
         data = expandStellarProForUi(raw) as ProAnalysisResult;
@@ -683,14 +671,14 @@ export default function ProPageClient({ deepLinkAnalysisId }: { deepLinkAnalysis
         const previewCount = Array.isArray((raw as { preview_keyframes?: unknown[] }).preview_keyframes)
           ? (raw as { preview_keyframes?: unknown[] }).preview_keyframes?.length ?? 0
           : 0;
-        console.info("[pro] parsed final_status/trust:", { finalStatus, trustLevel });
-        console.info("[pro] display/official/preview keyframes:", {
+        devInfo("[pro] parsed final_status/trust:", { finalStatus, trustLevel });
+        devInfo("[pro] display/official/preview keyframes:", {
           displayCount,
           officialCount,
           previewCount,
         });
       } catch (parseErr) {
-        console.error("[pro] expand result failed:", parseErr, {
+        devError("[pro] expand result failed:", parseErr, {
           analysis_id: String((raw as { analysis_id?: unknown }).analysis_id ?? ""),
           final_status: String((raw as { final_status?: unknown }).final_status ?? ""),
           trust_level: String(
@@ -721,10 +709,10 @@ export default function ProPageClient({ deepLinkAnalysisId }: { deepLinkAnalysis
         try {
           sessionStorage.setItem(proSessionResultKey(data.analysis_id), JSON.stringify(data));
         } catch (e) {
-          console.warn("[pro] session snapshot before /pro/[id] navigation failed", e);
+          devWarn("[pro] session snapshot before /pro/[id] navigation failed", e);
         }
       }
-      if (isVideoBlobForOverlay(uploadBlob, uploadFilename) && uploadBlob.size > 0) {
+      if (isVideoFile(uploadBlob as File, uploadFilename) && uploadBlob.size > 0) {
         setProVideoSrc(URL.createObjectURL(uploadBlob));
       }
       if (typeof window !== "undefined" && data.analysis_id) {
@@ -743,11 +731,11 @@ export default function ProPageClient({ deepLinkAnalysisId }: { deepLinkAnalysis
         try {
           saveToLocalHistory(data);
         } catch (e) {
-          console.warn("[pro] deferred local history:", e);
+          devWarn("[pro] deferred local history:", e);
         }
         void saveAnalysisVideo(data.analysis_id, uploadBlob, uploadFilename).catch(() => {});
         void saveAnalysisToHistory(data, uploadBlob, uploadFilename).catch((e) => {
-          console.warn("[pro] history save failed:", e);
+          devWarn("[pro] history save failed:", e);
         });
       }, 0);
     } catch (err: unknown) {
@@ -1091,7 +1079,7 @@ export default function ProPageClient({ deepLinkAnalysisId }: { deepLinkAnalysis
           <div className="mx-auto max-w-xl rounded-xl border border-brand-gold/20 bg-white/[0.03] p-6 text-center">
             <div className="mx-auto h-8 w-8 animate-spin rounded-full border-2 border-white/15 border-t-brand-gold/70" />
             <p className="mt-4 text-sm text-white/70">
-              {lang === "zh" ? "后端已返回，正在渲染结果…" : "Backend finished. Rendering results…"}
+              {lang === "zh" ? "分析已完成，正在展示结果…" : "Analysis finished. Preparing your results…"}
             </p>
           </div>
         )}
@@ -1128,7 +1116,6 @@ export default function ProPageClient({ deepLinkAnalysisId }: { deepLinkAnalysis
                   key={result.analysis_id}
                   result={proExpandedToPlusViewModel(result as unknown as Record<string, unknown>)}
                   lang={lang}
-                  backendUrl={backendUrlsRef.current[0] || "https://stellar1-backend.onrender.com"}
                   externalVideoSrc={proVideoSrc}
                   coachingMode="pro"
                   initialActiveTab={prov3ScreenOpenDiagnosisTabRef.current ? "diagnosis" : "video"}

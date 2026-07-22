@@ -6,7 +6,9 @@ import os
 import tempfile
 
 import httpx
-from fastapi import APIRouter, HTTPException, Depends, Request
+import numpy as np
+import cv2
+from fastapi import APIRouter, HTTPException, Depends, Request, File, UploadFile
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from starlette.responses import StreamingResponse
@@ -20,6 +22,7 @@ from services.lite_singleflight import (
     complete_lite_analyze_failure,
     complete_lite_analyze_success,
 )
+from services.video_upload_suffix import temp_suffix_for_uploaded_video, temp_suffix_from_url
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -247,9 +250,7 @@ async def analyze_lite(
             if not file_bytes:
                 raise HTTPException(status_code=400, detail="Empty file")
             filename = getattr(uploaded_file, "filename", "video.mp4") or "video.mp4"
-            suffix = ".mov" if ".mov" in filename.lower() else ".mp4"
-            if ".webm" in filename.lower():
-                suffix = ".webm"
+            suffix = temp_suffix_for_uploaded_video(filename)
 
             status, cached = await begin_lite_analyze(request_id)
             if status == "cached":
@@ -282,7 +283,7 @@ async def analyze_lite(
                 resp = await client.get(video_url)
                 if resp.status_code != 200:
                     raise HTTPException(status_code=400, detail="Failed to download video")
-            suffix = ".mov" if ".mov" in video_url.lower() else ".mp4"
+            suffix = temp_suffix_from_url(video_url)
             with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
                 tmp.write(resp.content)
                 tmp_path = tmp.name
@@ -302,6 +303,181 @@ async def analyze_lite(
         if he.status_code == 400 and isinstance(he.detail, dict):
             return JSONResponse(status_code=400, content=he.detail)
         raise
+
+
+@router.post("/club-detect")
+async def analyze_club_detect_multipart(
+    request: Request,
+    frame: UploadFile = File(...),
+    current_user: Optional[dict] = Depends(get_current_user),
+):
+    """
+    Club + handedness from a single JPEG frame.
+    Provider / keys stay in ``gemini_service``; response is product-only.
+    """
+    from services.club_detector import detect_club
+
+    raw = await frame.read()
+    if not raw:
+        return JSONResponse(
+            content={
+                "club_type": "UNKNOWN",
+                "club_group": "IRON",
+                "confidence": 0.0,
+                "hand": "R",
+            }
+        )
+    arr = np.frombuffer(raw, dtype=np.uint8)
+    img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+    if img is None:
+        return JSONResponse(
+            content={
+                "club_type": "UNKNOWN",
+                "club_group": "IRON",
+                "confidence": 0.0,
+                "hand": "R",
+            }
+        )
+    region = "CN" if (request.headers.get("CF-IPCountry") or "").upper() == "CN" else "global"
+    out = await detect_club(img, region)
+    hand = out.get("hand")
+    if hand not in ("R", "L"):
+        hand = "R"
+    return JSONResponse(
+        content={
+            "club_type": str(out.get("club_type") or "UNKNOWN"),
+            "club_group": str(out.get("club_group") or "IRON"),
+            "confidence": float(out.get("confidence") or 0.0),
+            "hand": hand,
+        }
+    )
+
+
+@router.post("/club-detect-batch")
+async def analyze_club_detect_batch_multipart(
+    request: Request,
+    frame_0: UploadFile = File(...),
+    frame_1: UploadFile = File(...),
+    frame_2: UploadFile = File(...),
+    current_user: Optional[dict] = Depends(get_current_user),
+):
+    """
+    Three JPEG frames in **one** HTTP request — **one** multimodal club vision call (not 3× single-frame).
+
+    One Modal/ASGI invocation; one Gemini/Qwen round-trip for the three frames together.
+    """
+    from services.club_detector import detect_club_multiframe_bgr
+
+    async def _decode_one(up: UploadFile) -> Optional[np.ndarray]:
+        raw = await up.read()
+        if not raw:
+            return None
+        arr = np.frombuffer(raw, dtype=np.uint8)
+        img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+        return img
+
+    imgs: list[np.ndarray] = []
+    for uf in (frame_0, frame_1, frame_2):
+        im = await _decode_one(uf)
+        if im is not None:
+            imgs.append(im)
+
+    if not imgs:
+        return JSONResponse(
+            content={
+                "club_type": "UNKNOWN",
+                "club_group": "IRON",
+                "confidence": 0.0,
+                "hand": "R",
+            }
+        )
+
+    region = "CN" if (request.headers.get("CF-IPCountry") or "").upper() == "CN" else "global"
+    merged = await detect_club_multiframe_bgr(imgs, region)
+    hand = merged.get("hand")
+    if hand not in ("R", "L"):
+        hand = "R"
+    return JSONResponse(
+        content={
+            "club_type": str(merged.get("club_type") or "UNKNOWN"),
+            "club_group": str(merged.get("club_group") or "IRON"),
+            "confidence": float(merged.get("confidence") or 0.0),
+            "hand": hand,
+        }
+    )
+
+
+@router.post("/vision-classic")
+async def vision_classic_multipart(
+    request: Request,
+    current_user: Optional[dict] = Depends(get_current_user),
+):
+    """Classic Lite vision (Gemini Files + Qwen fallback) — product JSON only."""
+    from services.vision_classic_lite_service import VisionClassicLiteError, run_vision_classic_lite_sync
+
+    tmp_path: Optional[str] = None
+    try:
+        ct = (request.headers.get("content-type") or "").lower()
+        if "multipart" not in ct:
+            raise HTTPException(status_code=400, detail="Expected multipart form data")
+        form = await request.form()
+        uploaded = form.get("file")
+        file_uri_raw = form.get("file_uri")
+        mime_raw = form.get("mime_type")
+        key_raw = form.get("gemini_key_index")
+
+        file_uri = str(file_uri_raw).strip() if file_uri_raw else None
+        if file_uri == "":
+            file_uri = None
+        mime_type = str(mime_raw or "video/mp4") or "video/mp4"
+        key_hint: Optional[int] = None
+        if key_raw is not None and str(key_raw).strip() != "":
+            try:
+                key_hint = int(str(key_raw))
+            except ValueError:
+                key_hint = None
+
+        file_bytes: Optional[bytes] = None
+        filename = "video.mp4"
+        if uploaded is not None and hasattr(uploaded, "read"):
+            raw = await uploaded.read()
+            if raw:
+                file_bytes = raw
+                filename = getattr(uploaded, "filename", None) or "video.mp4"
+
+        if file_bytes:
+            suffix = temp_suffix_for_uploaded_video(filename)
+            fd, tmp_path = tempfile.mkstemp(suffix=suffix)
+            try:
+                os.write(fd, file_bytes)
+            finally:
+                os.close(fd)
+
+        region_cn = (request.headers.get("CF-IPCountry") or "").upper() == "CN"
+        out = await asyncio.to_thread(
+            run_vision_classic_lite_sync,
+            tmp_path,
+            file_uri,
+            mime_type,
+            filename,
+            region_cn,
+            key_hint,
+        )
+        log_non_finite_if_any(logger, out, "vision_classic")
+        return JSONResponse(content=sanitize_json_floats(out))
+    except VisionClassicLiteError as e:
+        return JSONResponse(status_code=e.status_code, content={"detail": e.message})
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("[vision-classic] failed")
+        raise HTTPException(status_code=500, detail=str(e)) from e
+    finally:
+        if tmp_path and os.path.exists(tmp_path):
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
 
 
 @router.post("/recalculate")

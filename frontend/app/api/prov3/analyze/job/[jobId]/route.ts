@@ -5,6 +5,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getRequestContext } from "@cloudflare/next-on-pages";
 import { requireProUserForProv3Edge } from "@/lib/prov3-edge-route-auth";
+import { jsonProduct } from "@/lib/chains";
 
 export const runtime = "edge";
 
@@ -66,33 +67,49 @@ export async function GET(
       if (robj) {
         const rt = await robj.text();
         const parsed = JSON.parse(rt) as { result?: unknown };
-        return NextResponse.json({
-          status: "completed",
-          job_id: jobId,
-          result: parsed.result ?? null,
-        });
+        return jsonProduct(
+          {
+            status: "completed",
+            job_id: jobId,
+            result: parsed.result ?? null,
+          },
+          { status: 200 },
+          "analysis",
+        );
       }
     } catch {
       /* fall through */
     }
-    return NextResponse.json({
-      status: "completed",
-      job_id: jobId,
-      result: null,
-      detail: "Result payload missing in storage",
-    });
+    return jsonProduct(
+      {
+        status: "completed",
+        job_id: jobId,
+        result: null,
+        detail: "Result payload missing in storage",
+      },
+      { status: 200 },
+      "analysis",
+    );
   }
 
   if (st === "failed") {
-    return NextResponse.json({
-      status: "failed",
-      job_id: jobId,
-      detail: typeof statusObj.detail === "string" ? statusObj.detail : "Analyze failed",
-    });
+    return jsonProduct(
+      {
+        status: "failed",
+        job_id: jobId,
+        detail: "分析未成功，请稍后重试。",
+      },
+      { status: 200 },
+      "analysis",
+    );
   }
 
-  return NextResponse.json({
-    status: st || "pending",
-    job_id: jobId,
-  });
+  return jsonProduct(
+    {
+      status: st || "pending",
+      job_id: jobId,
+    },
+    { status: 200 },
+    "analysis",
+  );
 }

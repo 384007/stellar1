@@ -1,9 +1,9 @@
-"""Pro v3 — Gemini motion-metadata report with pass-2 retry + deterministic fallback."""
+"""Pro v3 — Gemini motion-metadata report (single vision call; local fallback if weak)."""
 
 from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import Any, Optional
 
 from services.gemini_service import analyze_prov3_motion_report_only
 
@@ -19,6 +19,17 @@ _MIN_SUMMARY_EN_WORDS_LIMITED = 200
 _MIN_SUMMARY_ZH_CHARS_LIMITED = 280
 
 _META_KEY = "__prov3_report_meta__"
+
+
+def _pad_club_images_b64(raw: Optional[list[str]]) -> Optional[list[str]]:
+    if not raw:
+        return None
+    xs = [x for x in raw if isinstance(x, str) and x.strip()][:3]
+    if not xs:
+        return None
+    while len(xs) < 3:
+        xs.append(xs[-1])
+    return xs
 
 
 def _nonempty_str_list(raw: Any) -> list[str]:
@@ -337,12 +348,12 @@ async def write_prov3_ai_report(
     *,
     region: str = "global",
     report_mode: str = "formal",
+    club_images_b64: Optional[list[str]] = None,
 ) -> dict[str, Any]:
-    """Text-only Gemini report from motion_context JSON; pass-2 + local fallback if weak."""
-    lim_lbl, p1_lbl, p2_lbl = (
+    """One Gemini vision call (optional 3 club JPEGs in-call); local fallback if output is weak."""
+    lim_lbl, p1_lbl = (
         "prov3_report_limited",
         "prov3_report",
-        "prov3_report_pass2",
     )
     ct = "PROV3"
     meta: dict[str, Any] = {
@@ -352,6 +363,7 @@ async def write_prov3_ai_report(
         "fallback_used": False,
         "report_chain": "prov3",
     }
+    club_kw = _pad_club_images_b64(club_images_b64)
 
     if (report_mode or "").strip().lower() == "limited":
         logger.info(
@@ -366,6 +378,7 @@ async def write_prov3_ai_report(
             max_tokens=12288,
             call_label=lim_lbl,
             report_mode="limited",
+            club_images_b64=club_kw,
         )
         weak1 = _report_is_weak_limited(out1)
         meta["pass1_weak"] = weak1
@@ -388,7 +401,7 @@ async def write_prov3_ai_report(
         chosen[_META_KEY] = meta
         return chosen
 
-    logger.info("[%s][REPORT] pass1_started report_mode=formal chain=%s", ct, meta["report_chain"])
+    logger.info("[%s][REPORT] single_pass_started report_mode=formal chain=%s", ct, meta["report_chain"])
     out1 = await analyze_prov3_motion_report_only(
         motion_context,
         region=region,
@@ -396,32 +409,17 @@ async def write_prov3_ai_report(
         max_tokens=12288,
         call_label=p1_lbl,
         report_mode="formal",
+        club_images_b64=club_kw,
     )
     weak1 = _report_is_weak(out1)
     meta["pass1_weak"] = weak1
-    logger.info("[%s][REPORT] pass1_weak=%s", ct, weak1)
+    logger.info("[%s][REPORT] pass1_weak=%s (no pass2 — single Gemini)", ct, weak1)
 
     chosen = out1
-    if weak1:
-        logger.info("[%s][REPORT] pass2_started", ct)
-        meta["pass2_used"] = True
-        out2 = await analyze_prov3_motion_report_only(
-            motion_context,
-            region=region,
-            use_strong_prompt=True,
-            max_tokens=12288,
-            call_label=p2_lbl,
-            report_mode="formal",
-        )
-        weak2 = _report_is_weak(out2)
-        meta["pass2_weak"] = weak2
-        logger.info("[%s][REPORT] pass2_weak=%s", ct, weak2)
-        chosen = out2
-
     if _report_is_weak(chosen):
         fb = build_prov3_fallback_report(motion_context)
         meta["fallback_used"] = True
-        logger.warning("[%s][REPORT] fallback_used=true (AI output still weak after pass2)", ct)
+        logger.warning("[%s][REPORT] fallback_used=true (single-pass output weak)", ct)
         chosen = fb
     else:
         logger.info("[%s][REPORT] fallback_used=false", ct)

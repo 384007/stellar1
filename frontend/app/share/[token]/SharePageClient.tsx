@@ -534,10 +534,11 @@ export default function SharePageClient({ token }: { token: string }) {
           const monotonic = pb?.phase_strip_is_monotonic_fallback_only === true;
           const warnIncomplete = String(parsed.phase_evaluations_warning || "").includes("incomplete_phase_vision_strip");
           const incomplete = pb?.phase_vision_complete_strip === false || warnIncomplete;
-          const geminiDiv =
+          const uniformMapDiverged =
             pb?.gemini_uniform_map_vs_strip?.aligned === false ||
             pb?.gemini_uniform_map_vs_strip?.gemini_map_aligned_with_final_strip === false;
-          if (!imgOnly && !litePose && !notTrusted && !monotonic && !incomplete && !geminiDiv) return null;
+          if (!imgOnly && !litePose && !notTrusted && !monotonic && !incomplete && !uniformMapDiverged)
+            return null;
           const linesZh: string[] = [];
           const linesEn: string[] = [];
           if (imgOnly) {
@@ -560,11 +561,11 @@ export default function SharePageClient({ token }: { token: string }) {
               `Incomplete phase strip (keyframes ${pb?.keyframe_strip_frame_count ?? "?"} / model images ${pb?.ai_vision_frame_count ?? "?"}, expected ${pb?.expected_phase_vision_frames ?? 8}). Per-phase claims are downgraded.`,
             );
           }
-          if (geminiDiv) {
-            linesZh.push("均匀采样缩略图的 Gemini 相位映射与最终 8 张阶段图不一致；已关闭高可信逐阶段视觉结论。");
-            linesEn.push("Gemini uniform-thumbnail phase map diverged from the final 8 phase images; high-trust per-phase vision is off.");
+          if (uniformMapDiverged) {
+            linesZh.push("均匀采样缩略图的相位映射与最终阶段图不一致；已关闭高可信逐阶段视觉结论。");
+            linesEn.push("The uniform-thumbnail phase map diverged from the final phase images; high-trust per-phase vision is off.");
           }
-          if (notTrusted && !monotonic && !incomplete && !geminiDiv && !imgOnly && !litePose) {
+          if (notTrusted && !monotonic && !incomplete && !uniformMapDiverged && !imgOnly && !litePose) {
             linesZh.push("阶段视觉未通过服务器可信性门槛（语义/校验/来源）；逐阶段评价仅供参考。");
             linesEn.push("Phase vision did not pass server trust gates; treat per-phase notes as non-authoritative.");
           }
@@ -579,9 +580,6 @@ export default function SharePageClient({ token }: { token: string }) {
                   <li key={i}>{t}</li>
                 ))}
               </ul>
-              {parsed.phase_evaluations_warning ? (
-                <p className="mt-2 font-mono text-[10px] text-amber-200/50">{String(parsed.phase_evaluations_warning)}</p>
-              ) : null}
             </div>
           );
         })()}

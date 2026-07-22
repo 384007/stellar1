@@ -5,17 +5,19 @@ from __future__ import annotations
 import asyncio
 import base64
 import logging
+import os
 from typing import Any
 
 import cv2
 import numpy as np
 
-from services.club_detector import detect_club
+from services.club_detector import detect_club, detect_club_three_frames_from_video
 from services.shot_predictor import calibrate_prediction
 
 logger = logging.getLogger(__name__)
 
 STELLAR_PRO_CLUB_DETECT_TIMEOUT_S = 45.0
+STELLAR_PRO_CLUB_VIDEO_TIMEOUT_S = 180.0
 
 
 def keyframe_jpeg_b64_to_bgr(b64: str) -> np.ndarray | None:
@@ -61,31 +63,52 @@ async def apply_impact_club_vision_to_result(
     keyframes: list[dict[str, Any]],
     *,
     region: str,
+    source_video_path: str | None = None,
 ) -> None:
-    """Run detect_club on motion-picked impact JPEG; merge into prediction + detected_club."""
-    imp = next((k for k in keyframes if str(k.get("phase")) == "impact"), None)
-    if not imp:
-        logger.warning("[STELLAR_PRO][CLUB_VISION] no impact keyframe")
-        return
-    frame = keyframe_jpeg_b64_to_bgr(str(imp.get("image_base64") or ""))
-    if frame is None:
-        logger.warning("[STELLAR_PRO][CLUB_VISION] impact image decode failed")
-        return
+    """Merge club vision into prediction + detected_club (3-frame video or impact JPEG fallback)."""
+    club_info: dict[str, Any] | None = None
+    if source_video_path and os.path.isfile(source_video_path):
+        logger.info("[STELLAR_PRO][CLUB_VISION] stage=start path=video_three_frame")
+        try:
+            club_info = await asyncio.wait_for(
+                detect_club_three_frames_from_video(source_video_path, region=region),
+                timeout=STELLAR_PRO_CLUB_VIDEO_TIMEOUT_S,
+            )
+        except asyncio.TimeoutError:
+            logger.warning(
+                "[STELLAR_PRO][CLUB_VISION] stage=timeout video after %ss",
+                STELLAR_PRO_CLUB_VIDEO_TIMEOUT_S,
+            )
+        except Exception as exc:
+            logger.warning("[STELLAR_PRO][CLUB_VISION] video stage=failed err=%s", exc)
 
-    logger.info("[STELLAR_PRO][CLUB_VISION] stage=start")
-    try:
-        club_info = await asyncio.wait_for(
-            detect_club(frame, region),
-            timeout=STELLAR_PRO_CLUB_DETECT_TIMEOUT_S,
-        )
-    except asyncio.TimeoutError:
-        logger.warning(
-            "[STELLAR_PRO][CLUB_VISION] stage=timeout after %ss",
-            STELLAR_PRO_CLUB_DETECT_TIMEOUT_S,
-        )
-        return
-    except Exception as exc:
-        logger.warning("[STELLAR_PRO][CLUB_VISION] stage=failed err=%s", exc)
+    if club_info is None:
+        imp = next((k for k in keyframes if str(k.get("phase")) == "impact"), None)
+        if not imp:
+            logger.warning("[STELLAR_PRO][CLUB_VISION] no impact keyframe")
+            return
+        frame = keyframe_jpeg_b64_to_bgr(str(imp.get("image_base64") or ""))
+        if frame is None:
+            logger.warning("[STELLAR_PRO][CLUB_VISION] impact image decode failed")
+            return
+
+        logger.info("[STELLAR_PRO][CLUB_VISION] stage=start path=impact_jpeg")
+        try:
+            club_info = await asyncio.wait_for(
+                detect_club(frame, region),
+                timeout=STELLAR_PRO_CLUB_DETECT_TIMEOUT_S,
+            )
+        except asyncio.TimeoutError:
+            logger.warning(
+                "[STELLAR_PRO][CLUB_VISION] stage=timeout after %ss",
+                STELLAR_PRO_CLUB_DETECT_TIMEOUT_S,
+            )
+            return
+        except Exception as exc:
+            logger.warning("[STELLAR_PRO][CLUB_VISION] stage=failed err=%s", exc)
+            return
+
+    if club_info is None:
         return
 
     ct = str(club_info.get("club_type") or "").upper().strip()

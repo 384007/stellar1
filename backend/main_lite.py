@@ -33,7 +33,7 @@ def _safe_load(module_path: str, prefix: str, tags: list[str]):
 
 
 _safe_load("routers.auth", "/auth", ["Authentication"])
-_safe_load("routers.analyze", "/analyze", ["Analysis"])
+_safe_load("routers.analyze_lite_surface", "/analyze", ["Analysis"])
 
 
 @app.get("/")
@@ -52,5 +52,12 @@ async def health_check():
     return {
         "status": "healthy",
         "service": "stellar-ai-lite",
-        "routes": ["/auth/*", "/analyze/lite", "/analyze/recalculate"],
+        "routes": [
+            "/auth/*",
+            "/analyze/lite",
+            "/analyze/recalculate",
+            "/analyze/vision-classic",
+            "/analyze/club-detect",
+            "/analyze/club-detect-batch",
+        ],
     }

@@ -15,9 +15,10 @@ export type LiteSseEnvelope =
 
 function parseLastSseDataBlock(buffer: string): string | null {
   let last: string | null = null;
-  const blocks = buffer.split(/\r?\n\r?\n/);
+  const norm = buffer.replace(/\r\n/g, "\n");
+  const blocks = norm.split(/\n\n+/);
   for (const block of blocks) {
-    for (const line of block.split(/\r?\n/)) {
+    for (const line of block.split("\n")) {
       if (line.startsWith("data: ")) {
         last = line.slice(6).trim();
       }
@@ -26,45 +27,46 @@ function parseLastSseDataBlock(buffer: string): string | null {
   return last;
 }
 
-async function readSseLiteEnvelope(res: Response): Promise<LiteSseEnvelope> {
-  if (!res.body) {
-    throw new Error("Empty response body");
-  }
-  const reader = res.body.getReader();
-  const dec = new TextDecoder();
-  let buffer = "";
-  for (;;) {
-    const { done, value } = await reader.read();
-    buffer += dec.decode(value || new Uint8Array(), { stream: !done });
-    if (done) break;
-  }
-  const raw = parseLastSseDataBlock(buffer);
-  if (!raw) {
+function bodyLooksLikeSse(raw: string): boolean {
+  const t = raw.trimStart();
+  return t.startsWith(":") || t.startsWith("data:") || t.startsWith("event:");
+}
+
+function parseLiteEnvelopeFromSseText(raw: string): Record<string, unknown> {
+  const last = parseLastSseDataBlock(raw);
+  if (!last) {
     throw new Error("Lite analyze stream ended without a data payload");
   }
+  let env: LiteSseEnvelope;
   try {
-    return JSON.parse(raw) as LiteSseEnvelope;
+    env = JSON.parse(last) as LiteSseEnvelope;
   } catch {
     throw new Error("Lite analyze stream returned invalid JSON");
   }
+  if (!env.ok) {
+    const msg = env.detail || env.code || "Lite analyze failed";
+    const err = new Error(msg);
+    (err as Error & { liteCode?: string; liteStatus?: number }).liteCode = env.code;
+    (err as Error & { liteCode?: string; liteStatus?: number }).liteStatus = env.status;
+    throw err;
+  }
+  return env.result;
 }
 
 /**
- * Read Lite analyze response body (JSON cache hit or SSE final envelope).
- * Caller should only use when ``res.ok`` or when handling errors that still use JSON.
+ * Read Lite analyze response body (SSE final envelope, or legacy JSON).
+ * Sniffs SSE when ``Content-Type`` is wrong but the body starts with ``:`` / ``data:`` (some proxies).
  */
 export async function readLiteAnalyzeResult(res: Response): Promise<Record<string, unknown>> {
-  const ct = res.headers.get("content-type") || "";
-  if (ct.includes("text/event-stream")) {
-    const env = await readSseLiteEnvelope(res);
-    if (!env.ok) {
-      const msg = env.detail || env.code || "Lite analyze failed";
-      const err = new Error(msg);
-      (err as Error & { liteCode?: string; liteStatus?: number }).liteCode = env.code;
-      (err as Error & { liteCode?: string; liteStatus?: number }).liteStatus = env.status;
-      throw err;
-    }
-    return env.result;
+  const ct = (res.headers.get("content-type") || "").toLowerCase();
+  const raw = await res.text();
+  const sseLike =
+    ct.includes("text/event-stream") || bodyLooksLikeSse(raw);
+  if (sseLike) {
+    return parseLiteEnvelopeFromSseText(raw);
   }
-  return (await res.json()) as Record<string, unknown>;
+  if (!raw.trim()) {
+    throw new Error("Empty response body");
+  }
+  return JSON.parse(raw) as Record<string, unknown>;
 }

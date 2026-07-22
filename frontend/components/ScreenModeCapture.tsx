@@ -3,24 +3,9 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 import { LandmarkSmoother } from "@/lib/pose-filters";
 import { CaptureQualityAssessor, type QualityReport } from "@/lib/capture-quality";
-import {
-  getMediaPipeAllowForeignFallback,
-  getMediaPipeWasmBases,
-  getPoseModelUrls,
-  resolveMediaPipeSelfHostBase,
-} from "@/lib/mediapipe-assets";
+import { getMediaPipeWasmBases, getPoseModelUrls } from "@/lib/mediapipe-assets";
 
-function getMediaPipeLoadTimeouts(selfBase: string | null) {
-  const selfOnly = !!selfBase && !getMediaPipeAllowForeignFallback();
-  if (selfOnly) {
-    return {
-      bundle: 20_000,
-      wasm: 25_000,
-      liteGpu: 20_000,
-      liteCpu: 25_000,
-      fullGpu: 40_000,
-    };
-  }
+function getMediaPipeLoadTimeouts() {
   return {
     bundle: 12_000,
     wasm: 12_000,
@@ -355,11 +340,10 @@ async function loadMediaPipe(
     return _cachedLandmarker;
   }
 
-  const selfBase = await resolveMediaPipeSelfHostBase();
   const failReasons: string[] = [];
-  const t = getMediaPipeLoadTimeouts(selfBase);
-  const wasmBases = getMediaPipeWasmBases(selfBase);
-  const { full: fullModelUrls, lite: liteModelUrls } = getPoseModelUrls(selfBase);
+  const t = getMediaPipeLoadTimeouts();
+  const wasmBases = getMediaPipeWasmBases();
+  const { full: fullModelUrls, lite: liteModelUrls } = getPoseModelUrls();
 
   // ── Step 1: Vision bundle (Method A: ESM import → Method B: <script> tag) ──
   onStage?.("加载视觉引擎");
@@ -378,23 +362,13 @@ async function loadMediaPipe(
     return WebAssembly.validate(new Uint8Array([0,97,115,109,1,0,0,0,1,5,1,96,0,1,123,3,2,1,0,10,10,1,8,0,65,0,253,15,253,98,11]));
   } catch { return false; } })();
   const wasmFile = simd ? "vision_wasm_internal" : "vision_wasm_nosimd_internal";
-  const v = "0.10.33";
 
   // Build URL lists for parallel racing
   const wasmBinaryUrls = [
     `/mp/wasm/${wasmFile}.wasm`,
-    `https://registry.npmmirror.com/@mediapipe/tasks-vision/${v}/files/wasm/${wasmFile}.wasm`,
-    `https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@${v}/wasm/${wasmFile}.wasm`,
+    `/api/mp-ext/wasm/${wasmFile}.wasm`,
   ];
-  const wasmJsUrls = [
-    `/mp/wasm/${wasmFile}.js`,
-    `https://registry.npmmirror.com/@mediapipe/tasks-vision/${v}/files/wasm/${wasmFile}.js`,
-    `https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@${v}/wasm/${wasmFile}.js`,
-  ];
-  if (selfBase) {
-    wasmBinaryUrls.splice(1, 0, `${selfBase}/wasm/${wasmFile}.wasm`);
-    wasmJsUrls.splice(1, 0, `${selfBase}/wasm/${wasmFile}.js`);
-  }
+  const wasmJsUrls = [`/mp/wasm/${wasmFile}.js`, `/api/mp-ext/wasm/${wasmFile}.js`];
 
   // ── Step 2: Download WASM binary (~11MB) — race all sources in parallel ──
   onStage?.("下载引擎组件");

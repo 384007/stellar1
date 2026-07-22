@@ -374,7 +374,7 @@ def _env_truthy(*keys: str) -> bool:
 
 # Modal GPU image: skip legacy ``/stellar-pro`` router (smaller surface).
 _MODAL_PRO_SLIM = _env_truthy("STELLAR_MODAL_PRO_V3_ONLY")
-_EXPECTED_ROUTER_LOADS = 6 if _MODAL_PRO_SLIM else 7
+_EXPECTED_ROUTER_LOADS = 7 if _MODAL_PRO_SLIM else 8
 
 
 def _safe_load(module_path: str, prefix: str, tags: list[str]):
@@ -397,6 +397,7 @@ _safe_load("routers.news", "", ["News"])
 if not _MODAL_PRO_SLIM:
     _safe_load("routers.stellar_pro_api", "", ["stellar-pro"])
 _safe_load("routers.prov3_api", "", [])
+_safe_load("routers.shot_tracer", "", ["shot-tracer"])
 
 
 @app.head("/health")
@@ -452,6 +453,16 @@ async def health_check():
         _ff_ok = False
         _mci = False
 
+    _club_ready = bool(
+        ((os.getenv("STELLAR_YOLO_CLUB_WEIGHTS") or "").strip() and os.path.exists((os.getenv("STELLAR_YOLO_CLUB_WEIGHTS") or "").strip()))
+        or ((os.getenv("STELLAR_ROBOFLOW_API_KEY") or "").strip() and (os.getenv("STELLAR_ROBOFLOW_CLUB_MODEL") or "").strip())
+    )
+    _ball_ready = bool(
+        ((os.getenv("STELLAR_YOLO_BALL_WEIGHTS") or "").strip() and os.path.exists((os.getenv("STELLAR_YOLO_BALL_WEIGHTS") or "").strip()))
+        or ((os.getenv("STELLAR_TRACKNET_API_URL") or "").strip())
+        or ((os.getenv("STELLAR_ROBOFLOW_API_KEY") or "").strip() and (os.getenv("STELLAR_ROBOFLOW_BALL_MODEL") or "").strip())
+    )
+
     payload = {
         "status": "healthy",
         "service": "stellar-ai",
@@ -460,6 +471,14 @@ async def health_check():
         "plus_pipeline": {"code_marker": "plus_degradation_v1", "degraded_http_200": True},
         "routers_loaded": _EXPECTED_ROUTER_LOADS - len(_load_errors),
         "load_errors": _load_errors or None,
+        "shot_tracer": {
+            "route": "POST /shot-tracer/reconstruct",
+            "enabled": not any("routers.shot_tracer:" in e for e in _load_errors),
+            "club_detector_ready": _club_ready,
+            "ball_tracker_ready": _ball_ready,
+            "fallback_available": True,
+            "modal_ready": detect_runtime() == "modal",
+        },
         "prov3": {
             "engine": "prov3",
             "api_prefix": "/pro-v3",

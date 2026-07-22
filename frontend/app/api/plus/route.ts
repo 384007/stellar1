@@ -1,12 +1,13 @@
 import { NextRequest, NextResponse } from "next/server";
 import { jwtVerify } from "jose";
 import { getRequestContext } from "@cloudflare/next-on-pages";
+import { jsonProduct } from "@/lib/chains";
+import { prov3ModalPrimaryOrigin } from "@/lib/server/prov3-upstream";
 
 export const runtime = "edge";
 
-const BACKEND_FALLBACK = "https://stellar1-backend.onrender.com";
-const MODAL_TIMEOUT_MS = 120_000;
-const RENDER_TIMEOUT_MS = 290_000;
+/** Plus on Modal can exceed 2m; keep below worker max where possible */
+const MODAL_PLUS_TIMEOUT_MS = 360_000;
 const PLUS_FREE_DAILY_LIMIT = 3;
 
 function getCfEnv(key: string): string {
@@ -17,59 +18,26 @@ function getCfEnv(key: string): string {
   }
 }
 
-function getModalUrl(): string {
-  return getCfEnv("MODAL_BACKEND_URL") || process.env.MODAL_BACKEND_URL || "https://dytsui--stellar-ai-fastapi-app.modal.run";
+function getModalUrl(request: NextRequest): string {
+  const cfRaw = (request.headers.get("cf-ipcountry") || request.headers.get("CF-IPCountry") || "").trim();
+  return prov3ModalPrimaryOrigin(getCfEnv, cfRaw).replace(/\/+$/, "");
 }
 
-function getRenderUrl(): string {
-  return getCfEnv("NEXT_PUBLIC_BACKEND_URL") || process.env.NEXT_PUBLIC_BACKEND_URL || BACKEND_FALLBACK;
-}
-
-/** Try Modal first; on 422 / 5xx / timeout fall back to Render (422 often means lagging Modal vs Render). */
-async function fetchPlusWithFallback(file: File): Promise<Response> {
-  const modalUrl = getModalUrl();
-
-  if (modalUrl) {
-    try {
-      const form = new FormData();
-      form.append("file", file);
-      const ctrl = new AbortController();
-      const timer = setTimeout(() => ctrl.abort(), MODAL_TIMEOUT_MS);
-
-      const res = await fetch(`${modalUrl}/analyze/plus`, {
-        method: "POST",
-        body: form,
-        signal: ctrl.signal,
-      });
-      clearTimeout(timer);
-
-      if (res.ok) return res;
-      if (res.status === 422 || res.status >= 500) {
-        if (res.status >= 500)
-          console.warn(`[plus] Modal returned ${res.status}, falling back to Render`);
-        else console.warn(`[plus] Modal 422, falling back to Render`);
-        // fall through
-      } else {
-        return res; // 401 / 400 / 413 / … as-is
-      }
-    } catch (e) {
-      const isTimeout = e instanceof DOMException && e.name === "AbortError";
-      console.warn(`[plus] Modal ${isTimeout ? "timed out" : "unreachable"}, falling back to Render`);
-    }
-  }
-
-  // Render fallback
+async function fetchPlusModalOnly(request: NextRequest, file: File): Promise<Response> {
+  const modalUrl = getModalUrl(request);
   const form = new FormData();
   form.append("file", file);
   const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), RENDER_TIMEOUT_MS);
-  const res = await fetch(`${getRenderUrl()}/analyze/plus`, {
-    method: "POST",
-    body: form,
-    signal: ctrl.signal,
-  });
-  clearTimeout(timer);
-  return res;
+  const timer = setTimeout(() => ctrl.abort(), MODAL_PLUS_TIMEOUT_MS);
+  try {
+    return await fetch(`${modalUrl}/analyze/plus`, {
+      method: "POST",
+      body: form,
+      signal: ctrl.signal,
+    });
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 function getDB() {
@@ -85,7 +53,9 @@ function getJwtSecret(): Uint8Array {
   let secret = "";
   try {
     secret = (getRequestContext().env as Record<string, string>).JWT_SECRET || "";
-  } catch { /* not in CF context */ }
+  } catch {
+    /* not in CF context */
+  }
   if (!secret) secret = process.env.JWT_SECRET || "";
   return new TextEncoder().encode(secret);
 }
@@ -205,37 +175,37 @@ export async function POST(request: NextRequest) {
 
     let res: Response;
     try {
-      res = await fetchPlusWithFallback(file);
+      res = await fetchPlusModalOnly(request, file);
     } catch (e) {
       if (e instanceof DOMException && e.name === "AbortError") {
         return NextResponse.json({ detail: "Plus 分析超时，请压缩视频后重试" }, { status: 504 });
       }
-      return NextResponse.json({ detail: `后端不可达: ${e instanceof Error ? e.message : "网络错误"}` }, { status: 502 });
+      return NextResponse.json({ detail: "网络异常，请稍后重试。" }, { status: 502 });
     }
 
     if (!res.ok) {
-      const errBody = await res.text().catch(() => "");
       return NextResponse.json(
-        { detail: `Plus 分析失败 [${res.status}]: ${errBody.substring(0, 200)}` },
-        { status: res.status >= 400 && res.status < 500 ? res.status : 502 }
+        { detail: "Plus 分析失败，请稍后重试。" },
+        { status: res.status >= 400 && res.status < 500 ? res.status : 502 },
       );
     }
 
     const result = await res.json();
 
-    return NextResponse.json({
-      ...result,
-      _plus_usage: {
-        used: usage.used,
-        remaining: usage.remaining,
-        limit: is_pro ? null : PLUS_FREE_DAILY_LIMIT,
-        is_pro,
+    return jsonProduct(
+      {
+        ...result,
+        _plus_usage: {
+          used: usage.used,
+          remaining: usage.remaining,
+          limit: is_pro ? null : PLUS_FREE_DAILY_LIMIT,
+          is_pro,
+        },
       },
-    });
-  } catch (err) {
-    return NextResponse.json(
-      { detail: err instanceof Error ? err.message : "Plus 分析错误" },
-      { status: 500 }
+      { status: 200 },
+      "plus",
     );
+  } catch {
+    return NextResponse.json({ detail: "Plus 分析异常，请稍后重试。" }, { status: 500 });
   }
 }

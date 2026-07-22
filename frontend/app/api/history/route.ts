@@ -9,6 +9,7 @@ import {
   purgeExpiredHistoryForUser,
   resolveHistoryRetentionDays,
 } from "@/lib/pro-history-retention";
+import { sanitizeProductJson } from "@/lib/chains/sanitize";
 
 export const runtime = "edge";
 
@@ -443,16 +444,29 @@ export async function GET(request: NextRequest) {
       labRecords = labResult.results || [];
     } catch { /* lab_jobs table may not exist yet */ }
 
+    const rawRows = (analyses.results || []) as Record<string, unknown>[];
+    const analysesOut = rawRows.map((row) => {
+      const rj = row.result_json;
+      if (typeof rj === "string" && rj.length > 0) {
+        try {
+          return {
+            ...row,
+            result_json: JSON.stringify(sanitizeProductJson(JSON.parse(rj), "record")),
+          };
+        } catch {
+          return row;
+        }
+      }
+      return row;
+    });
+
     return NextResponse.json({
-      analyses: analyses.results || [],
+      analyses: analysesOut,
       lab_records: labRecords,
       trend: trend.results || [],
     });
-  } catch (e) {
-    return NextResponse.json(
-      { detail: `查询失败: ${e instanceof Error ? e.message : "未知错误"}` },
-      { status: 500 }
-    );
+  } catch {
+    return NextResponse.json({ detail: "查询失败，请稍后重试。" }, { status: 500 });
   }
 }
 
@@ -587,16 +601,13 @@ export async function POST(request: NextRequest) {
       // the error will surface here. We return success=false so the client
       // knows to keep the local record for retry.
       return NextResponse.json(
-        { success: false, detail: `保存失败: ${insertErr instanceof Error ? insertErr.message : "约束错误"}` },
-        { status: 200 }
+        { success: false, detail: "保存失败，请稍后重试。" },
+        { status: 200 },
       );
     }
 
     return NextResponse.json({ success: true, id: analysis_id });
-  } catch (e) {
-    return NextResponse.json(
-      { detail: `保存失败: ${e instanceof Error ? e.message : "未知错误"}` },
-      { status: 500 }
-    );
+  } catch {
+    return NextResponse.json({ detail: "保存失败，请稍后重试。" }, { status: 500 });
   }
 }

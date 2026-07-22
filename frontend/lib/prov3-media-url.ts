@@ -1,34 +1,31 @@
 /**
- * Pro v3 product media URLs must be absolute and point at durable storage (R2) or at least
- * at the Modal API origin — never path-only `/pro-v3/media/...` resolved against Pages (404).
+ * Pro v3 / R2 media: rewrite to same-origin ``/api/cdn/p`` so the browser never loads Modal/R2 hosts directly.
+ * Only ``m=1&p=`` (Modal ``/pro-v3/media/``) and ``r=1&p=`` (``/prov3-media/``) — no reversible encoding of full upstream URLs.
  */
 
-import { DEFAULT_PROV3_MODAL_URL, normalizeProHttpApiBase } from "@/lib/prov3-endpoints";
-
-function modalApiOriginForMediaResolution(): string {
-  if (typeof process !== "undefined" && process.env.NEXT_PUBLIC_MODAL_BACKEND_URL?.trim()) {
-    return normalizeProHttpApiBase(process.env.NEXT_PUBLIC_MODAL_BACKEND_URL.trim());
-  }
-  return normalizeProHttpApiBase(DEFAULT_PROV3_MODAL_URL);
+function cdnModalPath(pathWithSearch: string): string {
+  return `/api/cdn/p?m=1&p=${encodeURIComponent(pathWithSearch)}`;
 }
 
-/** Same bucket root as Modal ``STELLAR_PROV3_R2_PUBLIC_BASE`` — fixes path-only ``/prov3-media/…`` in JSON. */
-function prov3R2PublicOrigin(): string {
-  if (typeof process !== "undefined" && process.env.NEXT_PUBLIC_STELLAR_PROV3_R2_PUBLIC_BASE?.trim()) {
-    return process.env.NEXT_PUBLIC_STELLAR_PROV3_R2_PUBLIC_BASE.trim().replace(/\/+$/, "");
-  }
-  return "";
+function cdnR2Path(pathWithSearch: string): string {
+  return `/api/cdn/p?r=1&p=${encodeURIComponent(pathWithSearch)}`;
+}
+
+/** ``/prov3-media/...`` segment inside pathname (any host). */
+function pathFromProv3MediaPathname(pathname: string, search: string): string | null {
+  const low = pathname.toLowerCase();
+  const idx = low.indexOf("/prov3-media/");
+  if (idx === -1) return null;
+  return pathname.slice(idx) + search;
 }
 
 /**
- * True when URL targets durable or product media paths we treat as verified — safe to skip client
- * `<img>` decode probes that often false-fail on cross-origin / latency while `<img src>` still works.
- *
- * Covers R2 (`…/prov3-media/…`) and Modal product routes (`…/pro-v3/media/…`).
+ * True when URL is same-origin proxy or legacy absolute product media — safe to skip redundant `<img>` probes.
  */
 export function isProv3DurableR2ProductUrl(url: string): boolean {
   const u = String(url ?? "").trim();
   if (!u) return false;
+  if (u.startsWith("/api/cdn/p?")) return true;
   try {
     const parsed = /^https?:\/\//i.test(u) ? new URL(u) : new URL(u, "https://invalid.local");
     const path = parsed.pathname.toLowerCase();
@@ -38,30 +35,31 @@ export function isProv3DurableR2ProductUrl(url: string): boolean {
   }
 }
 
-/** Turn relative prov3 media paths into absolute Modal URLs (ephemeral fallback for old rows). */
+/** Rewrite Modal / R2 media references to same-origin CDN proxy paths. Unknown absolute URLs are dropped (``""``). */
 export function resolveProv3ProductMediaUrl(url: string | undefined | null): string {
   const u = String(url ?? "").trim();
   if (!u) return "";
   if (/^https?:\/\//i.test(u)) {
     try {
       const parsed = new URL(u);
-      // Wrong origin (e.g. Pages) stored in history — same path must hit Modal / R2 redirect, not 404 on Pages.
+      const ps = parsed.pathname + parsed.search;
       if (parsed.pathname.startsWith("/pro-v3/media/")) {
-        const origin = modalApiOriginForMediaResolution();
-        return `${origin}${parsed.pathname}${parsed.search}`;
+        return cdnModalPath(ps);
+      }
+      const r2Seg = pathFromProv3MediaPathname(parsed.pathname, parsed.search);
+      if (r2Seg) {
+        return cdnR2Path(r2Seg);
       }
     } catch {
-      return u;
+      return "";
     }
-    return u;
+    return "";
   }
   if (u.startsWith("/pro-v3/media/")) {
-    const origin = modalApiOriginForMediaResolution();
-    return `${origin}${u}`;
+    return cdnModalPath(u);
   }
   if (u.startsWith("/prov3-media/")) {
-    const r2 = prov3R2PublicOrigin();
-    if (r2) return `${r2}${u}`;
+    return cdnR2Path(u);
   }
   return u;
 }
@@ -84,8 +82,7 @@ export function normalizeProv3MediaInRaw(raw: Record<string, unknown>): void {
   for (const key of topKeys) {
     const v = raw[key];
     if (typeof v === "string" && v.trim()) {
-      const n = resolveProv3ProductMediaUrl(v);
-      if (n) raw[key] = n;
+      raw[key] = resolveProv3ProductMediaUrl(v);
     }
   }
 
@@ -98,8 +95,7 @@ export function normalizeProv3MediaInRaw(raw: Record<string, unknown>): void {
       const rec = row as Record<string, unknown>;
       const ku = rec.keyframe_image_url;
       if (typeof ku === "string" && ku.trim()) {
-        const n = resolveProv3ProductMediaUrl(ku);
-        if (n) rec.keyframe_image_url = n;
+        rec.keyframe_image_url = resolveProv3ProductMediaUrl(ku);
       }
     }
   }

@@ -2,21 +2,18 @@ import { NextRequest, NextResponse } from "next/server";
 import { getRequestContext } from "@cloudflare/next-on-pages";
 import { jwtVerify } from "jose";
 
+import { createLiteAnalyzeEdgeSseStream } from "@/lib/lite-analyze-edge-sse";
 import { LITE_ANALYZE_FETCH_TIMEOUT_MS } from "@/lib/lite-analyze-timeout";
-import { resolveLiteAnalyzeUpstreamBase } from "@/lib/prov3-endpoints";
+import { resolveLiteAnalyzeUpstreamBase } from "@/lib/server/prov3-upstream";
 
 export const runtime = "edge";
 
 /**
- * CN / same-origin Lite path: multipart in → forward ``POST {ModalBase}/analyze/lite`` (main Modal by default).
- * No Gemini/Qwen here — only JWT gate + transparent proxy (idempotency + request_id + Authorization + CF-IPCountry).
+ * CN / same-origin Lite path: multipart in → forward ``POST {ModalBase}/analyze/lite``.
  *
- * **524:** Cloudflare’s limit on the *client → Pages* request (often ~100s) can fire before Modal finishes;
- * the browser sees HTTP 524 even though upstream ``AbortSignal`` allows 1h. Mitigations: direct-to-Modal when
- * reachable, raise CF/proxy timeouts, or async Lite (not implemented here).
- *
- * Default upstream is **main Pro Modal** (same as ``MODAL_BACKEND_URL`` / fallbacks).
- * Optional override: ``LITE_BACKEND_URL`` = dedicated Lite-only origin, no trailing slash.
+ * **Cold start:** returns ``text/event-stream`` immediately and sends ``: edge-wait-upstream`` comment
+ * lines every few seconds while waiting for Modal ``fetch`` headers, then pipes upstream SSE or wraps
+ * JSON / errors as a final ``data:`` envelope — same shape the client already parses via ``readLiteAnalyzeResult``.
  */
 
 function getCfEnv(key: string): string {
@@ -89,7 +86,7 @@ export async function POST(request: NextRequest) {
   if (!base) {
     return NextResponse.json(
       {
-        detail: "Lite analyze upstream URL could not be resolved (set MODAL_BACKEND_URL or LITE_BACKEND_URL on Pages)",
+        detail: "分析服务暂时不可用，请稍后重试。",
         code: "LITE_PROXY_NO_BACKEND",
       },
       { status: 503 },
@@ -137,34 +134,22 @@ export async function POST(request: NextRequest) {
   if (cfCountryHdr) upstreamHeaders["CF-IPCountry"] = cfCountryHdr;
 
   const url = `${base}/analyze/lite`;
-  let upstream: Response;
-  try {
-    upstream = await fetch(url, {
+  const stream = createLiteAnalyzeEdgeSseStream(() =>
+    fetch(url, {
       method: "POST",
       headers: upstreamHeaders,
       body: out,
       signal: AbortSignal.timeout(LITE_ANALYZE_FETCH_TIMEOUT_MS),
-    });
-  } catch (e) {
-    const msg = e instanceof Error ? e.message : "upstream fetch failed";
-    return NextResponse.json({ detail: msg, code: "LITE_PROXY_UPSTREAM_FAILED" }, { status: 502 });
-  }
+    }),
+  );
 
-  const ct = upstream.headers.get("content-type") || "application/json; charset=utf-8";
-  if (upstream.ok && ct.includes("text/event-stream") && upstream.body) {
-    return new NextResponse(upstream.body, {
-      status: upstream.status,
-      headers: {
-        "content-type": ct,
-        "cache-control": upstream.headers.get("cache-control") || "no-cache",
-        "x-accel-buffering": "no",
-      },
-    });
-  }
-
-  const buf = await upstream.arrayBuffer();
-  return new NextResponse(buf, {
-    status: upstream.status,
-    headers: { "content-type": ct },
+  return new NextResponse(stream, {
+    status: 200,
+    headers: {
+      "content-type": "text/event-stream; charset=utf-8",
+      "cache-control": "no-cache, no-transform",
+      "x-accel-buffering": "no",
+      "x-stellar-lite-stream": "1",
+    },
   });
 }

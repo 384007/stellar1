@@ -2,6 +2,8 @@ import { NextRequest, NextResponse } from "next/server";
 import { jwtVerify } from "jose";
 import { getRequestContext } from "@cloudflare/next-on-pages";
 
+import { normalizeVideoMimeForUpload } from "@/lib/upload-video";
+
 export const runtime = "edge";
 
 function getJwtSecret(): Uint8Array {
@@ -80,7 +82,7 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ success: true, video_r2_key: key });
     } catch (e) {
       return NextResponse.json(
-        { detail: `上传失败: ${e instanceof Error ? e.message : "未知错误"}` },
+        { detail: "上传失败，请稍后重试。" },
         { status: 500 },
       );
     }
@@ -99,7 +101,7 @@ export async function POST(request: NextRequest) {
     const bytes = await file.arrayBuffer();
     await r2.put(key, bytes, {
       httpMetadata: {
-        contentType: file.type || "video/mp4",
+        contentType: normalizeVideoMimeForUpload(file.type || "", file.name || `${analysisId}.${ext}`),
         contentDisposition: `inline; filename="${file.name || `${analysisId}.${ext}`}"`,
       },
     });
@@ -107,7 +109,7 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ success: true, video_r2_key: key });
   } catch (e) {
     return NextResponse.json(
-      { detail: `上传失败: ${e instanceof Error ? e.message : "未知错误"}` },
+      { detail: "上传失败，请稍后重试。" },
       { status: 500 }
     );
   }
@@ -117,6 +119,8 @@ function extFromContentType(request: NextRequest): string {
   const ct = (request.headers.get("content-type") || "").toLowerCase();
   if (ct.includes("quicktime")) return "mov";
   if (ct.includes("webm")) return "webm";
+  if (ct.includes("matroska")) return "mkv";
+  if (ct.includes("x-msvideo")) return "avi";
   return "mp4";
 }
 

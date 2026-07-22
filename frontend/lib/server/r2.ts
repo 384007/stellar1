@@ -1,7 +1,10 @@
+import "server-only";
+
+import { contentTypeForStoredVideo } from "@/lib/upload-video";
+
 /**
- * Cloudflare R2 storage helpers.
- * When deployed to Cloudflare Pages, the R2 binding is available through the platform context.
- * For local development and direct API usage, uses the S3-compatible API.
+ * Cloudflare R2 storage helpers (server-only).
+ * R2 S3-compatible host string lives here — not in client-scanned ``lib/*.ts``.
  */
 
 export interface R2Bucket {
@@ -65,10 +68,12 @@ export function generateKeyframeKey(
   return `keyframes/${analysisId}/frame_${frameIndex}.jpg`;
 }
 
+const R2_S3_HOST_SUFFIX = ".r2.cloudflarestorage.com";
+
 export function getPublicUrl(key: string): string {
   const accountId = process.env.CLOUDFLARE_ACCOUNT_ID || "";
   const bucket = process.env.CLOUDFLARE_R2_BUCKET || "stellar-golf-media";
-  return `https://${bucket}.${accountId}.r2.cloudflarestorage.com/${key}`;
+  return `https://${bucket}.${accountId}${R2_S3_HOST_SUFFIX}/${key}`;
 }
 
 export async function uploadToR2(
@@ -89,7 +94,7 @@ export async function uploadVideoToR2(
   data: ArrayBuffer
 ): Promise<{ key: string; url: string }> {
   const key = generateVideoKey(userId, fileName);
-  const contentType = fileName.endsWith(".mov") ? "video/quicktime" : "video/mp4";
+  const contentType = contentTypeForStoredVideo(fileName);
 
   await uploadToR2(bucket, key, data, contentType);
 
@@ -113,28 +118,4 @@ export async function deleteFromR2(
   key: string
 ): Promise<void> {
   await bucket.delete(key);
-}
-
-/**
- * Client-side upload using presigned URL or direct fetch.
- * For production, generate presigned URLs via a server endpoint.
- */
-export async function uploadVideoClient(
-  file: File,
-  uploadUrl: string
-): Promise<string> {
-  const formData = new FormData();
-  formData.append("file", file);
-
-  const response = await fetch(uploadUrl, {
-    method: "POST",
-    body: formData,
-  });
-
-  if (!response.ok) {
-    throw new Error("Upload failed");
-  }
-
-  const data = await response.json();
-  return data.url;
 }

@@ -40,17 +40,19 @@ export default function ClubHandSummaryBar({
     );
   }
 
-  if (!clubKnown && !handKnown) return null;
-
   const clubLine = clubKnown
     ? lang === "zh"
       ? `球杆：${clubTypeLabel(clubType, lang)}`
       : `Club: ${clubType ?? ""}`
     : lang === "zh"
-      ? "球杆：未识别"
-      : "Club: not detected";
+      ? "球杆：未识别（待确认）"
+      : "Club: not detected (needs confirmation)";
 
-  const handLine = handKnown ? handShortLabel(hand, lang) : lang === "zh" ? "左右手：—" : "Hand: —";
+  const handLine = handKnown
+    ? handShortLabel(hand, lang)
+    : lang === "zh"
+      ? "待确认"
+      : "pending confirmation";
 
   const conf =
     clubKnown && typeof clubConfidence === "number" && clubConfidence > 0

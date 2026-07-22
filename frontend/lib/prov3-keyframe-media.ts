@@ -22,11 +22,11 @@ export function prov3MediaUrlsHadProbeFailure(urls: string[]): boolean {
   return urls.some((u) => prov3MediaProbeFailedUrls.has(u.trim()));
 }
 
-/** User-facing copy when true-240 JPG URLs are missing or unloadable */
+/** User-facing copy when timeline keyframe images are missing or unloadable */
 export const PROV3_KEYFRAME_MEDIA_FAIL_ZH =
-  "该结果不满足真 240 分析时间线关键帧展示标准（缺少可访问的 timeline JPG）。请重新分析。";
+  "该结果暂无法展示时间线关键帧图片，请重新分析或稍后再试。";
 export const PROV3_KEYFRAME_MEDIA_FAIL_EN =
-  "This result does not meet the true-240 analysis timeline keyframe standard (missing reachable timeline JPGs). Please re-analyze.";
+  "Timeline keyframe images are not available for this result. Please re-analyze or try again later.";
 
 export type Prov3KeyframeRowLike = {
   keyframe_image_url?: string;

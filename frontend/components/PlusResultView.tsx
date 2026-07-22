@@ -1374,8 +1374,8 @@ function FullSwingView({ result, lang, prov3Strict, prov3KfGate }: FullSwingView
 /* ═══════════════ Posture Practice Panel ═══════════════ */
 
 function PosturePracticePanel({
-  result, lang, backendUrl,
-}: { result: PlusAnalysisResult; lang: "en" | "zh"; backendUrl: string }) {
+  result, lang,
+}: { result: PlusAnalysisResult; lang: "en" | "zh" }) {
   const [videos, setVideos] = useState<PostureVideoCard[]>(() => {
     const addressEval = result.swing_phase_evaluations?.find(e => e.phase === "address");
     const issuesZh = result.issues_zh || [];
@@ -1448,7 +1448,8 @@ function PosturePracticePanel({
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), 660_000);
 
-      const res = await fetch(`${backendUrl}/analyze/plus/posture-video`, {
+      const postureUrl = "/api/plus/posture-video";
+      const res = await fetch(postureUrl, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -1656,7 +1657,6 @@ export default function PlusResultView({
   result,
   lang,
   externalVideoSrc,
-  backendUrl,
   coachingMode,
   initialActiveTab,
   renderProv3VideoOverlay,
@@ -2351,8 +2351,8 @@ export default function PlusResultView({
             <div className="glass-card p-6 text-center">
               <p className="text-xs text-white/50 leading-relaxed">
                 {lang === "zh"
-                  ? "本机未找到该分析的视频缓存。时间线关键帧若仍指向旧服务器的 /pro-v3/media/ 链接，也可能已失效。请重新分析或使用历史中的「重新分析」。"
-                  : "No cached video for this analysis on this device. Timeline keyframe URLs under /pro-v3/media/ may also be expired. Re-analyze or use Re-analyze from history."}
+                  ? "本机未找到该分析的视频缓存，时间线关键帧链接可能已失效。请重新分析或使用历史中的「重新分析」。"
+                  : "No cached video for this analysis on this device; timeline links may have expired. Re-analyze or use Re-analyze from history."}
               </p>
             </div>
           ) : (
@@ -2373,7 +2373,7 @@ export default function PlusResultView({
             <div className="glass-card p-4 border border-cyan-400/25">
               <div className="flex items-center justify-between mb-2">
                 <p className="text-sm font-semibold text-cyan-200">
-                  {lang === "zh" ? "Gemini视觉观察（非正式报告）" : "Gemini Visual Observation (Non-formal)"}
+                  {lang === "zh" ? "视觉观察（非正式报告）" : "Visual observation (non-formal report)"}
                 </p>
                 <span className="text-[11px] px-2 py-0.5 rounded-full bg-cyan-500/10 text-cyan-300 border border-cyan-400/20">
                   {gemObs.mode === "authoritative_phase_report"
@@ -2691,11 +2691,7 @@ export default function PlusResultView({
           )}
 
           {result.type !== "pro" && showPosturePractice && (
-            <PosturePracticePanel
-              result={result}
-              lang={lang}
-              backendUrl={backendUrl || process.env.NEXT_PUBLIC_BACKEND_URL || "https://stellar1-backend.onrender.com"}
-            />
+            <PosturePracticePanel result={result} lang={lang} />
           )}
 
           {result.type === "pro" && result.training && (

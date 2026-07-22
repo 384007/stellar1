@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect } from "react";
+import { devError } from "@/lib/dev-only-log";
 
 // IMPORTANT: bump this on each deployment to bypass any stale /sw.js cache
 // that may be controlled by an older service worker.
@@ -49,7 +50,7 @@ export default function SwRegister() {
         // Re-check whenever the app comes back to foreground (home-screen tap / tab switch)
         document.addEventListener("visibilitychange", onVisible);
       } catch (err) {
-        console.error("[SW] Registration failed:", err);
+        devError("[SW] Registration failed:", err);
       }
     };
 

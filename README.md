@@ -24,6 +24,13 @@ After push, use the host’s UI to open a PR (base = e.g. `main`, compare = your
 
 ---
 
+## PR50 working notes / PR50 联调说明
+
+- PR50 / branch `feat/modal-centric-backend-proxies` 的 Lite × Modal 对接说明见：
+  - [`docs/pr50-modal-lite-backend-integration.md`](docs/pr50-modal-lite-backend-integration.md)
+
+---
+
 ## Architecture / 架构
 
 | Layer | Technology | Deployment |

@@ -1,11 +1,12 @@
-"""Pro v3 关键帧之后的 Gemini 文案报告（motion_context + 多 pass + 本地兜底）。
+"""Pro v3 关键帧之后的 Gemini 文案报告（motion_context + 单次 vision；本地兜底）。
 
-Motion 报告与 ``prov3_text_report_service`` / Gemini prompt 对齐；对外统一 ``prov3`` 命名与日志标签。
+Motion 报告与 ``prov3_text_report_service`` / Gemini prompt 对齐；杆型与报告合并为同一次 ``generateContent``。
 若浏览器先于服务端结束而断开，Modal 上仍可能打满日志但前端看不到报告——请对齐客户端超时与 Modal task 超时。
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 from pathlib import Path
@@ -150,16 +151,55 @@ def _keyframes_for_motion(ui_keyframes: list[dict[str, Any]], analysis_fps: floa
     return rows
 
 
+def _merge_prov3_club_vision_into_minimal(minimal: dict[str, Any], vc: dict[str, Any]) -> None:
+    from services.shot_predictor import calibrate_prediction
+
+    ct = str(vc.get("club_type") or "UNKNOWN").upper()
+    cg = str(vc.get("club_group") or "IRON").upper()
+    cconf = float(vc.get("confidence") or 0.0)
+    pred = dict(minimal.get("prediction") or {})
+    if ct != "UNKNOWN":
+        pred["club_type"] = ct
+        pred["club_group"] = cg
+        pred["club_detection_confidence"] = cconf
+        ch = vc.get("hand")
+        if ch in ("R", "L"):
+            pred["hand"] = ch
+        try:
+            pred = calibrate_prediction(pred, club_type=ct, club_group=cg)
+        except Exception:
+            pass
+        minimal["prediction"] = pred
+    minimal["detected_club"] = {
+        "club_type": ct or "UNKNOWN",
+        "club_group": cg or "IRON",
+        "confidence": round(cconf, 4),
+    }
+
+
 async def enrich_pro_prov3_response(
     minimal: dict[str, Any],
     *,
     region: str = "global",
 ) -> dict[str, Any]:
     """Mutates and returns ``minimal``: fill summary / issues / suggestions / training_plan from Gemini when enabled."""
+    from services.club_detector import (
+        detect_club_three_frames_from_video,
+        encode_bgr_frame_jpeg_b64,
+        read_bgr_frame_at_percent,
+    )
     from services.prov3_analyze_control import prov3_cancel_requested
 
     if not _prov3_gemini_enabled():
-        # Keep _prov3_motion — prov3_api copies analysis_video to media after enrich.
+        block0 = minimal.get("_prov3_motion")
+        if isinstance(block0, dict):
+            av0 = str(block0.get("analysis_video") or "").strip()
+            if av0 and Path(av0).is_file():
+                try:
+                    vc = await detect_club_three_frames_from_video(av0, region=region)
+                    _merge_prov3_club_vision_into_minimal(minimal, vc)
+                except Exception as exc:
+                    logger.warning("[PRO_PROV3][CLUB] gemini_off club path failed: %s", exc)
         return minimal
 
     if prov3_cancel_requested():
@@ -240,11 +280,23 @@ async def enrich_pro_prov3_response(
         minimal["_prov3_motion"] = block
         return minimal
 
+    club_kw: list[str] | None = None
+    if av and Path(av).is_file():
+        b64s: list[str] = []
+        for p in (0.25, 0.4, 0.6):
+            fr = await asyncio.to_thread(read_bgr_frame_at_percent, av, p)
+            if fr is not None and getattr(fr, "size", 0) > 0:
+                b64s.append(await asyncio.to_thread(encode_bgr_frame_jpeg_b64, fr))
+        while len(b64s) < 3 and b64s:
+            b64s.append(b64s[-1])
+        club_kw = b64s[:3] if b64s else None
+
     try:
         rep = await write_prov3_ai_report(
             motion_context,
             region=region,
             report_mode="limited" if report_mode == "limited" else "formal",
+            club_images_b64=club_kw,
         )
         meta = pop_prov3_report_meta(rep)
     except Exception as exc:
@@ -280,6 +332,10 @@ async def enrich_pro_prov3_response(
     tp = _normalize_training_plan(rep.get("training_plan"))
     if tp:
         minimal["training_plan"] = tp
+
+    dc = rep.get("detected_club")
+    if isinstance(dc, dict) and dc:
+        _merge_prov3_club_vision_into_minimal(minimal, dc)
 
     prov3 = minimal.get("prov3")
     if isinstance(prov3, dict):

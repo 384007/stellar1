@@ -84,8 +84,15 @@ def _sanitize_keyframes(raw: Any) -> list[dict[str, Any]]:
 
 def _sanitize_prediction(raw: Any) -> dict[str, Any]:
     if not isinstance(raw, dict):
-        return {}
-    return {k: raw[k] for k in _PREDICTION_PUBLIC_FIELDS if k in raw}
+        out: dict[str, Any] = {}
+    else:
+        out = {k: raw[k] for k in _PREDICTION_PUBLIC_FIELDS if k in raw}
+    out.setdefault("hand", "UNKNOWN")
+    out.setdefault("hand_confidence", 0.0)
+    out.setdefault("club_type", "UNKNOWN")
+    out.setdefault("club_group", "IRON")
+    out.setdefault("club_detection_confidence", 0.0)
+    return out
 
 
 def _lite_public_reason_line(reason_key: str) -> str:

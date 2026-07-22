@@ -7,6 +7,7 @@ import {
   purgeExpiredHistoryForUser,
   resolveHistoryRetentionDays,
 } from "@/lib/pro-history-retention";
+import { sanitizeProductJson } from "@/lib/chains/sanitize";
 
 export const runtime = "edge";
 
@@ -98,13 +99,20 @@ export async function GET(
     } catch { /* fallback to d1 result_json */ }
   }
 
+  let safeResultJson = resultJson;
+  try {
+    safeResultJson = JSON.stringify(sanitizeProductJson(JSON.parse(resultJson), "record"));
+  } catch {
+    /* keep string */
+  }
+
   return NextResponse.json({
     id: rec.id,
     type: rec.type,
     video_url: rec.video_url || "",
     video_r2_key: rec.video_r2_key || "",
     total_score: normalizedTotalScoreForStorage(rec.total_score),
-    result_json: resultJson,
+    result_json: safeResultJson,
     created_at: rec.created_at,
   });
 }

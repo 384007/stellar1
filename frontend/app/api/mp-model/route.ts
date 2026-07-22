@@ -6,7 +6,7 @@ export const runtime = "edge";
  * Proxy for MediaPipe model files.
  *
  * Fetch order (per model):
- *   1. R2 (via env MEDIAPIPE_CDN_BASE / NEXT_PUBLIC_MEDIAPIPE_CDN_BASE)
+ *   1. R2 (via env MEDIAPIPE_CDN_BASE, server-only)
  *      → CF edge fetches from R2 via Cloudflare backbone, serves via Chinese PoP.
  *   2. Google Storage — fallback if R2 is not configured or fails.
  *      (CF edge node in HK/SG can reach Google; Chinese browsers cannot.)
@@ -32,11 +32,7 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: "unknown model" }, { status: 400 });
   }
 
-  const r2Base = (
-    process.env.MEDIAPIPE_CDN_BASE ||
-    process.env.NEXT_PUBLIC_MEDIAPIPE_CDN_BASE ||
-    ""
-  ).trim().replace(/\/+$/, "");
+  const r2Base = (process.env.MEDIAPIPE_CDN_BASE || "").trim().replace(/\/+$/, "");
 
   // Build candidate list: R2 first (if configured), Google Storage as fallback.
   const candidates: string[] = [];

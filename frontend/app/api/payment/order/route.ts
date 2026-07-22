@@ -44,7 +44,7 @@ async function auth(request: NextRequest): Promise<{ user_id: string; email: str
   }
   const secret = getCfEnvVal("JWT_SECRET");
   if (!secret) {
-    return NextResponse.json({ error: "SERVER_MISCONFIG", detail: "JWT 未配置" }, { status: 503 });
+    return NextResponse.json({ error: "SERVER_MISCONFIG", detail: "支付服务暂未就绪，请稍后重试。" }, { status: 503 });
   }
   try {
     const { payload } = await jwtVerify(token, new TextEncoder().encode(secret));

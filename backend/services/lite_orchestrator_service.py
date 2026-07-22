@@ -14,7 +14,8 @@ from typing import Any
 from services.gemini_service import LITE_AI_TIMEOUT_S, analyze_swing_lite, cap_confidence
 from services.golfdb_swingnet_paths import swingnet_weights_configured
 from services.handedness_service import detect_handedness
-from services.lite_a_extractor_service import _club_from_previews, run_lite_a_extract as run_lite_heuristic_a_extract
+from services.club_detector import encode_bgr_frame_jpeg_b64, read_bgr_frame_at_percent
+from services.lite_a_extractor_service import run_lite_a_extract as run_lite_heuristic_a_extract
 from services.lite_ab_mirror.orchestrator import run_lite_ab_after_preprocess
 from services.lite_b_refiner_service import run_lite_b_refine as run_lite_heuristic_b_refine
 from services.lite_keyframe_export import lite_persist_keyframe_images
@@ -157,7 +158,7 @@ async def run_lite_orchestrator(video_path: str, *, region: str = "global") -> d
             logger.info("%s path=B_low_trust ab_reasons=%s", _LOG, ab_reasons)
         role_log(
             f"[ROLE=LITE_PIPELINE] ab_done rows={len(final_rows)} trust={trust_tier} "
-            f"phase_pass={ab_phase_pass} next=club_vision_then_gemini"
+            f"phase_pass={ab_phase_pass} next=keyframe_export_then_unified_gemini"
         )
 
         hand_info = detect_handedness(poses, None) if poses else {"hand": "UNKNOWN", "confidence": 0.0}
@@ -165,20 +166,14 @@ async def run_lite_orchestrator(video_path: str, *, region: str = "global") -> d
         hconf = float(hand_info.get("confidence") or 0.0)
         hand_ok = hand != "UNKNOWN" and hconf >= _MIN_HAND_CONF
 
-        club_info = await _club_from_previews(list(pre.get("preview_bgr") or []), region)
-        ct = str(club_info.get("club_type") or "UNKNOWN").upper()
-        cg = str(club_info.get("club_group") or "IRON").upper()
-        cconf = float(club_info.get("confidence") or 0.0)
-        club_ok = ct != "UNKNOWN" and cconf >= _MIN_CLUB_CONF
-
-        phase_passed_product = ab_phase_pass and hand_ok and club_ok
-
         out_dir = str(Path(work_dir) / "lite_keyframes")
         saved = await asyncio.to_thread(
             lite_persist_keyframe_images,
             analysis_video,
             final_rows,
             out_dir,
+            poses=poses,
+            analysis_fps=vfps,
         )
         keyframes = _build_public_keyframes(final_rows, saved, vfps)
         if len(keyframes) != 8:
@@ -190,7 +185,16 @@ async def run_lite_orchestrator(video_path: str, *, region: str = "global") -> d
         impact_fi = _impact_frame_index(final_rows)
         impact_pose_idx = _closest_pose_index(poses, impact_fi, vfps)
 
-        role_log("[ROLE=LITE_PIPELINE] gemini_lite_start (may take 30–120s)")
+        club_b64s: list[str] = []
+        for p in (0.25, 0.4, 0.6):
+            fr = await asyncio.to_thread(read_bgr_frame_at_percent, analysis_video, p)
+            if fr is not None and getattr(fr, "size", 0) > 0:
+                club_b64s.append(await asyncio.to_thread(encode_bgr_frame_jpeg_b64, fr))
+        while len(club_b64s) < 3 and club_b64s:
+            club_b64s.append(club_b64s[-1])
+        club_kw = club_b64s[:3] if club_b64s else None
+
+        role_log("[ROLE=LITE_PIPELINE] gemini_lite_unified_start (strip+club one vision call)")
         ai_result = await asyncio.wait_for(
             analyze_swing_lite(
                 pose_data={
@@ -200,9 +204,17 @@ async def run_lite_orchestrator(video_path: str, *, region: str = "global") -> d
                 keyframe_images=keyframe_images,
                 region=region,
                 phase_images_reliable=True,
+                club_sample_images_b64=club_kw,
             ),
             timeout=LITE_AI_TIMEOUT_S + 45.0,
         )
+
+        dc = ai_result.get("detected_club") if isinstance(ai_result.get("detected_club"), dict) else {}
+        ct = str(dc.get("club_type") or "UNKNOWN").upper()
+        cg = str(dc.get("club_group") or "IRON").upper()
+        cconf = float(dc.get("confidence") or 0.0)
+        club_ok = ct != "UNKNOWN" and cconf >= _MIN_CLUB_CONF
+        phase_passed_product = ab_phase_pass and hand_ok and club_ok
 
         all_angles = [p.get("angles", {}) for p in poses if p.get("angles")]
         swing_dur = (
@@ -219,14 +231,13 @@ async def run_lite_orchestrator(video_path: str, *, region: str = "global") -> d
             poses=poses,
             impact_pose_idx=impact_pose_idx,
         )
+        prediction["hand"] = hand if hand in ("R", "L") else "UNKNOWN"
+        prediction["hand_confidence"] = float(hand_info.get("confidence") or 0.0)
+        prediction["club_type"] = ct if ct != "UNKNOWN" else "UNKNOWN"
+        prediction["club_group"] = cg if ct != "UNKNOWN" else "IRON"
+        prediction["club_detection_confidence"] = cconf if ct != "UNKNOWN" else 0.0
         if ct != "UNKNOWN":
-            prediction["club_type"] = ct
-            prediction["club_group"] = cg
-            prediction["club_detection_confidence"] = cconf
             prediction = calibrate_prediction(prediction, club_type=ct, club_group=cg)
-        else:
-            prediction.setdefault("club_type", "UNKNOWN")
-            prediction.setdefault("club_group", "IRON")
 
         tracking_quality = 1.0 if len(poses) >= 30 else (0.65 if len(poses) >= 15 else 0.35)
         analysis_reliability = cap_confidence(

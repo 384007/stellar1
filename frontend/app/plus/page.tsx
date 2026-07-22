@@ -6,6 +6,7 @@ import UploadZone from "@/components/UploadZone";
 import AnalysisWaiting from "@/components/AnalysisWaiting";
 import ScreenModeCapture from "@/components/ScreenModeCapture";
 import PlusResultView, { type PlusAnalysisResult } from "@/components/PlusResultView";
+import { devWarn } from "@/lib/dev-only-log";
 import { preloadPoseModel } from "@/lib/mediapipe-assets";
 import { saveAnalysisVideo } from "@/lib/video-store";
 import { makeFormData } from "@/lib/fetch-retry";
@@ -22,16 +23,12 @@ import {
   reanalyzeHistoryFilename,
   reanalyzePayloadProv3ScreenMode,
 } from "@/lib/reanalyze-from-history";
+import { isVideoFile } from "@/lib/upload-video";
 
 interface ClubDetection { club_type: string; club_group: string; confidence: number }
 
 type Stage = "upload" | "processing" | "results";
 type InputMode = "upload" | "capture" | "screen";
-
-function isVideoBlobForOverlay(blob: Blob, filename: string): boolean {
-  if (blob.type.startsWith("video/")) return true;
-  return /\.(mp4|mov|webm|m4v|avi)$/i.test(filename);
-}
 
 interface PlusUsageInfo {
   used: number;
@@ -65,9 +62,8 @@ export default function PlusPage() {
   const [processingClub, setProcessingClub] = useState<ClubDetection | null>(null);
   const processingClubRef = useRef<ClubDetection | null>(null);
   const [showClubPicker, setShowClubPicker] = useState(false);
-  const [analysisBackendUrl, setAnalysisBackendUrl] = useState("");
-  /** From GET {backend}/health — modal | render | local (no manual curl) */
-  const [apiRuntime, setApiRuntime] = useState<string | null>(null);
+  /** 防止双击 / 并发触发多次 ``POST /api/plus``。 */
+  const plusAnalysisInFlightRef = useRef(false);
 
   const CLUB_GROUPS = [
     { id: "WOOD", label_zh: "木杆", label_en: "Wood", clubs: ["1W", "3W", "5W"] },
@@ -97,10 +93,6 @@ export default function PlusPage() {
       .catch(() => setUsage({ used: 0, remaining: 3, limit: 3, is_pro: false }))
       .finally(() => setUsageLoading(false));
 
-    // Warm up the Render backend in the background so it is ready when analysis starts.
-    fetch("https://stellar1-backend.onrender.com/health", { method: "GET", signal: AbortSignal.timeout(60_000) })
-      .catch(() => {});
-
     preloadPoseModel();
   }, [router]);
 
@@ -110,6 +102,10 @@ export default function PlusPage() {
     if (!p || p.page !== "plus") return;
     void (async () => {
       try {
+        if (plusAnalysisInFlightRef.current) {
+          devWarn("[plus] reanalyze skipped while Plus analysis already in flight");
+          return;
+        }
         const blob = await fetchVideoBlobForHistoryReanalyze(
           p.analysisId,
           p.videoUrl,
@@ -126,11 +122,12 @@ export default function PlusPage() {
         if (reanalyzePayloadProv3ScreenMode(p)) setInputMode("screen");
         await processBlob(blob, reanalyzeHistoryFilename(blob));
       } catch (e) {
-        console.warn("[plus] reanalyze pipeline error:", e);
+        devWarn("[plus] reanalyze pipeline error:", e);
       }
     })();
+    // 仅登录就绪时消费一次队列；勿依赖 lang，避免切换语言重复跑 effect。
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [authChecked, lang]);
+  }, [authChecked]);
 
   // Avoid [sessionVideoSrc] effect cleanup + revokeObjectURL: Strict Mode can revoke the URL
   // while the video tab still needs it. Revoke only in setSessionVideoSrc updaters / reset flows.
@@ -172,7 +169,7 @@ export default function PlusPage() {
         writeEntry(minimalPlusHistoryPayload(data));
         pruneLocalStellarHistoryRecords();
       } catch (e2) {
-        console.warn("[plus] local history save failed (quota or storage):", e2, e1);
+        devWarn("[plus] local history save failed (quota or storage):", e2, e1);
       }
     }
   }
@@ -226,73 +223,15 @@ export default function PlusPage() {
         if (saved.success !== false) {
           markLocalRecordSynced(data.analysis_id);
         } else {
-          console.warn("[history] plus save rejected:", saved.detail || saved);
+          devWarn("[history] plus save rejected:", saved.detail || saved);
         }
       } else {
         const errText = await res.text().catch(() => "");
-        console.warn("[history] plus save failed:", res.status, errText.slice(0, 400));
+        devWarn("[history] plus save failed:", res.status, errText.slice(0, 400));
       }
     } catch (e) {
-      console.warn("[history] plus save error:", e);
+      devWarn("[history] plus save error:", e);
     }
-  }
-
-  function extractFrameFromBlob(blob: Blob): Promise<Blob | null> {
-    return new Promise((resolve) => {
-      const isVideo = blob.type.startsWith("video/") ||
-        /\.(mp4|mov|webm|avi|m4v)$/i.test((blob as File).name || "");
-      if (!isVideo && blob.type.startsWith("image/")) { resolve(blob); return; }
-      const video = document.createElement("video");
-      video.muted = true; video.playsInline = true; video.preload = "auto";
-      const url = URL.createObjectURL(blob);
-      video.src = url;
-      let resolved = false;
-      const cleanup = () => { try { URL.revokeObjectURL(url); } catch { /* */ } };
-      const done = (b: Blob | null) => { if (resolved) return; resolved = true; cleanup(); resolve(b); };
-      const timer = setTimeout(() => done(null), 10000);
-      const captureFrame = () => {
-        clearTimeout(timer);
-        try {
-          const w = video.videoWidth || 640, h = video.videoHeight || 480;
-          const canvas = document.createElement("canvas");
-          const scale = Math.min(640 / w, 1);
-          canvas.width = Math.round(w * scale); canvas.height = Math.round(h * scale);
-          const ctx = canvas.getContext("2d");
-          if (!ctx) { done(null); return; }
-          ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-          canvas.toBlob((b) => done(b), "image/jpeg", 0.8);
-        } catch { done(null); }
-      };
-      video.onseeked = captureFrame;
-      video.onloadeddata = () => {
-        if (video.duration && isFinite(video.duration) && video.duration > 0.5) video.currentTime = video.duration * 0.4;
-        else captureFrame();
-      };
-      video.onerror = () => { clearTimeout(timer); done(null); };
-      video.load();
-    });
-  }
-
-  async function detectClubFromBlob(blob: Blob) {
-    try {
-      const frameBlob = await extractFrameFromBlob(blob);
-      if (!frameBlob) return;
-      const fd = new FormData();
-      fd.append("frame", frameBlob, "frame.jpg");
-      const token = localStorage.getItem("stellar_token");
-      const headers: Record<string, string> = {};
-      if (token) headers["Authorization"] = `Bearer ${token}`;
-      const res = await fetch("/api/club-detect", { method: "POST", headers, body: fd });
-      if (!res.ok) return;
-      const club = await res.json();
-      const data: ClubDetection = {
-        club_type: club.club_type || "UNKNOWN",
-        club_group: club.club_group || "IRON",
-        confidence: club.confidence || 0,
-      };
-      setProcessingClub(data);
-      processingClubRef.current = data;
-    } catch { /* non-fatal */ }
   }
 
   function handleProcessingClubChange(clubType: string) {
@@ -305,6 +244,11 @@ export default function PlusPage() {
   }
 
   async function processBlob(blob: Blob, filename: string) {
+    if (plusAnalysisInFlightRef.current) {
+      devWarn("[plus] analyze already in flight, ignoring duplicate trigger");
+      return;
+    }
+    plusAnalysisInFlightRef.current = true;
     setSessionVideoSrc((prev) => {
       if (prev) try { URL.revokeObjectURL(prev); } catch { /* */ }
       return null;
@@ -326,158 +270,55 @@ export default function PlusPage() {
       });
     }, 800);
 
-    detectClubFromBlob(blob);
-    const clubFallbackTimer = setTimeout(() => {
-      if (!processingClubRef.current) {
-        const fb: ClubDetection = { club_type: "UNKNOWN", club_group: "IRON", confidence: 0 };
-        setProcessingClub(fb); processingClubRef.current = fb;
-      }
-    }, 6000);
+    const token = localStorage.getItem("stellar_token");
+    const authHeaders: Record<string, string> = token ? { Authorization: `Bearer ${token}` } : {};
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    let precheck: any = null;
     try {
-      const token = localStorage.getItem("stellar_token");
-
-      // Step 1: precheck — fast Edge route (auth + usage check, no backend proxy).
-      // This avoids CF Worker's 30s wall-clock timeout swallowing the long analysis.
-      const precheckRes = await fetch("/api/plus/precheck", {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 360_000);
+      const res = await fetch("/api/plus", {
         method: "POST",
-        headers: token ? { Authorization: `Bearer ${token}` } : {},
+        headers: authHeaders,
+        body: makeFormData(blob, filename),
+        signal: controller.signal,
       });
-      if (!precheckRes.ok) {
-        const errData = await precheckRes.json().catch(() => ({ detail: `HTTP ${precheckRes.status}` }));
+      clearTimeout(timer);
+
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({ detail: `HTTP ${res.status}` }));
         if (errData.limit_reached) {
           throw new Error(lang === "zh"
             ? `今日 Plus 分析次数已达上限（${errData.limit}次/天）。升级 Pro 解锁无限次使用。`
             : `Daily Plus limit reached (${errData.limit}/day). Upgrade to Pro.`);
         }
-        throw new Error(errData.detail || (lang === "zh" ? "Plus 分析权限检查失败" : "Plus precheck failed"));
-      }
-      precheck = await precheckRes.json();
-      if (!precheck.allowed) {
-        throw new Error(precheck.detail || (lang === "zh" ? "Plus 分析不可用" : "Plus analysis unavailable"));
-      }
-
-      // Step 2: call backend directly — bypasses CF Worker timeout entirely.
-      const backendUrl: string = precheck.backend_url || "https://stellar1-backend.onrender.com";
-      const modalUrl: string = precheck.modal_url || "";
-      // Prefer Modal for posture-video (GPU-backed, faster cold start); fall back to Render.
-      const effectiveBackend = (modalUrl || backendUrl).replace(/\/$/, "");
-      setAnalysisBackendUrl(effectiveBackend);
-      setApiRuntime(null);
-      void fetch(`${effectiveBackend}/health`, { signal: AbortSignal.timeout(15_000) })
-        .then((r) => r.json())
-        .then((d: { runtime?: string }) => {
-          if (typeof d.runtime === "string" && d.runtime) setApiRuntime(d.runtime);
-        })
-        .catch(() => setApiRuntime(null));
-      const authToken: string = precheck.token || token || "";
-
-      const authHeaders: Record<string, string> = authToken ? { Authorization: `Bearer ${authToken}` } : {};
-
-      let res: Response | null = null;
-
-      // Try Modal first (faster, GPU-backed). Retry once on connection failure.
-      if (modalUrl) {
-        for (let mAttempt = 0; mAttempt < 2 && !res; mAttempt++) {
-          try {
-            if (mAttempt > 0) {
-              console.log(`[plus] Modal retry after connection failure, waiting 8s…`);
-              await new Promise(r => setTimeout(r, 8_000));
-            }
-            // Match Render analyze timeout: dense MediaPipe can run several minutes on CPU.
-            const ctrl = new AbortController();
-            const t = setTimeout(() => ctrl.abort(), 360_000);
-            const mRes = await fetch(`${modalUrl}/analyze/plus`, {
-              method: "POST", headers: authHeaders,
-              body: makeFormData(blob, filename),
-              signal: ctrl.signal,
-            });
-            clearTimeout(t);
-            // 422: strict gate / contract — Modal image may lag Render; retry Render.
-            if (mRes.ok) res = mRes;
-            else if (mRes.status === 422 || mRes.status >= 500)
-              console.warn(`[plus] Modal ${mRes.status}, falling back to Render`);
-            else res = mRes;
-            break;
-          } catch (e) {
-            const isAbort = e instanceof DOMException && e.name === "AbortError";
-            const isConnect = !isAbort && e instanceof TypeError;
-            console.warn(`[plus] Modal ${isAbort ? "timeout" : e instanceof Error ? e.message : "error"}`);
-            if (!isConnect) break;
-          }
-        }
-      }
-
-      // Render backend — warm it up first, then send the heavy upload.
-      if (!res) {
-        for (let w = 0; w < 12; w++) {
-          try {
-            const hc = await fetch(`${backendUrl}/health`, { signal: AbortSignal.timeout(10_000) });
-            if (hc.ok) break;
-          } catch { /* still waking */ }
-          if (w < 11) await new Promise(r => setTimeout(r, 5_000));
-        }
-        const controller = new AbortController();
-        const timer = setTimeout(() => controller.abort(), 360_000);
-        let connectAttempts = 0;
-        const maxConnectRetries = precheck?.network_hint === "cn" ? 2 : 1;
-        while (!res) {
-          try {
-            res = await fetch(`${backendUrl}/analyze/plus`, {
-              method: "POST", headers: authHeaders,
-              body: makeFormData(blob, filename),
-              signal: controller.signal,
-            });
-          } catch (e) {
-            const isAbort = e instanceof DOMException && e.name === "AbortError";
-            const isConnectFailure = !isAbort && e instanceof TypeError;
-            if (isConnectFailure && connectAttempts < maxConnectRetries) {
-              connectAttempts++;
-              await new Promise(r => setTimeout(r, 10_000));
-              continue;
-            }
-            clearTimeout(timer);
-            clearInterval(progressInterval); clearTimeout(clubFallbackTimer);
-            if (isAbort) {
-              setError(lang === "zh"
-                ? "Plus 分析超时（超过6分钟），请压缩视频（建议10秒以内）后重试"
-                : "Plus analysis timed out (>6 min). Please compress the video (≤10s) and retry.");
-            } else {
-              setError(lang === "zh"
-                ? `网络连接失败 (${e instanceof Error ? e.message : "网络错误"})`
-                : `Network error (${e instanceof Error ? e.message : "error"})`);
-            }
-            setStage("upload");
-            return;
-          }
-          break;
-        }
-        clearTimeout(timer);
-      }
-
-      if (!res.ok) {
-        const errData = await res.json().catch(() => ({ detail: `HTTP ${res!.status}` }));
         throw new Error(errData.detail || `Plus 分析失败 [${res.status}]`);
       }
 
       setProgress(97);
       const data: PlusAnalysisResult = await res.json();
-      // Attach usage info from precheck response
-      if (!data._plus_usage) {
-        data._plus_usage = {
-          used: precheck.remaining >= 0 ? Math.max(0, 3 - precheck.remaining) : 0,
-          remaining: precheck.remaining,
-          limit: precheck.is_pro ? null : 3,
-          is_pro: precheck.is_pro,
-        };
-      }
-      clearInterval(progressInterval); clearTimeout(clubFallbackTimer);
+      clearInterval(progressInterval);
       setProgress(100);
+      const pred = data.prediction as
+        | { club_type?: string; club_group?: string; club_detection_confidence?: number; confidence?: number }
+        | undefined;
+      if (pred) {
+        const cconf =
+          typeof pred.club_detection_confidence === "number"
+            ? pred.club_detection_confidence
+            : typeof pred.confidence === "number"
+              ? pred.confidence
+              : 0;
+        const cd: ClubDetection = {
+          club_type: typeof pred.club_type === "string" && pred.club_type ? pred.club_type : "UNKNOWN",
+          club_group: typeof pred.club_group === "string" && pred.club_group ? pred.club_group : "IRON",
+          confidence: cconf,
+        };
+        setProcessingClub(cd);
+        processingClubRef.current = cd;
+      }
       if (data._plus_usage) setUsage(data._plus_usage);
       setResult(data);
-      if (isVideoBlobForOverlay(blob, filename) && blob.size > 0) {
+      if (isVideoFile(blob as File, filename) && blob.size > 0) {
         setSessionVideoSrc(URL.createObjectURL(blob));
       }
       setStage("results");
@@ -485,10 +326,11 @@ export default function PlusPage() {
       try {
         await saveAnalysisToHistory(data, blob, filename);
       } catch (e) {
-        console.warn("[plus] history save failed:", e);
+        devWarn("[plus] history save failed:", e);
       }
     } catch (err: unknown) {
-      clearInterval(progressInterval); clearTimeout(clubFallbackTimer); setProgress(0);
+      clearInterval(progressInterval);
+      setProgress(0);
       if (err instanceof DOMException && err.name === "AbortError") {
         setError(lang === "zh" ? "Plus 分析超时，请压缩视频后重试" : "Plus analysis timed out");
       } else {
@@ -496,6 +338,8 @@ export default function PlusPage() {
         setError(msg);
       }
       setStage("upload");
+    } finally {
+      plusAnalysisInFlightRef.current = false;
     }
   }
 
@@ -577,14 +421,6 @@ export default function PlusPage() {
           </a>
           <div className="flex items-center gap-2">
             <span className="rounded-lg bg-gradient-to-r from-brand-purple to-brand-gold px-2.5 py-0.5 text-[10px] font-bold text-white">PLUS</span>
-            {apiRuntime && (
-              <span
-                className="hidden sm:inline rounded-md border border-white/10 bg-white/[0.04] px-2 py-0.5 text-[9px] font-medium uppercase tracking-wide text-white/45"
-                title={analysisBackendUrl || undefined}
-              >
-                {lang === "zh" ? "分析节点" : "API"} · {apiRuntime}
-              </span>
-            )}
             {username && (
               <a href="/history" className="flex items-center gap-1 rounded-lg border border-white/10 px-2.5 py-1 text-xs text-white/60 transition hover:border-brand-gold/30 hover:text-brand-gold">
                 <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}><path strokeLinecap="round" strokeLinejoin="round" d="M15.75 6a3.75 3.75 0 1 1-7.5 0 3.75 3.75 0 0 1 7.5 0ZM4.501 20.118a7.5 7.5 0 0 1 14.998 0A17.933 17.933 0 0 1 12 21.75c-2.676 0-5.216-.584-7.499-1.632Z" /></svg>
@@ -775,12 +611,7 @@ export default function PlusPage() {
 
         {stage === "results" && result && (
           <>
-            <PlusResultView
-              result={result}
-              lang={lang}
-              backendUrl={analysisBackendUrl}
-              externalVideoSrc={sessionVideoSrc}
-            />
+            <PlusResultView result={result} lang={lang} externalVideoSrc={sessionVideoSrc} />
             <div className="text-center py-6">
               <button
                 onClick={() => {
@@ -791,7 +622,6 @@ export default function PlusPage() {
                   setStage("upload");
                   setResult(null);
                   setError("");
-                  setApiRuntime(null);
                 }}
                 className="btn-primary"
               >

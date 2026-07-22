@@ -83,34 +83,21 @@ def _lite_a_keyframe_fail_reasons(
 
 
 async def _club_from_previews(frames: list[Any], region: str) -> dict[str, Any]:
-    from services.club_detector import detect_club
+    """One multimodal club call for all preview BGR frames (SwingNet-off heuristic path)."""
+    from services.club_detector import detect_club_multiframe_bgr
 
-    results: list[dict[str, Any]] = []
-    for f in frames:
-        try:
-            r = await detect_club(f, region)
-            results.append(dict(r))
-        except Exception as exc:
-            logger.warning("%s club frame failed: %s", _LOG, exc)
-    valid = [r for r in results if str(r.get("club_type") or "").upper() not in ("", "UNKNOWN")]
-    if not valid:
+    bgr = [f for f in frames if f is not None and getattr(f, "size", 0) > 0]
+    if not bgr:
         return {"club_type": "UNKNOWN", "club_group": "IRON", "confidence": 0.0}
-    votes: dict[str, dict[str, Any]] = {}
-    for r in valid:
-        ct = str(r.get("club_type") or "").upper()
-        cg = str(r.get("club_group") or "IRON").upper()
-        conf = float(r.get("confidence") or 0.0)
-        if ct not in votes:
-            votes[ct] = {"count": 0, "total_conf": 0.0, "group": cg}
-        votes[ct]["count"] += 1
-        votes[ct]["total_conf"] += conf
-    winner = max(votes.items(), key=lambda x: (x[1]["count"], x[1]["total_conf"]))[0]
-    agg = votes[winner]
-    avg_conf = agg["total_conf"] / max(agg["count"], 1)
+    try:
+        out = await detect_club_multiframe_bgr(bgr, region)
+    except Exception as exc:
+        logger.warning("%s club multiframe failed: %s", _LOG, exc)
+        return {"club_type": "UNKNOWN", "club_group": "IRON", "confidence": 0.0}
     return {
-        "club_type": winner,
-        "club_group": str(agg.get("group") or "IRON"),
-        "confidence": round(min(1.0, avg_conf), 4),
+        "club_type": str(out.get("club_type") or "UNKNOWN").upper(),
+        "club_group": str(out.get("club_group") or "IRON").upper(),
+        "confidence": float(out.get("confidence") or 0.0),
     }
 
 

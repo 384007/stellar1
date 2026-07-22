@@ -14,6 +14,7 @@ import {
   requirePro,
   labError,
 } from "@/lib/lab-auth";
+import { jsonProduct } from "@/lib/chains";
 
 export const runtime = "edge";
 
@@ -55,17 +56,21 @@ export async function POST(request: NextRequest) {
 
     const parsed = JSON.parse(job.result_json as string);
 
-    return NextResponse.json({
-      job_id: job.id,
-      created_at: job.created_at,
-      tier: "pro",
-      report_tier: "pro",
-      result: parsed,
-      export_format: "json",
-      exported_at: new Date().toISOString(),
-    });
+    return jsonProduct(
+      {
+        job_id: job.id,
+        created_at: job.created_at,
+        tier: "pro",
+        report_tier: "pro",
+        result: parsed,
+        export_format: "json",
+        exported_at: new Date().toISOString(),
+      },
+      { status: 200 },
+      "lab",
+    );
   } catch (err) {
     console.error("[lab] export error:", err);
-    return labError("INTERNAL", err instanceof Error ? err.message : "导出失败", 500);
+    return labError("INTERNAL", "导出失败，请稍后重试。", 500);
   }
 }

@@ -27,14 +27,11 @@ import { displayKeyframesForResult } from "@/lib/analysis-display-keyframes";
 import { isProv3StrictMediaPolicyResult, type Prov3ResultLike } from "@/lib/prov3-keyframe-media";
 import { resolveProv3ProductMediaUrl } from "@/lib/prov3-media-url";
 import { clientLikelyMainlandChinaUser } from "@/lib/client-region-hint";
+import { devLog, devWarn } from "@/lib/dev-only-log";
 import { LITE_ANALYZE_FETCH_TIMEOUT_MS } from "@/lib/lite-analyze-timeout";
 import { readLiteAnalyzeResult } from "@/lib/read-lite-analyze-response";
 import { pruneLocalStellarHistoryRecords } from "@/lib/pro-history-retention";
 import {
-  DEFAULT_PROV3_MODAL_URL,
-  normalizeProv3UrlListsFromPrecheck,
-  PRO_V3_EDGE_PRECHECK_PATH,
-  resolveLiteAnalyzeClientOrigin,
   requestProv3AnalyzeCancel,
   runProv3AnalyzeMultipart,
   yieldUiBeforeHeavyParse,
@@ -50,7 +47,7 @@ import {
   reanalyzePayloadProv3ScreenMode,
 } from "@/lib/reanalyze-from-history";
 
-/** FastAPI may return ``detail`` as string, object, or validation error array. */
+/** Upstream may return ``detail`` as string, object, or validation error array. */
 function stringifyFastApiDetail(detail: unknown): string {
   if (detail == null) return "";
   if (typeof detail === "string") return detail.trim();
@@ -164,13 +161,10 @@ function proTimelineVideoUrlForAnalyze(r: AnalysisResult): string | null {
 }
 
 interface ClubDetection { club_type: string; club_group: string; confidence: number; hand?: "R" | "L" }
+
 type Stage = "upload" | "processing" | "results";
 type InputMode = "upload" | "capture" | "screen";
 type AnalysisMode = "lite" | "pro";
-
-function trimBackendOrigin(raw: string): string {
-  return raw.trim().replace(/\/+$/, "");
-}
 
 export default function AnalyzePage() {
   const router = useRouter();
@@ -183,7 +177,9 @@ export default function AnalyzePage() {
   const [showExtendedHUD, setShowExtendedHUD] = useState(false);
   const [lang, setLang] = useState<"en" | "zh">("zh");
   const [activeTab, setActiveTab] = useState<"analysis" | "3d" | "comparison">("analysis");
-  const [analysisMode, setAnalysisMode] = useState<AnalysisMode>("pro");
+  /** 默认 Lite：避免未切换 Tab 就上传时仍走 Pro 预检；与 ref 同步防竞态。 */
+  const [analysisMode, setAnalysisMode] = useState<AnalysisMode>("lite");
+  const analysisModeRef = useRef<AnalysisMode>("lite");
   const [username, setUsername] = useState("");
   const [authChecked, setAuthChecked] = useState(false);
   const [screenRecording, setScreenRecording] = useState(false);
@@ -208,11 +204,6 @@ export default function AnalyzePage() {
     () => Boolean(result && isProv3StrictMediaPolicyResult(result as Prov3ResultLike)),
     [result],
   );
-  const liteBackendBase = useMemo(
-    () => trimBackendOrigin(resolveLiteAnalyzeClientOrigin()),
-    [],
-  );
-  const backendBaseRef = useRef<string>(process.env.NEXT_PUBLIC_BACKEND_URL || "https://stellar1-backend.onrender.com");
   const lastBlobRef = useRef<{ blob: Blob; filename: string } | null>(null);
   /** Pro v3 对屏路径：在打开实拍前标记来源为拍屏 tab。 */
   const screenCaptureForProv3Ref = useRef(false);
@@ -232,6 +223,10 @@ export default function AnalyzePage() {
   /** Lite：同一次分析最多发 1 次 POST /analyze/lite（禁止隐式重试）。 */
   const liteAnalyzeHttpIssuedRef = useRef(false);
   const proAnalyzeAbortRef = useRef<AbortController | null>(null);
+
+  useEffect(() => {
+    analysisModeRef.current = analysisMode;
+  }, [analysisMode]);
 
   const stopProAnalysis = useCallback(async () => {
     const token = localStorage.getItem("stellar_token");
@@ -255,6 +250,15 @@ export default function AnalyzePage() {
     "PW": "劈起杆", "AW": "间隙杆", "SW": "沙坑杆", "LW": "高抛杆",
     "PT": "推杆",
   };
+
+  const litePredictionView = useMemo(() => {
+    const pred = result?.prediction;
+    const clubType = pred?.club_type || "UNKNOWN";
+    const hand = pred?.hand || "UNKNOWN";
+    const handConfidence = typeof pred?.hand_confidence === "number" ? pred.hand_confidence : 0;
+    const lowHandConfidence = hand !== "R" && hand !== "L" ? true : handConfidence < 0.6;
+    return { clubType, hand, handConfidence, lowHandConfidence };
+  }, [result]);
 
 
   useEffect(() => {
@@ -280,6 +284,10 @@ export default function AnalyzePage() {
     if (!p || p.page !== "analyze") return;
     void (async () => {
       try {
+        if (analysisInFlightRef.current) {
+          devWarn("[analyze] reanalyze skipped while analysis already in flight");
+          return;
+        }
         const blob = await fetchVideoBlobForHistoryReanalyze(
           p.analysisId,
           p.videoUrl,
@@ -298,12 +306,12 @@ export default function AnalyzePage() {
         if (screenTag) setInputMode("screen");
         await processBlob(blob, reanalyzeHistoryFilename(blob), screenTag, mode);
       } catch (e) {
-        console.warn("[analyze] reanalyze pipeline error:", e);
+        devWarn("[analyze] reanalyze pipeline error:", e);
       }
     })();
-    // processBlob 为稳定闭包即可；仅依赖登录就绪与语言（错误文案）
+    // 仅登录就绪时消费一次；勿依赖 lang，避免切换语言重复跑 effect。
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [authChecked, lang]);
+  }, [authChecked]);
 
   function resolveProv3ScreenMode(
     filename: string,
@@ -323,7 +331,7 @@ export default function AnalyzePage() {
     proAbortSignal?: AbortSignal,
     liteIdempotencyKey?: string | null,
   ): Promise<AnalysisResult> {
-    const isPro = (modeOverride ?? analysisMode) === "pro";
+    const isPro = (modeOverride ?? analysisModeRef.current) === "pro";
 
     if (isPro) {
       // Pro mode: precheck (Edge) → same-origin upload + ``/api/prov3/analyze/start`` → poll job from R2
@@ -332,37 +340,28 @@ export default function AnalyzePage() {
       const authHeaders: Record<string, string> = {};
       if (token && token.includes(".")) authHeaders["Authorization"] = `Bearer ${token}`;
 
-      // ① Precheck — Modal URL list + network hint (orchestration still uses Edge proxies)
-      const defaultBackend =
-        process.env.NEXT_PUBLIC_BACKEND_URL || "https://stellar1-backend.onrender.com";
-      let proNetworkHint = "";
-      let modalUrls: string[] = [DEFAULT_PROV3_MODAL_URL];
-      let backendUrls: string[] = [defaultBackend];
+      // Pro v3：网络提示与 Lite 同源（CF / 客户端语言回退）；Modal/Render 基址仅在 Edge 解析。
+      let cnPro = false;
       try {
-        const pc = await fetch(PRO_V3_EDGE_PRECHECK_PATH, {
-          method: "POST",
-          headers: token ? { Authorization: `Bearer ${token}` } : {},
-        });
-        if (pc.ok) {
-          const data = await pc.json();
-          const lists = normalizeProv3UrlListsFromPrecheck(data);
-          modalUrls = lists.modalUrls;
-          backendUrls = lists.backendUrls.length ? lists.backendUrls : [defaultBackend];
-          if (data.network_hint === "cn") proNetworkHint = "cn";
+        const nh = await fetch("/api/lite/network-hint", { method: "GET" });
+        if (nh.ok) {
+          const j = (await nh.json()) as { network_hint?: string; lite_geo?: string };
+          if (j.network_hint === "cn" || j.lite_geo === "cn") cnPro = true;
+          else if (j.lite_geo === "unknown" && clientLikelyMainlandChinaUser()) cnPro = true;
+        } else if (clientLikelyMainlandChinaUser()) {
+          cnPro = true;
         }
-      } catch { /* precheck failed — proceed with defaults */ }
-      backendBaseRef.current = backendUrls[0] || defaultBackend;
+      } catch {
+        if (clientLikelyMainlandChinaUser()) cnPro = true;
+      }
 
       const mb = (file.size / 1024 / 1024).toFixed(1);
-      const cnPro = proNetworkHint === "cn";
       const screenMode = resolveProv3ScreenMode(filename, prov3ScreenMode);
       const { raw: rawPro, route: proServedBy } = await runProv3AnalyzeMultipart(
         file as Blob,
         filename,
         authHeaders,
         {
-          modalUrls,
-          backendUrls,
           cnNetworkHint: cnPro,
           unboundedJobPoll: cnPro || clientLikelyMainlandChinaUser(),
           screenMode,
@@ -374,38 +373,12 @@ export default function AnalyzePage() {
         },
       );
 
-      console.log(`[stellar-pro] Pro job completed (route=${proServedBy})`);
+      devLog(`[stellar-pro] Pro job completed (route=${proServedBy})`);
       await yieldUiBeforeHeavyParse();
       return expandStellarProForUi(rawPro) as AnalysisResult;
     }
 
-    // Lite: CN → ``/api/lite/analyze-proxy`` → main Modal (``MODAL_BACKEND_URL``) /analyze/lite; else browser → same base as Pro (``NEXT_PUBLIC_MODAL_BACKEND_URL`` or default).
-    let liteUseCnProxy = false;
-    let liteGeoHintFailed = false;
-    try {
-      const nh = await fetch("/api/lite/network-hint", { method: "GET" });
-      if (nh.ok) {
-        const j = (await nh.json()) as { network_hint?: string; lite_geo?: string };
-        if (j.network_hint === "cn" || j.lite_geo === "cn") liteUseCnProxy = true;
-        else if (j.lite_geo === "unknown" && clientLikelyMainlandChinaUser()) liteUseCnProxy = true;
-      } else {
-        liteGeoHintFailed = true;
-      }
-    } catch {
-      liteGeoHintFailed = true;
-    }
-    if (liteGeoHintFailed && !liteUseCnProxy && clientLikelyMainlandChinaUser()) {
-      liteUseCnProxy = true;
-    }
-
-    if (!liteUseCnProxy && !liteBackendBase) {
-      throw new Error(
-        lang === "zh"
-          ? "当前无法完成分析，请稍后重试"
-          : "Analysis is unavailable right now. Please try again later.",
-      );
-    }
-
+    // Lite: always same-origin proxy → Edge resolves Modal/Lite upstream (no browser-direct analyze host).
     const rid = (liteIdempotencyKey || "").trim();
     if (!rid) {
       throw new Error(
@@ -422,7 +395,7 @@ export default function AnalyzePage() {
     const token = localStorage.getItem("stellar_token");
     if (token && token.includes(".")) headers.Authorization = `Bearer ${token}`;
 
-    const liteAnalyzeUrl = liteUseCnProxy ? "/api/lite/analyze-proxy" : `${liteBackendBase}/analyze/lite`;
+    const liteAnalyzeUrl = "/api/lite/analyze-proxy";
     let res: Response;
     liteAnalyzeHttpIssuedRef.current = true;
     try {
@@ -487,20 +460,18 @@ export default function AnalyzePage() {
     }
 
     if (!res.ok) {
-      // Cloudflare 524/522/523: edge gave up waiting on origin. CN Lite often hits ~100s proxy wall
-      // while Modal still runs; body is usually HTML, not JSON.
       if (res.status === 524) {
         throw new Error(
           lang === "zh"
-            ? "网关超时（524）：经 Cloudflare/Pages 代理时单次请求约 100 秒上限，慢速 Lite 分析会被提前断开。可试缩短视频、境外网络直连分析域名，或与 Pro 一样改为异步任务。"
-            : "Edge timeout (524): Cloudflare limits how long one proxied request may wait (~100s). Slow Lite analysis can hit this. Try a shorter video, a direct path to Modal if possible, or async jobs like Pro.",
+            ? "分析用时较长，连接已中断。请缩短视频或稍后重试。"
+            : "The connection timed out while analysis was running. Try a shorter video or try again later.",
         );
       }
       if (res.status === 522 || res.status === 523) {
         throw new Error(
           lang === "zh"
-            ? `连接源站失败（HTTP ${res.status}）。请稍后重试或检查网络。`
-            : `Origin connection failed (HTTP ${res.status}). Retry or check your network.`,
+            ? "暂时无法连接到分析服务，请稍后重试或检查网络。"
+            : "Could not reach the analysis service. Retry or check your network.",
         );
       }
       let errJson: unknown;
@@ -523,11 +494,11 @@ export default function AnalyzePage() {
         detailStr =
           lang === "zh"
             ? st
-              ? `服务端返回 ${res.status}（${st}），无详细说明。请查 Modal 日志或稍后重试。`
-              : `服务端返回 ${res.status}，无详细说明。请查 Modal 日志或稍后重试。`
+              ? `服务返回异常（${res.status}）。请稍后重试。`
+              : `服务返回异常（${res.status}）。请稍后重试。`
             : st
-              ? `Server returned ${res.status} (${st}) with no error body. Check Modal logs or retry.`
-              : `Server returned ${res.status} with no error body. Check Modal logs or retry.`;
+              ? `Something went wrong (${res.status}). Please try again.`
+              : `Something went wrong (${res.status}). Please try again.`;
       }
 
       if (res.status === 409 && code === "LITE_ANALYZE_ALREADY_RUNNING") {
@@ -558,15 +529,8 @@ export default function AnalyzePage() {
   async function recalculatePredictionFromBackend(
     data: AnalysisResult,
     overrides?: { club_type?: string; club_group?: string; hand?: "R" | "L" | "UNKNOWN"; hand_confidence?: number; preferred_ball_speed?: number },
-    recalculateBaseOverride?: string,
   ): Promise<AnalysisResult["prediction"] | null> {
     try {
-      const overrideTrim = trimBackendOrigin(recalculateBaseOverride || "");
-      const backendUrl =
-        overrideTrim ||
-        backendBaseRef.current ||
-        process.env.NEXT_PUBLIC_BACKEND_URL ||
-        "https://stellar1-backend.onrender.com";
       const poseFrames = data.pose_frames || [];
       if (poseFrames.length === 0) return null;
       const mid = poseFrames[Math.floor(poseFrames.length / 2)];
@@ -591,7 +555,7 @@ export default function AnalyzePage() {
       const t = setTimeout(() => ctrl.abort(), RECALCULATE_TIMEOUT_MS);
       let res: Response;
       try {
-        res = await fetch(`${backendUrl}/analyze/recalculate`, {
+        res = await fetch("/api/analyze/recalculate", {
           method: "POST",
           headers,
           body: JSON.stringify(body),
@@ -599,7 +563,7 @@ export default function AnalyzePage() {
         });
       } catch (e) {
         if ((e as Error)?.name !== "AbortError") {
-          console.warn("[analyze] recalculate request failed");
+          devWarn("[analyze] recalculate request failed");
         }
         return null;
       } finally {
@@ -611,7 +575,7 @@ export default function AnalyzePage() {
       const payload = await res.json();
       return payload?.prediction ?? null;
     } catch {
-      console.warn("[analyze] recalculate failed");
+      devWarn("[analyze] recalculate failed");
       return null;
     }
   }
@@ -697,10 +661,10 @@ export default function AnalyzePage() {
           markLocalRecordSynced(data.analysis_id);
         }
       } else {
-        console.warn("[history] server save failed:", res.status);
+        devWarn("[history] server save failed:", res.status);
       }
     } catch (e) {
-      console.warn("[history] server save error:", e);
+      devWarn("[history] server save error:", e);
     }
   }
 
@@ -711,12 +675,12 @@ export default function AnalyzePage() {
     analysisModeOverride?: AnalysisMode,
   ) {
     if (analysisInFlightRef.current) {
-      console.warn("[analyze] analyze already in flight, ignoring duplicate trigger");
+      devWarn("[analyze] analyze already in flight, ignoring duplicate trigger");
       return;
     }
     analysisInFlightRef.current = true;
     try {
-    const modeForRun = analysisModeOverride ?? analysisMode;
+    const modeForRun = analysisModeOverride ?? analysisModeRef.current;
     if (modeForRun === "lite") {
       liteIdempotencyKeyRef.current =
         typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
@@ -751,7 +715,7 @@ export default function AnalyzePage() {
         sendBlob = mp4File;
         sendFilename = mp4File.name;
       } catch (e) {
-        console.warn("[analyze] screen WebM→MP4 failed, uploading original container", e);
+        devWarn("[analyze] screen WebM→MP4 failed, uploading original container", e);
       }
     }
     lastBlobRef.current = { blob: sendBlob, filename: sendFilename };
@@ -772,26 +736,6 @@ export default function AnalyzePage() {
       });
     }, 800);
 
-    let clubFallbackTimer: ReturnType<typeof setTimeout> | undefined;
-    const wantsEarlyClubHand = modeForRun === "pro" || modeForRun === "lite";
-    const clubDetectPromise = wantsEarlyClubHand
-      ? detectClubFromBlob(sendBlob, { enableHandPopup: true })
-      : Promise.resolve();
-    if (wantsEarlyClubHand) {
-      clubFallbackTimer = setTimeout(() => {
-        if (!processingClubRef.current) {
-          const fallback: ClubDetection = { club_type: "UNKNOWN", club_group: "IRON", confidence: 0 };
-          setProcessingClub(fallback);
-          processingClubRef.current = fallback;
-        }
-      }, 6000);
-    }
-
-    await Promise.race([
-      clubDetectPromise,
-      new Promise<void>((resolve) => setTimeout(resolve, 2800)),
-    ]);
-
     const proAbort = modeForRun === "pro" ? new AbortController() : null;
     proAnalyzeAbortRef.current = proAbort;
 
@@ -805,30 +749,37 @@ export default function AnalyzePage() {
         modeForRun === "lite" ? liteIdempotencyKeyRef.current : null,
       );
       clearInterval(progressInterval);
-      if (clubFallbackTimer) clearTimeout(clubFallbackTimer);
 
-      if (wantsEarlyClubHand) {
-        const userClub = processingClubRef.current as ClubDetection | null;
-        if (userClub && data.prediction) {
-          if (userClub.club_type !== "UNKNOWN") {
-            data.prediction.club_type = userClub.club_type;
-            data.prediction.club_group = userClub.club_group;
-            data.prediction.club_detection_confidence = userClub.confidence;
-          }
-          if (userClub.hand === "R" || userClub.hand === "L") {
-            data.prediction.hand = userClub.hand;
-            const hc = data.prediction.hand_confidence ?? 0;
-            data.prediction.hand_confidence = Math.max(
-              hc,
-              userClub.confidence > 0 ? Math.min(1, userClub.confidence + 0.05) : 0.72,
-            );
-          }
+      /** 主分析 prediction（杆型由服务端与主流程同次推理合并）。 */
+      if (data.prediction) {
+        const p = data.prediction;
+        const cd: ClubDetection = {
+          club_type: typeof p.club_type === "string" && p.club_type ? p.club_type : "UNKNOWN",
+          club_group: typeof p.club_group === "string" && p.club_group ? p.club_group : "IRON",
+          confidence: typeof p.club_detection_confidence === "number" ? p.club_detection_confidence : 0,
+          hand: p.hand === "L" || p.hand === "R" ? p.hand : undefined,
+        };
+        setProcessingClub(cd);
+        processingClubRef.current = cd;
+        if (p.hand === "R" || p.hand === "L") {
+          setDetectedHand(p.hand);
+          handRef.current = p.hand;
+          setShowHandPopup(Boolean((p.hand_confidence ?? 0) < 0.6));
+        } else {
+          setDetectedHand("R");
+          setShowHandPopup(true);
         }
-      }
-
-      if (data.prediction?.hand && data.prediction.hand !== "UNKNOWN") {
-        setDetectedHand(data.prediction.hand);
-        handRef.current = data.prediction.hand;
+      } else {
+        const fallbackClub: ClubDetection = {
+          club_type: "UNKNOWN",
+          club_group: "IRON",
+          confidence: 0,
+          hand: undefined,
+        };
+        setProcessingClub(fallbackClub);
+        processingClubRef.current = fallbackClub;
+        setDetectedHand("R");
+        setShowHandPopup(true);
       }
 
       if (
@@ -857,17 +808,13 @@ export default function AnalyzePage() {
       if (shouldBackgroundRecalc) {
         void (async () => {
           try {
-            const recomputed = await recalculatePredictionFromBackend(
-              data,
-              {
-                club_type: data.prediction.club_type,
-                club_group: data.prediction.club_group,
-                hand: handWasConfirmed ? handRef.current : (data.prediction.hand ?? "UNKNOWN"),
-                hand_confidence: handWasConfirmed ? 1.0 : (data.prediction.hand_confidence ?? 0),
-                preferred_ball_speed: data.prediction.fused_speed,
-              },
-              undefined,
-            );
+            const recomputed = await recalculatePredictionFromBackend(data, {
+              club_type: data.prediction.club_type,
+              club_group: data.prediction.club_group,
+              hand: handWasConfirmed ? handRef.current : (data.prediction.hand ?? "UNKNOWN"),
+              hand_confidence: handWasConfirmed ? 1.0 : (data.prediction.hand_confidence ?? 0),
+              preferred_ball_speed: data.prediction.fused_speed,
+            });
             if (recomputed) {
               setResult((prev) => {
                 if (!prev || prev.analysis_id !== analysisId) return prev;
@@ -875,7 +822,7 @@ export default function AnalyzePage() {
               });
             }
           } catch {
-            console.warn("[analyze] background recalculate failed");
+            devWarn("[analyze] background recalculate failed");
           }
         })();
       }
@@ -884,11 +831,10 @@ export default function AnalyzePage() {
       try {
         await saveAnalysisToHistory(data, sendBlob, sendFilename, modeForRun);
       } catch (e) {
-        console.warn("[analyze] history save failed:", e);
+        devWarn("[analyze] history save failed:", e);
       }
     } catch (err: unknown) {
       clearInterval(progressInterval);
-      if (clubFallbackTimer) clearTimeout(clubFallbackTimer);
       setProgress(0);
       setProcessingProScreenMode(false);
       const msg = err instanceof Error ? err.message : "";
@@ -906,179 +852,6 @@ export default function AnalyzePage() {
     } finally {
       analysisInFlightRef.current = false;
       proAnalyzeAbortRef.current = null;
-    }
-  }
-
-  function extractFrameFromBlob(blob: Blob): Promise<Blob | null> {
-    return new Promise((resolve) => {
-      const isVideo = blob.type.startsWith("video/") ||
-        /\.(mp4|mov|webm|avi|m4v)$/i.test((blob as File).name || "");
-      if (!isVideo && blob.type.startsWith("image/")) {
-        resolve(blob);
-        return;
-      }
-      const video = document.createElement("video");
-      video.muted = true;
-      video.playsInline = true;
-      video.preload = "auto";
-      video.crossOrigin = "anonymous";
-      const url = URL.createObjectURL(blob);
-      video.src = url;
-      let resolved = false;
-      const cleanup = () => { try { URL.revokeObjectURL(url); } catch { /* */ } };
-      const done = (b: Blob | null) => { if (resolved) return; resolved = true; cleanup(); resolve(b); };
-      const timer = setTimeout(() => { console.warn("[club-detect] frame extraction timeout"); done(null); }, 10000);
-
-      const captureFrame = () => {
-        clearTimeout(timer);
-        try {
-          const w = video.videoWidth || 640;
-          const h = video.videoHeight || 480;
-          const canvas = document.createElement("canvas");
-          const scale = Math.min(640 / w, 1);
-          canvas.width = Math.round(w * scale);
-          canvas.height = Math.round(h * scale);
-          const ctx = canvas.getContext("2d");
-          if (!ctx) { done(null); return; }
-          ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-          canvas.toBlob((b) => done(b), "image/jpeg", 0.8);
-        } catch { done(null); }
-      };
-
-      video.onseeked = captureFrame;
-      video.onloadeddata = () => {
-        if (video.duration && isFinite(video.duration) && video.duration > 0.5) {
-          video.currentTime = video.duration * 0.4;
-        } else {
-          captureFrame();
-        }
-      };
-      video.onerror = () => { console.warn("[club-detect] video load error"); clearTimeout(timer); done(null); };
-      video.load();
-    });
-  }
-
-  function extractFrameAtPercent(blob: Blob, pct: number): Promise<Blob | null> {
-    return new Promise((resolve) => {
-      const isVideo = blob.type.startsWith("video/") || /\.(mp4|mov|webm|avi|m4v)$/i.test((blob as File).name || "");
-      if (!isVideo && blob.type.startsWith("image/")) { resolve(blob); return; }
-      const video = document.createElement("video");
-      video.muted = true; video.playsInline = true; video.preload = "auto"; video.crossOrigin = "anonymous";
-      const url = URL.createObjectURL(blob);
-      video.src = url;
-      let resolved = false;
-      const cleanup = () => { try { URL.revokeObjectURL(url); } catch { /* */ } };
-      const done = (b: Blob | null) => { if (resolved) return; resolved = true; cleanup(); resolve(b); };
-      const timer = setTimeout(() => done(null), 8000);
-      const captureFrame = () => {
-        clearTimeout(timer);
-        try {
-          const w = video.videoWidth || 640;
-          const h = video.videoHeight || 480;
-          const canvas = document.createElement("canvas");
-          const scale = Math.min(640 / w, 1);
-          canvas.width = Math.round(w * scale);
-          canvas.height = Math.round(h * scale);
-          const ctx = canvas.getContext("2d");
-          if (!ctx) { done(null); return; }
-          ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-          canvas.toBlob((b) => done(b), "image/jpeg", 0.8);
-        } catch { done(null); }
-      };
-      video.onseeked = captureFrame;
-      video.onloadeddata = () => {
-        if (video.duration && isFinite(video.duration) && video.duration > 0.5) {
-          video.currentTime = video.duration * pct;
-        } else captureFrame();
-      };
-      video.onerror = () => { clearTimeout(timer); done(null); };
-      video.load();
-    });
-  }
-
-  async function detectClubFromBlob(
-    blob: Blob,
-    options?: { enableHandPopup?: boolean },
-  ): Promise<void> {
-    const enableHandPopup = options?.enableHandPopup ?? true;
-    try {
-      const token = localStorage.getItem("stellar_token");
-      const headers: Record<string, string> = {};
-      if (token) headers["Authorization"] = `Bearer ${token}`;
-
-      const framePcts = [0.25, 0.4, 0.6];
-      const frameBlobs = await Promise.all(framePcts.map(p => extractFrameAtPercent(blob, p)));
-      const validFrames = frameBlobs.filter((b): b is Blob => b != null && b.size > 0);
-      if (validFrames.length === 0) {
-        const single = await extractFrameFromBlob(blob);
-        if (single) validFrames.push(single);
-      }
-      if (validFrames.length === 0) {
-        console.warn("[club-detect] no frames extracted");
-        return;
-      }
-
-      const results = await Promise.all(validFrames.map(async (frameBlob) => {
-        try {
-          const fd = new FormData();
-          fd.append("frame", frameBlob, "frame.jpg");
-          const res = await fetch("/api/club-detect", { method: "POST", headers, body: fd });
-          if (!res.ok) return null;
-          return await res.json();
-        } catch { return null; }
-      }));
-
-      const valid = results.filter((r): r is { club_type: string; club_group: string; confidence: number; hand?: string } =>
-        r != null && r.club_type && r.club_type !== "UNKNOWN"
-      );
-
-      if (valid.length === 0) {
-        const first = results.find(r => r != null);
-        const hand = (first?.hand === "L" ? "L" : "R") as "R" | "L";
-        const fallback: ClubDetection = { club_type: "UNKNOWN", club_group: "IRON", confidence: 0, hand };
-        setProcessingClub(fallback);
-        processingClubRef.current = fallback;
-        if (!handConfirmed) {
-          setDetectedHand(hand);
-          handRef.current = hand;
-          if (enableHandPopup) setShowHandPopup(true);
-        }
-        return;
-      }
-
-      const votes: Record<string, { count: number; totalConf: number; group: string }> = {};
-      for (const r of valid) {
-        if (!votes[r.club_type]) votes[r.club_type] = { count: 0, totalConf: 0, group: r.club_group };
-        votes[r.club_type].count++;
-        votes[r.club_type].totalConf += r.confidence;
-      }
-      const sorted = Object.entries(votes).sort((a, b) => b[1].count - a[1].count || b[1].totalConf - a[1].totalConf);
-      const winner = sorted[0];
-      const avgConf = winner[1].totalConf / winner[1].count;
-
-      const handVotes = { R: 0, L: 0 };
-      for (const r of results.filter(Boolean)) {
-        const h = (r as { hand?: string }).hand === "L" ? "L" : "R";
-        handVotes[h]++;
-      }
-      const hand: "R" | "L" = handVotes.L > handVotes.R ? "L" : "R";
-
-      const data: ClubDetection = {
-        club_type: winner[0],
-        club_group: winner[1].group,
-        confidence: Math.round(avgConf * 100) / 100,
-        hand,
-      };
-      console.log("[club-detect] multi-frame result:", data, "votes:", votes);
-      setProcessingClub(data);
-      processingClubRef.current = data;
-      if (!handConfirmed) {
-        setDetectedHand(hand);
-        handRef.current = hand;
-        if (enableHandPopup) setShowHandPopup(true);
-      }
-    } catch (e) {
-      console.warn("[club-detect] error:", e);
     }
   }
 
@@ -1114,17 +887,13 @@ export default function AnalyzePage() {
         club_detection_confidence: 1.0,
       },
     };
-    const recomputed = await recalculatePredictionFromBackend(
-      next,
-      {
-        club_type: clubType,
-        club_group: newGroup,
-        hand: next.prediction.hand ?? "UNKNOWN",
-        hand_confidence: next.prediction.hand_confidence ?? 0,
-        preferred_ball_speed: next.prediction.fused_speed,
-      },
-      analysisMode === "lite" && liteBackendBase ? liteBackendBase : undefined,
-    );
+    const recomputed = await recalculatePredictionFromBackend(next, {
+      club_type: clubType,
+      club_group: newGroup,
+      hand: next.prediction.hand ?? "UNKNOWN",
+      hand_confidence: next.prediction.hand_confidence ?? 0,
+      preferred_ball_speed: next.prediction.fused_speed,
+    });
     setResult({
       ...next,
       prediction: recomputed ? { ...next.prediction, ...recomputed } : next.prediction,
@@ -1147,17 +916,13 @@ export default function AnalyzePage() {
         hand_confidence: 1.0,
       },
     };
-    const recomputed = await recalculatePredictionFromBackend(
-      next,
-      {
-        hand: selectedHand,
-        hand_confidence: 1.0,
-        club_type: next.prediction.club_type,
-        club_group: next.prediction.club_group,
-        preferred_ball_speed: next.prediction.fused_speed,
-      },
-      analysisMode === "lite" && liteBackendBase ? liteBackendBase : undefined,
-    );
+    const recomputed = await recalculatePredictionFromBackend(next, {
+      hand: selectedHand,
+      hand_confidence: 1.0,
+      club_type: next.prediction.club_type,
+      club_group: next.prediction.club_group,
+      preferred_ball_speed: next.prediction.fused_speed,
+    });
     setResult({
       ...next,
       prediction: recomputed ? { ...next.prediction, ...recomputed } : next.prediction,
@@ -1356,7 +1121,12 @@ export default function AnalyzePage() {
             {/* Analysis Mode Selector */}
             <div className="mx-auto mb-4 max-w-xl">
               <div className="flex rounded-xl border border-white/10 bg-white/[0.02] p-1 overflow-hidden">
-                <button onClick={() => setAnalysisMode("lite")}
+                <button
+                  type="button"
+                  onClick={() => {
+                    analysisModeRef.current = "lite";
+                    setAnalysisMode("lite");
+                  }}
                   className={`flex-1 rounded-lg py-3 text-sm font-semibold transition-all ${
                     analysisMode === "lite"
                       ? "bg-brand-purple/20 text-white border border-brand-purple/30"
@@ -1365,7 +1135,12 @@ export default function AnalyzePage() {
                   <span className="block">{lang === "zh" ? "普通分析" : "Standard"}</span>
                   <span className="block text-[10px] font-normal text-white/30 mt-0.5">Stellar AI</span>
                 </button>
-                <button onClick={() => setAnalysisMode("pro")}
+                <button
+                  type="button"
+                  onClick={() => {
+                    analysisModeRef.current = "pro";
+                    setAnalysisMode("pro");
+                  }}
                   className={`flex-1 rounded-lg py-3 text-sm font-semibold transition-all ${
                     analysisMode === "pro"
                       ? "bg-brand-gold/20 text-brand-gold border border-brand-gold/30"
@@ -1517,51 +1292,7 @@ export default function AnalyzePage() {
               onCancel={analysisMode === "pro" ? stopProAnalysis : undefined}
             />
 
-            {/* Pro / Lite: handedness confirmation during processing (after club detect when known). */}
-            {(analysisMode === "pro" || analysisMode === "lite") &&
-              showHandPopup &&
-              detectedHand &&
-              !handConfirmed &&
-              processingClub != null && (
-              <div className="fixed inset-0 z-[110] flex items-center justify-center bg-black/60 backdrop-blur-sm animate-fade-in">
-                <div className="mx-4 w-full max-w-sm rounded-2xl border border-brand-gold/30 bg-brand-dark/95 backdrop-blur-xl p-6 shadow-2xl">
-                  <p className="mb-1 text-center text-lg font-bold text-white">
-                    {lang === "zh" ? "检测到打球方式" : "Detected Swing Hand"}
-                  </p>
-                  <p className="mb-5 text-center text-sm text-white/50">
-                    {lang === "zh" ? "请确认以提高分析精度" : "Please confirm for better accuracy"}
-                  </p>
-                  <div className="flex gap-3 mb-4">
-                    <button
-                      onClick={() => { setDetectedHand("R"); handRef.current = "R"; }}
-                      className={`flex-1 rounded-xl border-2 py-4 text-center font-bold transition-all ${detectedHand === "R"
-                        ? "border-brand-gold bg-brand-gold/15 text-brand-gold"
-                        : "border-white/10 bg-white/5 text-white/40 hover:border-white/30"}`}
-                    >
-                      <span className="block text-2xl mb-1">🫱</span>
-                      {lang === "zh" ? "右手打球" : "Right-handed"}
-                    </button>
-                    <button
-                      onClick={() => { setDetectedHand("L"); handRef.current = "L"; }}
-                      className={`flex-1 rounded-xl border-2 py-4 text-center font-bold transition-all ${detectedHand === "L"
-                        ? "border-brand-gold bg-brand-gold/15 text-brand-gold"
-                        : "border-white/10 bg-white/5 text-white/40 hover:border-white/30"}`}
-                    >
-                      <span className="block text-2xl mb-1">🫲</span>
-                      {lang === "zh" ? "左手打球" : "Left-handed"}
-                    </button>
-                  </div>
-                  <button
-                    onClick={() => { void handleHandConfirm(); }}
-                    className="w-full rounded-xl bg-brand-gold py-3 text-sm font-bold text-black transition hover:bg-brand-gold/90"
-                  >
-                    {lang === "zh" ? "确认" : "Confirm"}
-                  </button>
-                </div>
-              </div>
-            )}
-
-            {/* Lite: club + handedness first (same /api/club-detect as Pro); stays visible while analysis runs */}
+            {/* Lite：主分析 ``/analyze/lite`` 内带杆型/左右手；此处仅展示进度条，结果页再显示具体识别 */}
             {analysisMode === "lite" && (
               <div className="fixed bottom-6 left-4 right-4 z-50 animate-fade-in space-y-2">
                 <ClubHandSummaryBar
@@ -1569,15 +1300,22 @@ export default function AnalyzePage() {
                   clubType={processingClub?.club_type}
                   clubConfidence={processingClub?.confidence}
                   hand={(processingClub?.hand as "R" | "L" | "UNKNOWN" | undefined) ?? detectedHand ?? "UNKNOWN"}
-                  pending={processingClub == null}
+                  pending={true}
                 />
-                <div className="flex justify-center">
+                <div className="flex justify-center gap-2">
                   <button
                     type="button"
                     onClick={() => setShowClubPicker(true)}
                     className="rounded-xl border border-brand-purple/35 bg-brand-purple/15 px-4 py-2 text-xs font-medium text-brand-purple transition hover:bg-brand-purple/25"
                   >
                     {lang === "zh" ? "修改球杆" : "Change club"}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setShowHandPopup(true)}
+                    className="rounded-xl border border-brand-purple/35 bg-brand-purple/15 px-4 py-2 text-xs font-medium text-brand-purple transition hover:bg-brand-purple/25"
+                  >
+                    {lang === "zh" ? "确认左右手" : "Confirm hand"}
                   </button>
                 </div>
               </div>
@@ -1664,6 +1402,52 @@ export default function AnalyzePage() {
           </div>
         )}
 
+        {(stage === "processing" || stage === "results") &&
+          (analysisMode === "pro" || analysisMode === "lite") &&
+          showHandPopup &&
+          detectedHand &&
+          !handConfirmed && (
+          <div className="fixed inset-0 z-[110] flex items-center justify-center bg-black/60 backdrop-blur-sm animate-fade-in">
+            <div className="mx-4 w-full max-w-sm rounded-2xl border border-brand-gold/30 bg-brand-dark/95 backdrop-blur-xl p-6 shadow-2xl">
+              <p className="mb-1 text-center text-lg font-bold text-white">
+                {lang === "zh" ? "检测到打球方式" : "Detected Swing Hand"}
+              </p>
+              <p className="mb-5 text-center text-sm text-white/50">
+                {lang === "zh" ? "请确认以提高分析精度" : "Please confirm for better accuracy"}
+              </p>
+              <div className="flex gap-3 mb-4">
+                <button
+                  type="button"
+                  onClick={() => { setDetectedHand("R"); handRef.current = "R"; }}
+                  className={`flex-1 rounded-xl border-2 py-4 text-center font-bold transition-all ${detectedHand === "R"
+                    ? "border-brand-gold bg-brand-gold/15 text-brand-gold"
+                    : "border-white/10 bg-white/5 text-white/40 hover:border-white/30"}`}
+                >
+                  <span className="block text-2xl mb-1">🫱</span>
+                  {lang === "zh" ? "右手打球" : "Right-handed"}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => { setDetectedHand("L"); handRef.current = "L"; }}
+                  className={`flex-1 rounded-xl border-2 py-4 text-center font-bold transition-all ${detectedHand === "L"
+                    ? "border-brand-gold bg-brand-gold/15 text-brand-gold"
+                    : "border-white/10 bg-white/5 text-white/40 hover:border-white/30"}`}
+                >
+                  <span className="block text-2xl mb-1">🫲</span>
+                  {lang === "zh" ? "左手打球" : "Left-handed"}
+                </button>
+              </div>
+              <button
+                type="button"
+                onClick={() => { void handleHandConfirm(); }}
+                className="w-full rounded-xl bg-brand-gold py-3 text-sm font-bold text-black transition hover:bg-brand-gold/90"
+              >
+                {lang === "zh" ? "确认" : "Confirm"}
+              </button>
+            </div>
+          </div>
+        )}
+
         {stage === "results" && result && (
           <div className="space-y-6 animate-fade-in">
             {/* What AI sees */}
@@ -1733,18 +1517,34 @@ export default function AnalyzePage() {
               <div className="space-y-2">
                 <ClubHandSummaryBar
                   lang={lang}
-                  clubType={result.prediction.club_type}
+                  clubType={litePredictionView.clubType}
                   clubConfidence={result.prediction.club_detection_confidence}
-                  hand={result.prediction.hand}
+                  hand={litePredictionView.hand as "R" | "L" | "UNKNOWN"}
                   pending={false}
                 />
-                <button
-                  type="button"
-                  onClick={() => setShowClubPicker(true)}
-                  className="w-full rounded-xl border border-brand-purple/35 bg-brand-purple/10 py-2.5 text-xs font-medium text-brand-purple transition hover:bg-brand-purple/20"
-                >
-                  {lang === "zh" ? "修改球杆" : "Change club"}
-                </button>
+                <div className="grid grid-cols-2 gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setShowClubPicker(true)}
+                    className="w-full rounded-xl border border-brand-purple/35 bg-brand-purple/10 py-2.5 text-xs font-medium text-brand-purple transition hover:bg-brand-purple/20"
+                  >
+                    {lang === "zh" ? "修改球杆" : "Change club"}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setShowHandPopup(true)}
+                    className="w-full rounded-xl border border-brand-purple/35 bg-brand-purple/10 py-2.5 text-xs font-medium text-brand-purple transition hover:bg-brand-purple/20"
+                  >
+                    {lang === "zh" ? "确认左右手" : "Confirm hand"}
+                  </button>
+                </div>
+                {litePredictionView.lowHandConfidence && (
+                  <p className="text-xs text-yellow-300/90">
+                    {lang === "zh"
+                      ? "左右手识别置信度较低，请确认。"
+                      : "Handedness confidence is low. Please confirm."}
+                  </p>
+                )}
               </div>
             )}
 
@@ -1951,7 +1751,7 @@ export default function AnalyzePage() {
                 {analyzePageIsProv3Product ? (
                   <div className="w-full bg-black px-1 pb-2 pt-1">
                     <FrontErrorBoundary
-                      label="AnalyzePage prov3 timeline (Prov3PlusVideoRenderer)"
+                      label="analyze-video-timeline"
                       details={{
                         hasVideoSrc: Boolean(String(proVideoTimelineUrl ?? "").trim()),
                         poseFramesCount: result.pose_frames?.length ?? 0,
@@ -2022,7 +1822,7 @@ export default function AnalyzePage() {
                 {stripKeyframesForResult.length > 0 ? (
                   analyzePageIsProv3Product ? (
                     <FrontErrorBoundary
-                      label="AnalyzePage prov3 KeyframeStrip"
+                      label="analyze-keyframe-strip"
                       details={{
                         hasVideoSrc: Boolean(String(proVideoTimelineUrl ?? "").trim()),
                         poseFramesCount: result.pose_frames?.length ?? 0,

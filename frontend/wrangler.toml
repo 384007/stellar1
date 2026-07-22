@@ -14,25 +14,24 @@
 # that is almost never caused by backend/Python commits — it is usually Cloudflare API-side.
 # Common fix: enable R2 on the account (zero-cost tier is fine) and ensure bucket `stellar-golf-media`
 # exists and matches Pages project bindings. Ref: https://github.com/cloudflare/workers-sdk/issues/7538
-name = "stellar-ai"
+# Must match Workers & Pages project name in Cloudflare (production: stellar1.pages.dev).
+name = "stellar1"
 compatibility_date = "2025-12-01"
 compatibility_flags = ["nodejs_compat"]
 pages_build_output_dir = ".vercel/output/static"
 
 [vars]
 ENVIRONMENT = "production"
-NEXT_PUBLIC_BACKEND_URL = "https://stellar1-backend.onrender.com"
+BACKEND_URL = "https://stellar1-backend.onrender.com"
 GEMINI_MODEL = "gemini-2.5-flash-lite"
 # Secrets (dashboard): GEMINI_API_KEY, JWT_SECRET — required for Lite analyze + auth.
 # Optional Lite / Edge multi-key failover (same names as backend): GEMINI_API_KEY_2 … GEMINI_API_KEY_10.
-# Optional: CN browser→R2 presigned upload — build with NEXT_PUBLIC_PROV3_CN_USE_PRESIGNED_UPLOAD=true
-# and set Pages Secrets R2_ACCOUNT_ID, R2_BUCKET, R2_ACCESS_KEY, R2_SECRET_KEY + R2 CORS. Default
-# CN upload is same-origin /api/history/upload-video (R2 binding only, no S3 API secrets).
+# Video upload: same-origin POST /api/history/upload-video (R2 binding only; browser never gets presigned S3 URLs).
 #
 # Optional CN egress: GEMINI_PROXY_ALI, GEMINI_PROXY_JD (HTTPS origin, no trailing slash) — add as
 # Pages Secrets (same values as Modal ``custom-secret``). Example:
-#   npx wrangler pages secret put GEMINI_PROXY_ALI --project-name stellar-ai
-#   npx wrangler pages secret put GEMINI_PROXY_JD --project-name stellar-ai
+#   npx wrangler pages secret put GEMINI_PROXY_ALI --project-name stellar1
+#   npx wrangler pages secret put GEMINI_PROXY_JD --project-name stellar1
 # Modal Pro calls ``POST /api/modal-gemini-forward`` — same GEMINI_PROXY_* / keys as Lite (optional):
 #   STELLAR_CF_GEMINI_FORWARD_TIMEOUT_MS (default 240000) for Edge→Google subrequest
 # Optional fallback when no Gemini keys: QWEN_API_KEY.
