@@ -36,7 +36,7 @@ def infer_lite_a_candidates(
             swingnet_checkpoint_path(),
         )
         afps = float((preprocess_meta or {}).get("analysis_fps") or 240)
-        lite_cap_raw = (os.getenv("STELLAR_SWINGNET_LITE_MAX_FRAMES") or "512").strip()
+        lite_cap_raw = (os.getenv("STELLAR_SWINGNET_LITE_MAX_FRAMES") or "64").strip()
         try:
             lite_cap = int(lite_cap_raw)
         except ValueError:

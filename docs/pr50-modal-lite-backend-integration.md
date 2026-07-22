@@ -346,3 +346,11 @@ PR50 要能回答下面这些问题：
 - Lite 日志：`modal app logs stellar-ai-lite`。
 - 单独回滚 Pages：在 Cloudflare Pages 将 Production 回滚到此前 Production deployment，或重新部署目标前端构建到 `feat/modal-centric-backend-proxies`。
 - 单独回滚 Modal：从 Git 中检出先前已知版本的 `modal_app_lite.py`、`backend/routers/analyze.py`、`backend/services/gemini_service.py` 和 `backend/requirements-modal-lite.txt`，然后执行 `modal deploy modal_app_lite.py`。不要删除或覆盖已有 Modal secrets。
+
+
+### 2026-07-22 后续：修复长视频在关键帧前断流
+
+- 原因：Lite A-path 虽传入帧上限，底层采样仍强制至少 480 帧；13.8 秒、414 帧的视频因此完整解码 414 帧，在 CPU Modal 实例中于关键帧阶段超过已观察到的约 70 秒流取消窗口。
+- 修复：仅 Lite 默认 `STELLAR_SWINGNET_LITE_MAX_FRAMES` 改为 64（现有 LSTM 单批长度）；底层采样改为严格遵守调用方上限。Pro 路径继续使用其原有上限和策略。
+- 验证：部署后用真实挥杆视频直连 Lite Modal，HTTP 200；最终 SSE 含 `data`，返回 8 个关键帧与总分 93。Modal 日志确认采样 `1/64` 至 `64/64`，未再解码 414 帧。
+- 限制：本机先前用于 Preview Pages 的临时登录 token 已清理，故本轮未以该 token 重放 Pages 鉴权链；Pages 前端未改动，已部署的生产 Pages proxy 会自动使用新 Lite Modal 后端。

@@ -217,7 +217,9 @@ def _video_to_batch(
         adaptive_target = max(800, mid_target)
     else:
         adaptive_target = max(900, long_target)
-    n_target = min(total, max(480, min(max_frames, adaptive_target)))
+    # ``max_frames`` is the caller's hard sample budget. Lite uses this to
+    # finish on the CPU-backed Modal worker before a streamed request is cut off.
+    n_target = min(total, max(8, min(max_frames, adaptive_target)))
     sample_indices = np.unique(np.linspace(0, total - 1, num=n_target, dtype=np.int64))
 
     frames: list[np.ndarray] = []
