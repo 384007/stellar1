@@ -1,6 +1,6 @@
-"""Pro v3 关键帧之后的 Gemini 文案报告（motion_context + 单次 vision；本地兜底）。
+"""Pro v3 关键帧之后的 AI 文案报告（motion_context + 单次 vision；本地兜底）。
 
-Motion 报告与 ``prov3_text_report_service`` / Gemini prompt 对齐；杆型与报告合并为同一次 ``generateContent``。
+Motion 报告与 ``prov3_text_report_service`` prompt 对齐；杆型与报告合并为同一次视频 AI 调用。
 若浏览器先于服务端结束而断开，Modal 上仍可能打满日志但前端看不到报告——请对齐客户端超时与 Modal task 超时。
 """
 

@@ -175,7 +175,11 @@ lite_image = (
 app = modal.App(
     name="stellar-ai-lite",
     image=lite_image,
-    secrets=[modal.Secret.from_name("custom-secret")],
+    secrets=[
+        modal.Secret.from_name("custom-secret"),
+        modal.Secret.from_name("ai-keys"),
+        modal.Secret.from_name("patentpaper-all-secrets-latest"),
+    ],
 )
 
 

@@ -15,14 +15,14 @@ from urllib.parse import urlparse
 logger = logging.getLogger(__name__)
 
 # Business-level hard timeouts (seconds). Override via env if needed.
-# Prevents hung Gemini/Qwen/network from blocking Lite / Plus / Pro / shared pipelines.
+# Prevents hung external AI/network calls from blocking Lite / Plus / Pro / shared pipelines.
 PHASE_DETECT_TIMEOUT_S = float(os.getenv("STELLAR_PHASE_DETECT_TIMEOUT_S", "90"))
 LITE_AI_TIMEOUT_S = float(os.getenv("STELLAR_LITE_AI_TIMEOUT_S", "120"))
 PLUS_AI_TIMEOUT_S = float(os.getenv("STELLAR_PLUS_AI_TIMEOUT_S", "180"))
 PRO_AI_TIMEOUT_S = float(os.getenv("STELLAR_PRO_AI_TIMEOUT_S", "240"))
 IMAGE_ONLY_TIMEOUT_S = float(os.getenv("STELLAR_IMAGE_ONLY_TIMEOUT_S", "120"))
-QWEN_TIMEOUT_S = float(os.getenv("STELLAR_QWEN_TIMEOUT_S", "120"))
 PLUS_OBSERVATION_TIMEOUT_S = float(os.getenv("STELLAR_PLUS_OBSERVE_TIMEOUT_S", "90"))
+NVIDIA_TIMEOUT_S = float(os.getenv("STELLAR_NVIDIA_TIMEOUT_S", "180"))
 
 # Developer API keys: GEMINI_API_KEY (required if not using Vertex), optional GEMINI_API_KEY_2 … _10.
 # Egress / geo: set GEMINI_HTTPS_PROXY or HTTPS_PROXY to tunnel via SG/JP etc.; code forces REST transport when set.
@@ -43,10 +43,14 @@ PLUS_OBSERVATION_TIMEOUT_S = float(os.getenv("STELLAR_PLUS_OBSERVE_TIMEOUT_S", "
 #   STELLAR_GEMINI_PROXY_PHASE_TIMEOUT_S — defaults to PRO_AI_TIMEOUT_S for reverse-proxy attempts.
 
 GEMINI_DEVELOPER_API_ORIGIN = "https://generativelanguage.googleapis.com"
+NVIDIA_API_BASE_DEFAULT = "https://integrate.api.nvidia.com/v1"
+NVIDIA_VIDEO_MODEL_DEFAULT = "qwen/qwen3.6-35b-a3b"
 
 _genai = None
 _vertex_inited = False
 _gemini_dev_lock = threading.Lock()
+_video_ai_lock = threading.Lock()
+_nvidia_rr_cursor = 0
 
 # Set by ``gemini_modal_cn_proxy_first_context`` during Pro v3 enrich when the request hints China
 # (``X-Stellar-Network-Hint: cn`` and/or ``CF-IPCountry: CN`` from Edge) and this process is the
@@ -183,6 +187,252 @@ def developer_key_label(slot: int) -> str:
     if slot <= 1:
         return "key"
     return f"key{slot}"
+
+
+def nvidia_key_label(slot: int) -> str:
+    """API-facing NVIDIA key label: nvidia_key, nvidia_key2, …."""
+    if slot <= 1:
+        return "nvidia_key"
+    return f"nvidia_key{slot}"
+
+
+def provider_key_label(provider: str, slot: Optional[int], fallback: str | None = None) -> str | None:
+    if fallback:
+        return fallback
+    if slot is None:
+        return None
+    if provider == "nvidia":
+        return nvidia_key_label(slot)
+    if provider == "gemini":
+        return developer_key_label(slot)
+    return f"{provider}_key{slot if slot > 1 else ''}"
+
+
+def _split_env_keys(raw: str) -> list[str]:
+    parts = re.split(r"[,;\n\r]+", raw or "")
+    return [p.strip() for p in parts if p.strip()]
+
+
+def _append_unique_key(keys: list[str], key: str) -> None:
+    k = (key or "").strip()
+    if k and k not in keys:
+        keys.append(k)
+
+
+def _collect_nvidia_api_keys() -> list[tuple[int, str, str]]:
+    """PatentPaper-compatible NVIDIA key discovery.
+
+    Reads NVIDIA_API_KEY / NVIDIA_KEY, numbered _2 … _20 variants, and plural
+    NVIDIA_API_KEYS / NVIDIA_KEYS. Values are never logged.
+    """
+    keys: list[str] = []
+    env_names: list[str] = []
+
+    def add(env_name: str, val: str) -> None:
+        before = len(keys)
+        _append_unique_key(keys, val)
+        if len(keys) > before:
+            env_names.append(env_name)
+
+    for env_name in ("NVIDIA_API_KEY", "NVIDIA_KEY"):
+        add(env_name, os.getenv(env_name, ""))
+    for n in range(2, 21):
+        for env_name in (f"NVIDIA_API_KEY_{n}", f"NVIDIA_KEY_{n}"):
+            add(env_name, os.getenv(env_name, ""))
+    for env_name in ("NVIDIA_API_KEYS", "NVIDIA_KEYS"):
+        for idx, k in enumerate(_split_env_keys(os.getenv(env_name, ""))):
+            add(f"{env_name}[{idx}]", k)
+    return [(idx + 1, key, env_names[idx] if idx < len(env_names) else nvidia_key_label(idx + 1)) for idx, key in enumerate(keys)]
+
+
+def _nvidia_api_base() -> str:
+    return (
+        (os.getenv("NVIDIA_API_BASE") or "").strip()
+        or (os.getenv("NVIDIA_BASE_URL") or "").strip()
+        or NVIDIA_API_BASE_DEFAULT
+    ).rstrip("/")
+
+
+def _model_looks_video_capable(model: str) -> bool:
+    m = (model or "").strip().lower()
+    if not m:
+        return False
+    # NVIDIA docs explicitly note Qwen3.6-27B has no video support.
+    if "qwen3.6-27b" in m:
+        return False
+    needles = (
+        "qwen/qwen3.6-35b",
+        "qwen/qwen3.5",
+        "cosmos",
+        "omni",
+        "vision",
+        "video",
+        "-vl",
+        "_vl",
+        "vl-",
+        "vl_",
+    )
+    return any(x in m for x in needles)
+
+
+def _nvidia_video_model() -> str:
+    for env_name in ("NVIDIA_VIDEO_MODEL", "STELLAR_NVIDIA_VIDEO_MODEL"):
+        v = (os.getenv(env_name) or "").strip()
+        if v:
+            return v
+    inherited = (os.getenv("NVIDIA_MODEL") or "").strip()
+    if _model_looks_video_capable(inherited):
+        return inherited
+    return NVIDIA_VIDEO_MODEL_DEFAULT
+
+
+def _provider_base_default(provider: str) -> str:
+    p = (provider or "").strip().lower()
+    if p == "nvidia":
+        return NVIDIA_API_BASE_DEFAULT
+    if p == "openrouter":
+        return "https://openrouter.ai/api/v1"
+    if p == "openai":
+        return "https://api.openai.com/v1"
+    if p == "mistral":
+        return "https://api.mistral.ai/v1"
+    return ""
+
+
+def _truthy_value(v: Any) -> bool:
+    return str(v or "").strip().lower() in ("1", "true", "yes", "on", "video", "vision")
+
+
+def _entry_declares_video(entry: dict[str, Any], *, explicit_video_pool: bool = False) -> bool:
+    if explicit_video_pool:
+        return True
+    if _truthy_value(entry.get("video")) or _truthy_value(entry.get("vision")):
+        return True
+    caps = entry.get("capabilities")
+    if isinstance(caps, str):
+        return "video" in caps.lower() or "vision" in caps.lower()
+    if isinstance(caps, list):
+        return any("video" in str(x).lower() or "vision" in str(x).lower() for x in caps)
+    role = str(entry.get("role") or "").lower()
+    if "video" in role or "vision" in role or "vlm" in role:
+        return True
+    return _model_looks_video_capable(str(entry.get("model") or ""))
+
+
+def _collect_json_video_ai_providers() -> list[dict[str, Any]]:
+    """Optional explicit non-Gemini video fallback pool.
+
+    Supports STELLAR_VIDEO_AI_KEYS_JSON / VIDEO_AI_KEYS_JSON directly. AI_KEYS_JSON is accepted only
+    when an entry explicitly declares video/vision capability or uses a video-looking model name.
+    Gemini, Groq, and Qwen/DashScope are intentionally excluded.
+    """
+    providers: list[dict[str, Any]] = []
+    banned = {"gemini", "groq", "qwen", "dashscope"}
+    for env_name in ("STELLAR_VIDEO_AI_KEYS_JSON", "VIDEO_AI_KEYS_JSON", "AI_KEYS_JSON"):
+        raw = (os.getenv(env_name) or "").strip()
+        if not raw:
+            continue
+        try:
+            parsed = json.loads(raw)
+        except Exception:
+            logger.warning("[ai] ignore malformed %s", env_name)
+            continue
+        items = parsed if isinstance(parsed, list) else [parsed]
+        explicit = env_name != "AI_KEYS_JSON"
+        for idx, item in enumerate(items):
+            if not isinstance(item, dict):
+                continue
+            provider = str(item.get("provider") or item.get("tier") or "openai").strip().lower()
+            if provider in banned:
+                continue
+            key = str(item.get("api_key") or item.get("key") or "").strip()
+            model = str(item.get("model") or "").strip()
+            base = str(item.get("base_url") or item.get("base") or _provider_base_default(provider)).strip().rstrip("/")
+            if not key or not model or not base:
+                continue
+            if not _entry_declares_video(item, explicit_video_pool=explicit):
+                continue
+            providers.append(
+                {
+                    "provider": provider,
+                    "key": key,
+                    "model": model,
+                    "base": base,
+                    "label": f"{provider}:{env_name}[{idx}]",
+                    "env_name": f"{env_name}[{idx}]",
+                }
+            )
+    return providers
+
+
+def _collect_numbered_video_ai_providers() -> list[dict[str, Any]]:
+    providers: list[dict[str, Any]] = []
+    banned = {"gemini", "groq", "qwen", "dashscope"}
+    for i in range(1, 21):
+        key = (os.getenv(f"AI_KEY_{i}") or "").strip()
+        if not key:
+            continue
+        provider = str(os.getenv(f"AI_KEY_{i}_TIER") or os.getenv(f"AI_KEY_{i}_PROVIDER") or "openai").strip().lower()
+        if provider in banned:
+            continue
+        model = (os.getenv(f"AI_KEY_{i}_MODEL") or "").strip()
+        base = (
+            (os.getenv(f"AI_KEY_{i}_BASE") or "").strip()
+            or (os.getenv(f"AI_KEY_{i}_BASE_URL") or "").strip()
+            or _provider_base_default(provider)
+        ).rstrip("/")
+        if not model or not base:
+            continue
+        if not (
+            _truthy_value(os.getenv(f"AI_KEY_{i}_VIDEO"))
+            or _truthy_value(os.getenv(f"AI_KEY_{i}_VISION"))
+            or _model_looks_video_capable(model)
+        ):
+            continue
+        providers.append(
+            {
+                "provider": provider,
+                "key": key,
+                "model": model,
+                "base": base,
+                "label": f"{provider}:AI_KEY_{i}",
+                "env_name": f"AI_KEY_{i}",
+            }
+        )
+    return providers
+
+
+def _ordered_video_ai_providers() -> list[dict[str, Any]]:
+    """NVIDIA keys first, round-robin start slot; explicit video fallback providers after."""
+    global _nvidia_rr_cursor
+    nvidia_entries = [
+        {
+            "provider": "nvidia",
+            "key": key,
+            "model": _nvidia_video_model(),
+            "base": _nvidia_api_base(),
+            "label": nvidia_key_label(slot),
+            "slot": slot,
+            "env_name": env_name,
+        }
+        for slot, key, env_name in _collect_nvidia_api_keys()
+    ]
+    if nvidia_entries:
+        with _video_ai_lock:
+            start = _nvidia_rr_cursor % len(nvidia_entries)
+            _nvidia_rr_cursor += 1
+        nvidia_entries = nvidia_entries[start:] + nvidia_entries[:start]
+
+    providers = nvidia_entries + _collect_json_video_ai_providers() + _collect_numbered_video_ai_providers()
+    out: list[dict[str, Any]] = []
+    seen: set[tuple[str, str, str]] = set()
+    for p in providers:
+        ident = (str(p.get("provider") or ""), str(p.get("base") or ""), str(p.get("key") or ""))
+        if not ident[2] or ident in seen:
+            continue
+        seen.add(ident)
+        out.append(p)
+    return out
 
 
 def _is_gemini_quota_error(exc: BaseException) -> bool:
@@ -548,10 +798,6 @@ def _call_gemini_vertex_sync(
     if not text:
         raise RuntimeError("Vertex Gemini returned empty response")
     return text
-
-QWEN_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
-QWEN_MODEL = "qwen-vl-max-latest"
-
 
 def _get_genai():
     global _genai
@@ -1121,59 +1367,188 @@ async def run_gemini_vision(
     max_tokens: int = 4096,
     temperature: float = 0.3,
 ) -> tuple[str, Optional[int]]:
-    """Vision call via Developer API (GEMINI_API_KEY…) or Vertex (GEMINI_BACKEND=vertex)."""
-    return await _call_gemini(prompt, images_b64, max_tokens, temperature)
+    """Backward-compatible name; now routes to NVIDIA/video-capable AI, not Gemini."""
+    text, _provider, _key_label = await _call_video_ai(
+        prompt,
+        images_b64,
+        [],
+        max_tokens,
+        temperature,
+        "compat_run_gemini_vision",
+    )
+    return text, None
 
 
-# ── Qwen (通义千问) helper via OpenAI-compatible DashScope API ──
+# ── NVIDIA / explicit video AI pool ──
 
-_qwen_available: bool | None = None
+def _media_content_parts(
+    prompt: str,
+    images: list[str] | None = None,
+    videos: list[tuple[str, str]] | None = None,
+) -> list[dict[str, Any]]:
+    content: list[dict[str, Any]] = [{"type": "text", "text": prompt}]
+    for img_b64 in (images or [])[:8]:
+        b64 = (img_b64 or "").strip()
+        if b64:
+            content.append({
+                "type": "image_url",
+                "image_url": {"url": f"data:image/jpeg;base64,{b64}"},
+            })
+    for vid_b64, mime in (videos or [])[:1]:
+        b64 = (vid_b64 or "").strip()
+        if not b64:
+            continue
+        mt = (mime or "video/mp4").strip() or "video/mp4"
+        content.append({
+            "type": "video_url",
+            "video_url": {"url": f"data:{mt};base64,{b64}"},
+        })
+    return content
 
 
-def _has_qwen() -> bool:
-    global _qwen_available
-    if _qwen_available is None:
-        _qwen_available = bool(os.getenv("QWEN_API_KEY", ""))
-    return _qwen_available
+def _openai_compat_extract_text(data: dict[str, Any]) -> str:
+    choices = data.get("choices") if isinstance(data, dict) else None
+    if not choices:
+        return ""
+    msg = (choices[0] or {}).get("message") or {}
+    content = msg.get("content")
+    if isinstance(content, str):
+        text = content
+    elif isinstance(content, list):
+        parts = []
+        for part in content:
+            if isinstance(part, dict):
+                parts.append(str(part.get("text") or part.get("content") or ""))
+            else:
+                parts.append(str(part))
+        text = "\n".join(x for x in parts if x)
+    else:
+        text = str(content or "")
+    return re.sub(r"<think>[\s\S]*?</think>", "", text, flags=re.IGNORECASE).strip()
 
 
-async def _call_qwen(
+def _openai_compat_chat_sync(
+    provider: dict[str, Any],
     prompt: str,
     images: list[str],
+    videos: list[tuple[str, str]],
+    max_tokens: int,
+    temperature: float,
+) -> str:
+    import httpx
+
+    base = str(provider.get("base") or "").rstrip("/")
+    model = str(provider.get("model") or "").strip()
+    key = str(provider.get("key") or "").strip()
+    name = str(provider.get("provider") or "video_ai").strip().lower()
+    if not base or not model or not key:
+        raise RuntimeError(f"{name}: incomplete provider config")
+
+    payload: dict[str, Any] = {
+        "model": model,
+        "messages": [{"role": "user", "content": _media_content_parts(prompt, images, videos)}],
+        "temperature": temperature,
+        "max_tokens": max_tokens,
+        "stream": False,
+    }
+    if name == "nvidia":
+        payload["include_reasoning"] = False
+        payload["chat_template_kwargs"] = {"enable_thinking": False}
+
+    headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
+    timeout_s = max(30.0, float(os.getenv("STELLAR_VIDEO_AI_PROVIDER_TIMEOUT_S", str(NVIDIA_TIMEOUT_S))))
+    with httpx.Client(timeout=timeout_s) as client:
+        resp = client.post(f"{base}/chat/completions", headers=headers, json=payload)
+    if resp.status_code != 200:
+        body = resp.text[:500]
+        raise RuntimeError(f"{name} HTTP {resp.status_code}: {body}")
+    data = resp.json()
+    text = _openai_compat_extract_text(data)
+    if not text:
+        raise RuntimeError(f"{name} returned empty response")
+    return text
+
+
+def _call_video_ai_sync(
+    prompt: str,
+    images: list[str] | None = None,
+    videos: list[tuple[str, str]] | None = None,
     max_tokens: int = 4096,
     temperature: float = 0.3,
-) -> str:
-    """Call Qwen VL via DashScope OpenAI-compatible endpoint."""
-    qwen_key = os.getenv("QWEN_API_KEY", "")
-    if not qwen_key:
-        raise RuntimeError("QWEN_API_KEY not configured on server")
+    label: str = "vision",
+) -> tuple[str, str, Optional[str]]:
+    providers = _ordered_video_ai_providers()
+    if not providers:
+        raise RuntimeError("NVIDIA_API_KEY not configured; no explicit video AI provider configured")
 
-    from openai import AsyncOpenAI
+    last_err: BaseException | None = None
+    for p in providers:
+        provider = str(p.get("provider") or "video_ai").lower()
+        key_label = str(p.get("label") or provider_key_label(provider, p.get("slot")) or provider)
+        model = str(p.get("model") or "")
+        try:
+            text = _openai_compat_chat_sync(
+                p,
+                prompt,
+                list(images or []),
+                list(videos or []),
+                max_tokens,
+                temperature,
+            )
+            logger.info("[ai] video_ai_ok provider=%s label=%s ai_key=%s model=%s", provider, label, key_label, model)
+            print(f"[stellar-ai] vision label={label} provider={provider} ai_key={key_label}", flush=True)
+            return text, provider, key_label
+        except Exception as e:
+            last_err = e
+            logger.warning("[ai] video_ai_fail provider=%s label=%s ai_key=%s err=%s", provider, label, key_label, e)
+            continue
+    raise RuntimeError(f"All video AI providers failed for {label}: {last_err}")
 
-    client = AsyncOpenAI(
-        api_key=qwen_key,
-        base_url=QWEN_BASE_URL,
-        timeout=QWEN_TIMEOUT_S,
+
+async def _call_video_ai(
+    prompt: str,
+    images: list[str] | None = None,
+    videos: list[tuple[str, str]] | None = None,
+    max_tokens: int = 4096,
+    temperature: float = 0.3,
+    label: str = "vision",
+) -> tuple[str, str, Optional[str]]:
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(
+        None,
+        partial(
+            _call_video_ai_sync,
+            prompt,
+            list(images or []),
+            list(videos or []),
+            max_tokens,
+            temperature,
+            label,
+        ),
     )
 
-    content: list = [{"type": "text", "text": prompt}]
-    for img_b64 in images[:8]:
-        content.append({
-            "type": "image_url",
-            "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"},
-        })
 
-    resp = await client.chat.completions.create(
-        model=QWEN_MODEL,
-        messages=[{"role": "user", "content": content}],
-        max_tokens=max_tokens,
-        temperature=temperature,
+def run_video_ai_sync(
+    prompt: str,
+    images_b64: Optional[list[str]] = None,
+    videos_b64: Optional[list[tuple[str, str]]] = None,
+    *,
+    max_tokens: int = 4096,
+    temperature: float = 0.3,
+    label: str = "vision",
+) -> tuple[str, str, Optional[str]]:
+    """Synchronous public video-capable AI call. NVIDIA keys are primary and round-robin."""
+    return _call_video_ai_sync(
+        prompt,
+        list(images_b64 or []),
+        list(videos_b64 or []),
+        max_tokens,
+        temperature,
+        label,
     )
-    raw = resp.choices[0].message.content or ""
-    return re.sub(r"<think>[\s\S]*?</think>", "", raw).strip()
 
 
-# ── Unified Gemini-first, Qwen-fallback caller ──
+# ── Unified NVIDIA video-capable caller ──
 
 async def _call_vision_ai(
     prompt: str,
@@ -1183,42 +1558,16 @@ async def _call_vision_ai(
     label: str = "vision",
     *,
     timeout_s: float,
-) -> tuple[str, str, Optional[int]]:
-    """Try Gemini first (direct → optional ``GEMINI_PROXY_*``); on failure fall back to Qwen if ``QWEN_API_KEY`` is set.
+) -> tuple[str, str, Optional[str]]:
+    """Use NVIDIA/video-capable AI keys only.
 
-    Returns (response_text, provider, key_slot). key_slot is 1-based index into GEMINI_API_KEY,
-    GEMINI_API_KEY_2, … when provider is gemini and developer API; None for Vertex or Qwen.
+    Returns (response_text, provider, key_label). NVIDIA keys are the primary pool and are
+    round-robin. Gemini, Groq, and Qwen are intentionally not used here.
 
-    ``timeout_s`` caps wall-clock time for the whole provider chain (Gemini attempt + optional Qwen).
+    ``timeout_s`` caps wall-clock time for the whole provider chain.
     """
-    async def _inner() -> tuple[str, str, Optional[int]]:
-        gemini_err = None
-        try:
-            text, key_slot = await _call_gemini(prompt, images, max_tokens, temperature)
-            backend = "vertex" if _use_vertex() else "developer_api"
-            ak = developer_key_label(key_slot) if key_slot is not None else "vertex"
-            logger.info(
-                "[ai] vision_ok provider=gemini backend=%s label=%s ai_key=%s",
-                backend,
-                label,
-                ak,
-            )
-            print(f"[stellar-ai] vision label={label} ai_key={ak}", flush=True)
-            return text, "gemini", key_slot
-        except Exception as e:
-            gemini_err = e
-            logger.warning("[ai] gemini_fail label=%s err=%s", label, e)
-
-        if _has_qwen():
-            try:
-                text = await _call_qwen(prompt, images, max_tokens, temperature)
-                logger.info("[ai] vision_ok provider=qwen label=%s (gemini failed first)", label)
-                print(f"[stellar-ai] vision label={label} provider=qwen ai_key=n/a", flush=True)
-                return text, "qwen", None
-            except Exception as e2:
-                logger.warning("[ai] qwen_fail label=%s err=%s", label, e2)
-
-        raise RuntimeError(f"All AI providers failed for {label}: {gemini_err}")
+    async def _inner() -> tuple[str, str, Optional[str]]:
+        return await _call_video_ai(prompt, images, [], max_tokens, temperature, label)
 
     try:
         return await asyncio.wait_for(_inner(), timeout=timeout_s)
@@ -1250,13 +1599,13 @@ async def analyze_swing_lite(
     images = strip + extras
     label = "lite_unified" if extras else "lite"
     try:
-        text, provider, key_slot = await _call_vision_ai(
+        text, provider, key_label = await _call_vision_ai(
             prompt, images, 2304, 0.3, label, timeout_s=LITE_AI_TIMEOUT_S,
         )
         out = extract_json_from_response(text)
         out["ai_provider"] = provider
-        if key_slot is not None:
-            out["ai_key"] = developer_key_label(key_slot)
+        if key_label:
+            out["ai_key"] = key_label
         return out
     except Exception as e:
         logger.error("[ai] analyze_swing_lite all providers failed: %s", e)
@@ -1274,13 +1623,13 @@ async def analyze_swing_pro(
     prompt = base if phase_images_reliable else (base + PRO_PROMPT_APPEND_PHASE_UNRELIABLE)
     images = list(keyframe_images or [])[:8]
     try:
-        text, provider, key_slot = await _call_vision_ai(
+        text, provider, key_label = await _call_vision_ai(
             prompt, images, 8192, 0.2, "pro", timeout_s=PRO_AI_TIMEOUT_S,
         )
         out = extract_json_from_response(text)
         out["ai_provider"] = provider
-        if key_slot is not None:
-            out["ai_key"] = developer_key_label(key_slot)
+        if key_label:
+            out["ai_key"] = key_label
         return out
     except Exception as e:
         logger.error("[ai] analyze_swing_pro all providers failed: %s", e)
@@ -1299,13 +1648,13 @@ async def analyze_stellar_pro_report_only(
         keyframe_metrics=json.dumps(keyframe_metrics, indent=2, ensure_ascii=False),
     )
     try:
-        text, provider, key_slot = await _call_vision_ai(
+        text, provider, key_label = await _call_vision_ai(
             prompt, [], 8192, 0.2, "stellar_pro_report", timeout_s=PRO_AI_TIMEOUT_S,
         )
         out = extract_json_from_response(text)
         out["ai_provider"] = provider
-        if key_slot is not None:
-            out["ai_key"] = developer_key_label(key_slot)
+        if key_label:
+            out["ai_key"] = key_label
         return out
     except Exception as e:
         logger.error("[ai] analyze_stellar_pro_report_only failed: %s", e)
@@ -1340,13 +1689,13 @@ async def analyze_prov3_motion_report_only(
     if imgs:
         prompt = prompt + PROV3_DETECTED_CLUB_APPEND
     try:
-        text, provider, key_slot = await _call_vision_ai(
+        text, provider, key_label = await _call_vision_ai(
             prompt, imgs, max_tokens, temp, call_label, timeout_s=PRO_AI_TIMEOUT_S,
         )
         out = extract_json_from_response(text)
         out["ai_provider"] = provider
-        if key_slot is not None:
-            out["ai_key"] = developer_key_label(key_slot)
+        if key_label:
+            out["ai_key"] = key_label
         return out
     except Exception as e:
         logger.error("[ai] analyze_prov3_motion_report_only failed: %s", e)
@@ -1375,15 +1724,15 @@ async def analyze_swing_plus(
     images = list(keyframe_images or [])[:8]
     label = "plus_unified" if include_visual_observation_bundle else "plus"
     try:
-        text, provider, key_slot = await _call_vision_ai(
+        text, provider, key_label = await _call_vision_ai(
             prompt, images, 9216, 0.2, label, timeout_s=PLUS_AI_TIMEOUT_S,
         )
         out = _normalize_plus_result(extract_json_from_response(text))
         if not phase_images_reliable:
             out = _force_unknown_phase_evals_for_unreliable(out)
         out["ai_provider"] = provider
-        if key_slot is not None:
-            out["ai_key"] = developer_key_label(key_slot)
+        if key_label:
+            out["ai_key"] = key_label
         return out
     except Exception as e:
         logger.error("[ai] analyze_swing_plus all providers failed: %s", e)
@@ -1448,7 +1797,7 @@ Return ONLY JSON:
 }}
 """.strip()
     try:
-        text, provider, key_slot = await _call_vision_ai(
+        text, provider, key_label = await _call_vision_ai(
             prompt, imgs, 2048, 0.2, "plus_observation", timeout_s=PLUS_OBSERVATION_TIMEOUT_S,
         )
         out = extract_json_from_response(text)
@@ -1487,7 +1836,7 @@ Return ONLY JSON:
             "validation_issues": list(issues or []),
             "used_as_authoritative_source": False,
             "provider": provider,
-            "ai_key": developer_key_label(key_slot) if key_slot is not None else None,
+            "ai_key": key_label,
         }
     except Exception as e:
         logger.warning("[ai] plus_observation failed: %s", e)
@@ -1525,13 +1874,13 @@ async def analyze_with_images_only(
         return _fallback_result("No frames available for analysis")
     images = frame_images[:5]
     try:
-        text, provider, key_slot = await _call_vision_ai(
+        text, provider, key_label = await _call_vision_ai(
             IMAGE_ONLY_PROMPT, images, 4096, 0.3, "images_only", timeout_s=IMAGE_ONLY_TIMEOUT_S,
         )
         out = extract_json_from_response(text)
         out["ai_provider"] = provider
-        if key_slot is not None:
-            out["ai_key"] = developer_key_label(key_slot)
+        if key_label:
+            out["ai_key"] = key_label
         return out
     except Exception as e:
         logger.error("[ai] analyze_with_images_only all providers failed: %s", e)
@@ -1592,7 +1941,7 @@ async def detect_phases_from_frames(
 ) -> dict[str, int] | None:
     """Use vision AI to identify which uniformly-sampled frame best
     represents each of the 8 swing phases. Returns {phase_id: frame_index}
-    (0-based) or None on failure. Tries Gemini first, Qwen fallback."""
+    (0-based) or None on failure. Uses NVIDIA/video-capable AI only."""
     n = len(frame_images)
     if n < 8:
         return None
@@ -1601,13 +1950,13 @@ async def detect_phases_from_frames(
     images = frame_images[:n]
 
     try:
-        text, provider, key_slot = await _call_vision_ai(
+        text, provider, key_label = await _call_vision_ai(
             prompt, images, 256, 0.1, "phase_detect", timeout_s=PHASE_DETECT_TIMEOUT_S,
         )
         logger.info(
             "[ai] phase_detect vision provider=%s ai_key=%s",
             provider,
-            developer_key_label(key_slot) if key_slot is not None else "-",
+            key_label or "-",
         )
         result = extract_json_from_response(text)
         return _parse_phase_result(result, n)

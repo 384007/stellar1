@@ -33,22 +33,9 @@ import {
   filterForTier,
   buildQuota,
 } from "@/lib/lab-auth";
-import {
-  getGeminiHosts,
-  getGeminiKeys,
-  isStaleGeminiFileReference,
-  redactGeminiFileRefForLog,
-  shouldRetryNextGeminiKey,
-} from "@/lib/gemini-proxy";
-import { jsonProduct } from "@/lib/chains";
+import { forwardHeadersFromRequest, jsonProduct, modalAnalysisBase } from "@/lib/chains";
 import { getEdgeJwtSecret } from "@/lib/chains/jwt-secret";
 import { unsealUploadSession } from "@/lib/chains/upload-session";
-import {
-  httpStatusFromBracketMessage,
-  labGeminiAnalysis,
-  labGeminiAnalysisWithUri,
-  labQwenAnalysis,
-} from "@/lib/chains/analysis/lab-gemini";
 
 export const runtime = "edge";
 
@@ -139,7 +126,6 @@ export async function POST(request: NextRequest) {
     const file = formData.get("file") as File | null;
     let fileUri = formData.get("file_uri") as string | null;
     let fileMimeType = formData.get("mime_type") as string | null;
-    let geminiKeyHintRaw = formData.get("gemini_key_index");
     const clientJobId = formData.get("job_id") as string | null;
     const unifiedPredictionRaw = formData.get("unified_prediction") as string | null;
     const uploadTokenRaw = formData.get("upload_token") as string | null;
@@ -161,9 +147,6 @@ export async function POST(request: NextRequest) {
       }
       if (!fileUri) fileUri = sess.file_uri;
       if (!fileMimeType) fileMimeType = sess.mime_type;
-      if (geminiKeyHintRaw === null || geminiKeyHintRaw === "") {
-        geminiKeyHintRaw = String(sess.gemini_key_index);
-      }
     }
 
     if (!file && !fileUri) {
@@ -249,104 +232,33 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    // Run AI analysis — Gemini host×key loop → Qwen final fallback
-    const countryLab = (request.headers.get("cf-ipcountry") || "").toUpperCase();
-    const hosts = getGeminiHosts(getCfEnvVal, countryLab === "CN");
-    const keys = getGeminiKeys(getCfEnvVal);
-    const keyHintParsed =
-      geminiKeyHintRaw !== null && String(geminiKeyHintRaw) !== ""
-        ? parseInt(String(geminiKeyHintRaw), 10)
-        : NaN;
-    const keysOrderedForUri =
-      !!fileUri &&
-      !Number.isNaN(keyHintParsed) &&
-      keyHintParsed >= 0 &&
-      keyHintParsed < keys.length
-        ? [...keys.slice(keyHintParsed), ...keys.slice(0, keyHintParsed)]
-        : keys;
+    // Run AI analysis on Modal so the shared PatentPaper/Stellar Modal NVIDIA_API_KEY* pool is used.
     let parsed: Record<string, unknown> | null = null;
-    let usedUriThenMultipart = false;
     try {
-      if (fileUri) {
-        console.log(`[AI][FILE] using_existing_file_id=${redactGeminiFileRefForLog(fileUri)}`);
-        let lastUriErr: Error | null = null;
-        let done = false;
-        for (const host of hosts) {
-          for (const key of keysOrderedForUri) {
-            try {
-              parsed = await labGeminiAnalysisWithUri(fileUri, fileMimeType || "video/mp4", host, key);
-              done = true;
-              break;
-            } catch (e) {
-              lastUriErr = e as Error;
-              const em = lastUriErr.message;
-              const httpSt = httpStatusFromBracketMessage(em);
-              if (httpSt && isStaleGeminiFileReference(httpSt, em)) {
-                console.log(
-                  `[AI][FILE] existing_file_id_failed code=${httpSt} snippet=${em.substring(0, 160).replace(/\s+/g, " ")}`,
-                );
-              }
-              if (shouldRetryNextGeminiKey(httpSt)) {
-                console.log(`[lab] Gemini URI key retry on ${host}: ${em.substring(0, 120)}`);
-                continue;
-              }
-              console.log(`[lab] Gemini URI via ${host} failed: ${em}`);
-              break;
-            }
-          }
-          if (done) break;
-        }
-        if (!done && !file) {
-          throw lastUriErr || new Error("AI 服务不可用");
-        }
-        if (!done && file) {
-          usedUriThenMultipart = true;
-          console.log(
-            `[AI][FILE] fallback_from_stale_file_reference=true reupload_started bytes=${file.size}`,
-          );
-          parsed = null;
-        }
+      if (!file) {
+        const hint = fileUri ? ` existing_file_ref=${fileUri.slice(0, 16)}... mime=${fileMimeType || "video/mp4"}` : "";
+        throw new Error(`NVIDIA 分析需要原始上传文件${hint}`);
       }
 
-      if (!parsed && file) {
-        let geminiOk = false;
-        let lastGeminiErr: Error | null = null;
-        for (const host of hosts) {
-          for (const key of keys) {
-            try {
-              parsed = await labGeminiAnalysis(file, host, key);
-              geminiOk = true;
-              console.log("[AI][FILE] analyze_with_new_file_id ok (lab multipart path)");
-              break;
-            } catch (e) {
-              lastGeminiErr = e as Error;
-              const httpSt = httpStatusFromBracketMessage(lastGeminiErr.message);
-              if (shouldRetryNextGeminiKey(httpSt)) {
-                console.log(`[lab] Gemini multipart key retry HTTP ${httpSt} on ${host}`);
-                continue;
-              }
-              console.log(`[lab] Gemini via ${host} failed: ${lastGeminiErr.message}`);
-              break;
-            }
-          }
-          if (geminiOk) break;
-        }
-        if (!geminiOk) {
-          if (getCfEnvVal("QWEN_API_KEY")) {
-            console.log("[lab] All Gemini hosts/keys failed, falling back to Qwen");
-            parsed = await labQwenAnalysis(file);
-          } else {
-            throw lastGeminiErr || new Error("AI 服务不可用");
-          }
-        }
-        if (usedUriThenMultipart && parsed) {
-          console.log("[AI][FILE] reupload_success");
-        }
+      const base = modalAnalysisBase(getCfEnvVal, request).replace(/\/+$/, "");
+      if (!base) {
+        throw new Error("MODAL_BACKEND_URL / LITE_BACKEND_URL 未配置");
       }
-
-      if (!parsed) {
-        throw new Error("AI 服务不可用");
+      const aiForm = new FormData();
+      aiForm.append("file", file, file.name || "video.mp4");
+      aiForm.append("mime_type", fileMimeType || file.type || "video/mp4");
+      const upstream = await fetch(`${base}/analyze/vision-lab`, {
+        method: "POST",
+        headers: forwardHeadersFromRequest(request),
+        body: aiForm,
+        signal: AbortSignal.timeout(240_000),
+      });
+      const text = await upstream.text();
+      if (!upstream.ok) {
+        throw new Error(`Modal NVIDIA 分析错误 [${upstream.status}]: ${text.substring(0, 200)}`);
       }
+      parsed = JSON.parse(text) as Record<string, unknown>;
+      console.log("[AI][FILE] analyze_with_modal_nvidia ok");
     } catch (aiErr) {
       if (db && dbReady) {
         try {

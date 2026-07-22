@@ -233,7 +233,7 @@ def main() -> int:
                 if not args.pro_only and _provider_failed(plus_body):
                     print(
                         "ERROR: --expect-gemini but Plus ai_provider is missing/none "
-                        "(set GEMINI_HTTPS_PROXY to SG/JP egress, or Vertex in asia-southeast1, or QWEN_API_KEY)",
+                        "(set NVIDIA_API_KEY* on Modal secrets; Gemini/Qwen fallbacks are not used)",
                         file=sys.stderr,
                     )
                     rc = 7 if rc == 0 else rc

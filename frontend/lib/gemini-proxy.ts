@@ -1,99 +1,60 @@
 /**
- * Gemini API proxy + multi-key support for China mainland access.
+ * NVIDIA video AI helpers.
  *
- * CF Edge Workers in CN PoPs can't reach generativelanguage.googleapis.com
- * reliably. This module provides:
- *   1. Ordered list of hosts: direct Google → ALI proxy → JD proxy
- *   2. Multi-key failover: GEMINI_API_KEY → GEMINI_API_KEY_2 … _10 (same order as Python gemini_service)
- *   3. URL rewriting for upload URIs returned by Google
- *
- * Configure via CF Pages Secrets / env vars:
- *   GEMINI_API_KEY        — primary Gemini key
- *   GEMINI_API_KEY_2 … GEMINI_API_KEY_10 — optional extra keys (quota / Files API failover)
- *   GEMINI_PROXY_ALI      — Alibaba Cloud reverse proxy host
- *   GEMINI_PROXY_JD       — JD Cloud reverse proxy host
- *   QWEN_API_KEY          — Qwen fallback key (dashscope.aliyuncs.com)
- *
- * Modal (Python `services/gemini_service.py`): set the same GEMINI_PROXY_ALI / GEMINI_PROXY_JD on the worker,
- * or rely on `POST /api/modal-gemini-forward` (China + no local proxies) so Edge uses this module's host list.
- * Pro v3 on Modal: with that header (CF forwards it on `/pro-v3/analyze/start` when precheck marks CN),
- * Gemini **skips** the short direct-Google phase and uses proxies first; without the hint, direct first then
- * proxy after `STELLAR_GEMINI_DIRECT_FIRST_TIMEOUT_S` (default 10s).
+ * The filename is retained for compatibility with existing imports.
  */
 
-export const GEMINI_DIRECT = "https://generativelanguage.googleapis.com";
+export const NVIDIA_DIRECT = "https://integrate.api.nvidia.com/v1";
+export const NVIDIA_VIDEO_MODEL_DEFAULT = "qwen/qwen3.6-35b-a3b";
 
-/**
- * Return ordered Gemini API hosts based on region.
- * - CN: proxies first (direct Google is blocked by GFW), Google last as hail-mary
- * - non-CN: Google direct only (proxies add latency, not needed)
- *
- * Pro browser uploads send `X-Stellar-Network-Hint: cn` when precheck marks CN; set the same
- * `GEMINI_PROXY_*` secrets on Modal/Render so the report step can reach Gemini from the worker.
- */
-export function getGeminiHosts(getCfEnv: (key: string) => string, isCN = false): string[] {
-  if (!isCN) return [GEMINI_DIRECT];
-
-  const proxies: string[] = [];
-  const ali = getCfEnv("GEMINI_PROXY_ALI");
-  if (ali) proxies.push(ali.replace(/\/+$/, ""));
-  const jd = getCfEnv("GEMINI_PROXY_JD");
-  if (jd) proxies.push(jd.replace(/\/+$/, ""));
-  return proxies.length > 0 ? [...proxies, GEMINI_DIRECT] : [GEMINI_DIRECT];
-}
-
-export function getGeminiKeys(getCfEnv: (key: string) => string): string[] {
+export function getNvidiaKeys(getCfEnv: (key: string) => string): string[] {
   const keys: string[] = [];
-  const k1 = getCfEnv("GEMINI_API_KEY");
-  if (k1) keys.push(k1);
-  for (let n = 2; n <= 10; n++) {
-    const k = getCfEnv(`GEMINI_API_KEY_${n}`);
-    if (k) keys.push(k);
+  const add = (raw: string) => {
+    const k = (raw || "").trim();
+    if (k && !keys.includes(k)) keys.push(k);
+  };
+  add(getCfEnv("NVIDIA_API_KEY"));
+  add(getCfEnv("NVIDIA_KEY"));
+  for (let n = 2; n <= 20; n++) {
+    add(getCfEnv(`NVIDIA_API_KEY_${n}`));
+    add(getCfEnv(`NVIDIA_KEY_${n}`));
+  }
+  for (const envName of ["NVIDIA_API_KEYS", "NVIDIA_KEYS"]) {
+    const raw = getCfEnv(envName);
+    for (const part of raw.split(/[,;\n\r]+/)) add(part);
   }
   return keys;
 }
 
-/** When Gemini returns these HTTP statuses, try the next key (quota / auth / wrong key). */
-export function shouldRetryNextGeminiKey(status: number): boolean {
-  return status === 429 || status === 401 || status === 403;
+export function getNvidiaApiBase(getCfEnv: (key: string) => string): string {
+  return (
+    getCfEnv("NVIDIA_API_BASE") ||
+    getCfEnv("NVIDIA_BASE_URL") ||
+    NVIDIA_DIRECT
+  ).replace(/\/+$/, "");
 }
 
-/**
- * Rewrite an absolute Google URL (e.g. upload URI in x-goog-upload-url header)
- * so it routes through the current proxy host instead of direct Google.
- */
-export function rewriteGoogleUrl(url: string, proxyHost: string): string {
-  if (proxyHost === GEMINI_DIRECT) return url;
-  return url.replace(GEMINI_DIRECT, proxyHost);
+function modelLooksVideoCapable(model: string): boolean {
+  const m = (model || "").trim().toLowerCase();
+  if (!m || m.includes("qwen3.6-27b")) return false;
+  return [
+    "qwen/qwen3.6-35b",
+    "qwen/qwen3.5",
+    "cosmos",
+    "omni",
+    "vision",
+    "video",
+    "-vl",
+    "_vl",
+    "vl-",
+    "vl_",
+  ].some((needle) => m.includes(needle));
 }
 
-/** Safe log label for a Gemini Files `fileUri` (no secrets). */
-export function redactGeminiFileRefForLog(fileUri: string): string {
-  const s = (fileUri || "").trim();
-  if (!s) return "(empty)";
-  try {
-    const noQuery = s.split("?")[0] || s;
-    const parts = noQuery.split("/").filter(Boolean);
-    const last = parts[parts.length - 1] ?? s;
-    return last.length > 40 ? `${last.slice(0, 14)}…${last.slice(-12)}` : last;
-  } catch {
-    return "(redacted)";
-  }
-}
-
-/**
- * True when a Files API reference should be abandoned and bytes re-uploaded:
- * wrong key, deleted/expired file, PERMISSION_DENIED, etc.
- */
-export function isStaleGeminiFileReference(httpStatus: number, responseBody: string): boolean {
-  if (httpStatus === 404) return true;
-  if (httpStatus !== 403) return false;
-  const t = (responseBody || "").toLowerCase();
-  if (t.includes("permission_denied")) return true;
-  if (t.includes("do not have permission")) return true;
-  if (t.includes("may not exist")) return true;
-  if (t.includes("access denied")) return true;
-  if (t.includes("not found") && t.includes("file")) return true;
-  if (t.includes("invalid") && (t.includes("file") || t.includes("resource"))) return true;
-  return false;
+export function getNvidiaVideoModel(getCfEnv: (key: string) => string): string {
+  const explicit = getCfEnv("NVIDIA_VIDEO_MODEL") || getCfEnv("STELLAR_NVIDIA_VIDEO_MODEL");
+  if (explicit) return explicit;
+  const inherited = getCfEnv("NVIDIA_MODEL");
+  if (modelLooksVideoCapable(inherited)) return inherited;
+  return NVIDIA_VIDEO_MODEL_DEFAULT;
 }

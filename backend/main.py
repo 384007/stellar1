@@ -415,6 +415,7 @@ async def health_check():
     from services.internal.prov3_ffmpeg import FFmpegNotFoundError, ffmpeg_has_filter, ffmpeg_bin
 
     gemini_key = os.getenv("GEMINI_API_KEY", "")
+    nvidia_key = os.getenv("NVIDIA_API_KEY", "") or os.getenv("NVIDIA_KEY", "")
     jwt_secret = os.getenv("JWT_SECRET", "")
     frontend_url = os.getenv("FRONTEND_URL", "")
     gemini_backend = (os.getenv("GEMINI_BACKEND") or "").strip().lower() or "developer_api"
@@ -533,6 +534,8 @@ async def health_check():
         },
         "env": {
             "GEMINI_API_KEY": "set" if gemini_key else "missing",
+            "NVIDIA_API_KEY": "set" if nvidia_key else "missing",
+            "NVIDIA_VIDEO_MODEL": (os.getenv("NVIDIA_VIDEO_MODEL") or os.getenv("STELLAR_NVIDIA_VIDEO_MODEL") or None),
             "GEMINI_BACKEND": gemini_backend,
             "VERTEX_AI_LOCATION": vertex_loc or None,
             "GEMINI_HTTPS_PROXY": "set" if proxy_on else "unset",

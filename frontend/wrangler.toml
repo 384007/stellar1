@@ -23,18 +23,10 @@ pages_build_output_dir = ".vercel/output/static"
 [vars]
 ENVIRONMENT = "production"
 BACKEND_URL = "https://stellar1-backend.onrender.com"
-GEMINI_MODEL = "gemini-2.5-flash-lite"
-# Secrets (dashboard): GEMINI_API_KEY, JWT_SECRET — required for Lite analyze + auth.
-# Optional Lite / Edge multi-key failover (same names as backend): GEMINI_API_KEY_2 … GEMINI_API_KEY_10.
-# Video upload: same-origin POST /api/history/upload-video (R2 binding only; browser never gets presigned S3 URLs).
-#
-# Optional CN egress: GEMINI_PROXY_ALI, GEMINI_PROXY_JD (HTTPS origin, no trailing slash) — add as
-# Pages Secrets (same values as Modal ``custom-secret``). Example:
-#   npx wrangler pages secret put GEMINI_PROXY_ALI --project-name stellar1
-#   npx wrangler pages secret put GEMINI_PROXY_JD --project-name stellar1
-# Modal Pro calls ``POST /api/modal-gemini-forward`` — same GEMINI_PROXY_* / keys as Lite (optional):
-#   STELLAR_CF_GEMINI_FORWARD_TIMEOUT_MS (default 240000) for Edge→Google subrequest
-# Optional fallback when no Gemini keys: QWEN_API_KEY.
+NVIDIA_VIDEO_MODEL = "qwen/qwen3.6-35b-a3b"
+# Secrets (dashboard): JWT_SECRET for auth. Analysis AI runs on Modal and reads NVIDIA_API_KEY*
+# from Modal secrets (custom-secret + ai-keys + patentpaper-all-secrets-latest).
+# Disabled legacy routes: /api/upload-video (Gemini Files) and /api/modal-gemini-forward.
 
 [[d1_databases]]
 binding = "DB"

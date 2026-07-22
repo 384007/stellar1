@@ -480,6 +480,57 @@ async def vision_classic_multipart(
                 pass
 
 
+@router.post("/vision-lab")
+async def vision_lab_multipart(
+    request: Request,
+    current_user: Optional[dict] = Depends(get_current_user),
+):
+    """Shot Lab AI analysis via Modal NVIDIA/video-capable provider pool."""
+    from services.lab_video_ai_service import run_lab_video_ai_sync
+
+    tmp_path: Optional[str] = None
+    try:
+        ct = (request.headers.get("content-type") or "").lower()
+        if "multipart" not in ct:
+            raise HTTPException(status_code=400, detail="Expected multipart form data")
+        form = await request.form()
+        uploaded = form.get("file")
+        mime_raw = form.get("mime_type")
+
+        file_bytes: Optional[bytes] = None
+        filename = "video.mp4"
+        if uploaded is not None and hasattr(uploaded, "read"):
+            raw = await uploaded.read()
+            if raw:
+                file_bytes = raw
+                filename = getattr(uploaded, "filename", None) or "video.mp4"
+        if not file_bytes:
+            raise HTTPException(status_code=400, detail="file required")
+
+        suffix = temp_suffix_for_uploaded_video(filename)
+        fd, tmp_path = tempfile.mkstemp(suffix=suffix)
+        try:
+            os.write(fd, file_bytes)
+        finally:
+            os.close(fd)
+
+        mime_type = str(mime_raw or getattr(uploaded, "content_type", "") or "video/mp4") or "video/mp4"
+        out = await asyncio.to_thread(run_lab_video_ai_sync, tmp_path, mime_type, filename)
+        log_non_finite_if_any(logger, out, "vision_lab")
+        return JSONResponse(content=sanitize_json_floats(out))
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("[vision-lab] failed")
+        return JSONResponse(status_code=503, content={"detail": str(e) or "Shot Lab AI failed"})
+    finally:
+        if tmp_path and os.path.exists(tmp_path):
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+
+
 @router.post("/recalculate")
 async def recalculate_prediction(
     payload: RecalculatePredictionRequest,

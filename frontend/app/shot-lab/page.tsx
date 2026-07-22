@@ -12,7 +12,6 @@ import { readLiteAnalyzeResult } from "@/lib/read-lite-analyze-response";
 import {
   appendLiteAnalyzeFileToFormData,
   isVideoFile,
-  uploadVideoForAnalysis,
 } from "@/lib/upload-video";
 import type {
   LabMetrics,
@@ -437,16 +436,9 @@ export default function ShotLabPage() {
       let res: Response;
       try {
         if (video) {
-          const up = await uploadVideoForAnalysis(
-            file, file.name, headers,
-            (pct) => { phaseTarget = pct; },
-            controller.signal,
-          );
-          phaseTarget = 95;
+          phaseTarget = 85;
           const unifiedPrediction = await unifiedPromise;
           const fd = new FormData();
-          fd.append("upload_token", up.upload_token);
-          fd.append("mime_type", up.mime_type);
           fd.append("file", file, file.name);
           fd.append("job_id", jobId);
           if (unifiedPrediction) fd.append("unified_prediction", JSON.stringify(unifiedPrediction));
