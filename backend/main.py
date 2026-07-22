@@ -494,8 +494,8 @@ async def health_check():
             },
             "pro_http_route": "POST /pro-v3/analyze",
             "pro_http_note": "All Pro v3 HTTP routes live under /pro-v3 (product + keyframes).",
-            "pro_http": "POST /pro-v3/analyze -> keyframes + optional Gemini + media URLs",
-            "keyframes_note": "POST /pro-v3/keyframes/analyze is raw pipeline JSON only (no Gemini).",
+            "pro_http": "POST /pro-v3/analyze -> keyframes + optional NVIDIA video AI + media URLs",
+            "keyframes_note": "POST /pro-v3/keyframes/analyze is raw pipeline JSON only (no AI report).",
             "analyze_single_flight": prov3_analyze_single_flight_active(),
             "analyze_single_flight_env": "STELLAR_PROV3_ANALYZE_SINGLE_FLIGHT=0 disables lock (concurrent analyze; OOM risk on Modal).",
             "analyze_in_flight": prov3_analyze_in_flight_count(),
@@ -535,7 +535,11 @@ async def health_check():
         "env": {
             "GEMINI_API_KEY": "set" if gemini_key else "missing",
             "NVIDIA_API_KEY": "set" if nvidia_key else "missing",
-            "NVIDIA_VIDEO_MODEL": (os.getenv("NVIDIA_VIDEO_MODEL") or os.getenv("STELLAR_NVIDIA_VIDEO_MODEL") or None),
+            "NVIDIA_VIDEO_MODEL": (
+                os.getenv("NVIDIA_VIDEO_MODEL")
+                or os.getenv("STELLAR_NVIDIA_VIDEO_MODEL")
+                or "qwen/qwen3.6-35b-a3b"
+            ),
             "GEMINI_BACKEND": gemini_backend,
             "VERTEX_AI_LOCATION": vertex_loc or None,
             "GEMINI_HTTPS_PROXY": "set" if proxy_on else "unset",
