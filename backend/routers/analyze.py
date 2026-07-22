@@ -34,13 +34,13 @@ LITE_SSE_KEEPALIVE_S = float(os.getenv("STELLAR_LITE_SSE_KEEPALIVE_S", "12"))
 
 
 async def _lite_analyze_sse_stream(tmp_path: str, region: str, request_id: str) -> AsyncIterator[bytes]:
-    from services.lite_api_pack_service import pack_lite_public_response
-    from services.lite_independent_pipeline import run_lite_independent_pipeline
-
     completed_normally = False
     last_exc: Optional[BaseException] = None
     task: Optional[asyncio.Task] = None
     try:
+        from services.lite_api_pack_service import pack_lite_public_response
+        from services.lite_independent_pipeline import run_lite_independent_pipeline
+
         yield b": lite-start\n\n"
         task = asyncio.create_task(run_lite_independent_pipeline(tmp_path, region=region))
         while True:
@@ -290,6 +290,10 @@ async def analyze_lite(
 
         region = "CN" if request.headers.get("CF-IPCountry", "").upper() == "CN" else "global"
         assert tmp_path is not None and request_id is not None
+        print(
+            f"[modal-lite] analyze/lite request_id={request_id} region={region} bytes={os.path.getsize(tmp_path)}",
+            flush=True,
+        )
         return StreamingResponse(
             _lite_analyze_sse_stream(tmp_path, region, request_id),
             media_type="text/event-stream",

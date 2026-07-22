@@ -166,16 +166,40 @@ def _genai_configure_developer(api_key: str, *, api_endpoint: str | None = None)
 
 
 def _collect_developer_api_keys() -> list[str]:
-    """GEMINI_API_KEY first (unchanged), then GEMINI_API_KEY_2 … GEMINI_API_KEY_10."""
+    """Lite override key first, then every configured Gemini key slot."""
     keys: list[str] = []
-    primary = os.getenv("GEMINI_API_KEY", "").strip()
-    if primary:
-        keys.append(primary)
+    for name in ("STELLAR_LITE_GEMINI_API_KEY", "GEMINI_API_KEY"):
+        key = os.getenv(name, "").strip()
+        if key and key not in keys:
+            keys.append(key)
     for n in range(2, 11):
-        k = os.getenv(f"GEMINI_API_KEY_{n}", "").strip()
-        if k and k not in keys:
-            keys.append(k)
+        key = os.getenv(f"GEMINI_API_KEY_{n}", "").strip()
+        if key and key not in keys:
+            keys.append(key)
     return keys
+
+
+def _video_model_candidates(env_key: str, defaults: tuple[str, ...]) -> list[str]:
+    configured = (os.getenv(env_key) or "").strip()
+    raw = [*configured.split(","), *defaults] if configured else list(defaults)
+    out: list[str] = []
+    for model in raw:
+        model = model.strip()
+        if model and model not in out:
+            out.append(model)
+    return out
+
+
+def _gemini_video_models() -> list[str]:
+    return _video_model_candidates(
+        "GEMINI_VIDEO_MODELS",
+        ("gemini-3-flash-preview", "gemini-2.0-flash"),
+    )
+
+
+def _is_model_unavailable(exc: BaseException) -> bool:
+    msg = str(exc).lower()
+    return "404" in msg or "not found" in msg or "no longer available" in msg or "unsupported model" in msg
 
 
 def developer_key_label(slot: int) -> str:
@@ -284,17 +308,16 @@ def _gemini_via_cf_pages_generate_sync(
     return text, slot
 
 
-def _call_gemini_developer_sync(
+def _call_gemini_developer_sync_for_model(
     prompt: str,
     images: list[str],
     max_tokens: int,
     temperature: float,
+    model_name: str,
 ) -> tuple[str, int]:
     keys = _collect_developer_api_keys()
     if not keys:
         raise RuntimeError("GEMINI_API_KEY not configured on server")
-
-    model_name = os.getenv("GEMINI_MODEL", "gemini-2.5-flash-lite")
 
     proxies = _reverse_proxy_origins_from_env()
     cn_modal_route = bool(_gemini_modal_cn_proxy_first.get())
@@ -395,7 +418,7 @@ def _call_gemini_developer_sync(
                     break
                 except Exception as e:
                     last_err = e
-                    if idx < len(keys) - 1 and _is_gemini_quota_error(e):
+                    if idx < len(keys) - 1 and not _is_model_unavailable(e):
                         logger.warning(
                             "[gemini] direct key slot %s quota/rate limited (%s), trying next key",
                             idx + 1,
@@ -430,7 +453,7 @@ def _call_gemini_developer_sync(
                     return _finalize_response(response, idx, ep)
                 except Exception as e:
                     last_err = e
-                    if idx < len(keys) - 1 and _is_gemini_quota_error(e):
+                    if idx < len(keys) - 1 and not _is_model_unavailable(e):
                         logger.warning(
                             "[gemini] proxy=%s slot %s quota (%s), next key",
                             _endpoint_log_label(ep),
@@ -456,7 +479,7 @@ def _call_gemini_developer_sync(
                     return _finalize_response(response, idx, direct)
                 except Exception as e:
                     last_err = e
-                    if idx < len(keys) - 1 and _is_gemini_quota_error(e):
+                    if idx < len(keys) - 1 and not _is_model_unavailable(e):
                         continue
                     break
 
@@ -471,13 +494,34 @@ def _call_gemini_developer_sync(
                     return _finalize_response(response, idx, direct)
                 except Exception as e:
                     last_err = e
-                    if idx < len(keys) - 1 and _is_gemini_quota_error(e):
+                    if idx < len(keys) - 1 and not _is_model_unavailable(e):
                         continue
                     break
 
     if last_err:
         raise last_err
     raise RuntimeError("Gemini developer API call failed")
+
+
+def _call_gemini_developer_sync(
+    prompt: str,
+    images: list[str],
+    max_tokens: int,
+    temperature: float,
+) -> tuple[str, int]:
+    last_error: BaseException | None = None
+    for model_name in _gemini_video_models():
+        try:
+            return _call_gemini_developer_sync_for_model(
+                prompt, images, max_tokens, temperature, model_name,
+            )
+        except Exception as exc:
+            last_error = exc
+            if _is_model_unavailable(exc):
+                logger.warning("[gemini] video model unavailable model=%s; trying next model", model_name)
+                continue
+            raise
+    raise RuntimeError(f"All Gemini video models failed: {last_error}")
 
 
 def _use_vertex() -> bool:
@@ -1079,7 +1123,7 @@ def extract_json_from_response(text: str) -> dict:
 
 def _get_model(name: str = ""):
     if not name:
-        name = os.getenv("GEMINI_MODEL", "gemini-2.5-flash-lite")
+        name = _gemini_video_models()[0]
     keys = _collect_developer_api_keys()
     if not keys:
         raise RuntimeError("GEMINI_API_KEY not configured on server")
@@ -1173,7 +1217,75 @@ async def _call_qwen(
     return re.sub(r"<think>[\s\S]*?</think>", "", raw).strip()
 
 
-# ── Unified Gemini-first, Qwen-fallback caller ──
+NVIDIA_VIDEO_API_BASE = "https://integrate.api.nvidia.com/v1"
+
+
+def _collect_nvidia_api_keys() -> list[str]:
+    keys: list[str] = []
+    for n in range(1, 11):
+        suffix = "" if n == 1 else f"_{n}"
+        key = os.getenv(f"NVIDIA_API_KEY{suffix}", "").strip()
+        if key and key not in keys:
+            keys.append(key)
+    return keys
+
+
+def _nvidia_video_models() -> list[str]:
+    return _video_model_candidates(
+        "NVIDIA_VIDEO_MODELS",
+        (
+            "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning",
+            "nvidia/nemotron-nano-12b-v2-vl",
+        ),
+    )
+
+
+async def _call_nvidia_video(
+    prompt: str,
+    images: list[str],
+    max_tokens: int,
+    temperature: float,
+) -> str:
+    from openai import AsyncOpenAI
+
+    keys = _collect_nvidia_api_keys()
+    if not keys:
+        raise RuntimeError("NVIDIA_API_KEY not configured on server")
+    content: list[dict[str, object]] = [{"type": "text", "text": prompt}]
+    for image in images[:11]:
+        content.append({"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image}"}})
+
+    last_error: BaseException | None = None
+    for model in _nvidia_video_models():
+        model_unavailable = False
+        for slot, key in enumerate(keys, start=1):
+            client = AsyncOpenAI(api_key=key, base_url=NVIDIA_VIDEO_API_BASE, timeout=QWEN_TIMEOUT_S)
+            try:
+                response = await client.chat.completions.create(
+                    model=model,
+                    messages=[{"role": "user", "content": content}],
+                    max_tokens=min(max_tokens, 1024),
+                    temperature=min(temperature, 0.2),
+                    extra_body={"top_k": 1, "chat_template_kwargs": {"enable_thinking": False}},
+                )
+                text = (response.choices[0].message.content or "").strip()
+                if not text:
+                    raise RuntimeError("NVIDIA returned empty response")
+                logger.info("[nvidia] video_ok model=%s key_slot=%s", model, slot)
+                return re.sub(r"<think>[\s\S]*?</think>", "", text).strip()
+            except Exception as exc:
+                last_error = exc
+                if _is_model_unavailable(exc):
+                    logger.warning("[nvidia] video model unavailable model=%s; trying next model", model)
+                    model_unavailable = True
+                    break
+                logger.warning("[nvidia] video key slot %s failed; trying next key", slot)
+        if model_unavailable:
+            continue
+    raise RuntimeError(f"All NVIDIA video models and keys failed: {last_error}")
+
+
+# ── Unified Gemini-first, NVIDIA-fallback caller ──
 
 async def _call_vision_ai(
     prompt: str,
@@ -1192,9 +1304,16 @@ async def _call_vision_ai(
     ``timeout_s`` caps wall-clock time for the whole provider chain (Gemini attempt + optional Qwen).
     """
     async def _inner() -> tuple[str, str, Optional[int]]:
-        gemini_err = None
+        gemini_attempt_timeout_s = (
+            min(timeout_s, float(os.getenv("STELLAR_LITE_GEMINI_ATTEMPT_TIMEOUT_S", "25")))
+            if label.startswith("lite")
+            else timeout_s
+        )
         try:
-            text, key_slot = await _call_gemini(prompt, images, max_tokens, temperature)
+            text, key_slot = await asyncio.wait_for(
+                _call_gemini(prompt, images, max_tokens, temperature),
+                timeout=gemini_attempt_timeout_s,
+            )
             backend = "vertex" if _use_vertex() else "developer_api"
             ak = developer_key_label(key_slot) if key_slot is not None else "vertex"
             logger.info(
@@ -1209,16 +1328,17 @@ async def _call_vision_ai(
             gemini_err = e
             logger.warning("[ai] gemini_fail label=%s err=%s", label, e)
 
-        if _has_qwen():
-            try:
-                text = await _call_qwen(prompt, images, max_tokens, temperature)
-                logger.info("[ai] vision_ok provider=qwen label=%s (gemini failed first)", label)
-                print(f"[stellar-ai] vision label={label} provider=qwen ai_key=n/a", flush=True)
-                return text, "qwen", None
-            except Exception as e2:
-                logger.warning("[ai] qwen_fail label=%s err=%s", label, e2)
+        nvidia_error = "not attempted"
+        try:
+            text = await _call_nvidia_video(prompt, images, max_tokens, temperature)
+            logger.info("[ai] vision_ok provider=nvidia label=%s (gemini failed first)", label)
+            print(f"[stellar-ai] vision label={label} provider=nvidia ai_key=rotated", flush=True)
+            return text, "nvidia", None
+        except Exception as exc:
+            nvidia_error = str(exc)
+            logger.warning("[ai] nvidia_fail label=%s err=%s", label, nvidia_error)
 
-        raise RuntimeError(f"All AI providers failed for {label}: {gemini_err}")
+        raise RuntimeError(f"All video AI providers failed for {label}: gemini={gemini_err}; nvidia={nvidia_error}")
 
     try:
         return await asyncio.wait_for(_inner(), timeout=timeout_s)

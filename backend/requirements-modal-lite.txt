@@ -12,3 +12,5 @@ opencv-python-headless==4.10.0.84
 mediapipe==0.10.21
 # Gemini client for /analyze/lite (imported lazily inside gemini_service; not loaded for /health).
 google-generativeai==0.8.4
+# NVIDIA NIM video/vision fallback uses its OpenAI-compatible chat endpoint.
+openai==1.109.1

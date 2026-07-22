@@ -175,7 +175,8 @@ lite_image = (
         ignore=[
             ".venv/**", ".conda-mmaction/**", "__pycache__/**",
             "services/__pycache__/**", "routers/__pycache__/**",
-            "services/fanjuv1/**", "services/lite_ab_mirror/**",
+            "services/fanjuv1/**", "services/lite_ab_mirror/fanjuv1/**",
+            "services/lite_ab_mirror/__pycache__/**",
             "mmaction_models/**", "deeplabcut_workspace/**", ".env", ".DS_Store",
         ],
     )
@@ -184,7 +185,11 @@ lite_image = (
 app = modal.App(
     name="stellar-ai-lite",
     image=lite_image,
-    secrets=[modal.Secret.from_name("custom-secret")],
+    secrets=[
+        modal.Secret.from_name("custom-secret"),
+        modal.Secret.from_name("stellar-lite-gemini-key"),
+        modal.Secret.from_name("stellar-lite-nvidia-key"),
+    ],
 )
 
 

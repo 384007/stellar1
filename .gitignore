@@ -57,3 +57,7 @@ htmlcov/
 
 # TypeScript incremental build cache
 *.tsbuildinfo
+
+# Nested local fanjuv1 project copies are runtime-only and exceed Git/Modal source budgets.
+backend/services/fanjuv1/
+backend/services/lite_ab_mirror/fanjuv1/

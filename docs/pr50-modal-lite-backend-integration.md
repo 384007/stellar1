@@ -319,3 +319,30 @@ PR50 要能回答下面这些问题：
 **PR50 先把 Lite 分析接成：前端统一打自己的 `/api/lite/*`，proxy 默认转 Modal Lite，失败再按开关回退 Render。**
 
 这样最稳，也最容易在 PR 页面验证。
+
+
+---
+
+## 8. 2026-07-22：生产稳定性与 Gemini/NVIDIA 视觉回退
+
+### 已发布行为
+
+- Pages Lite proxy 在 Pages 完成用户鉴权后不再把用户 JWT 转发给 Modal；避免 Modal 网关将业务 Bearer 凭据当作其自身鉴权处理。
+- Proxy 会为每次上游尝试重建 multipart 表单；第一次 Modal 冷启动返回 `524` 时保留 SSE 心跳、等待 3 秒并仅重试一次。
+- Preview 里遗留的旧 `LITE_BACKEND_URL` 不会覆盖当前 Lite 上游，自动回退到已部署的 `stellar-ai-lite` Modal URL。
+- Lite 后端在收到请求时写入 `request_id`、区域和文件字节数；运行时导入放在 SSE 错误边界内，导入失败会以可读 SSE 错误返回。
+- 视觉模型顺序为 Gemini 后接 NVIDIA NIM。Gemini 按独立 Lite key、现有 key slots 及视频模型候选轮换；遇到配额、鉴权或网络失败会切换 key，遇到已退休模型会切换模型。Lite 单次 Gemini 尝试最多等待 25 秒，之后回退到 NVIDIA。
+- NVIDIA NIM 使用视觉候选 `nvidia/nemotron-3-nano-omni-30b-a3b-reasoning`，并按 `NVIDIA_API_KEY` 到 `NVIDIA_API_KEY_10` 轮换；其 OpenAI 兼容客户端版本固定在 `openai==1.109.1`。仅发送 Lite 提取的关键帧，不把视频路由到文本模型。
+
+### 生产验证
+
+- 已成功部署 `modal_app_lite.py` 至 `stellar-ai-lite`。
+- 已构建并发布 Cloudflare Pages Production deployment `fa9c6bf4-1b6b-4cc5-a3b4-8638f0e08637`，分支为 `feat/modal-centric-backend-proxies`。
+- 使用真实视频 `/Users/mac/Downloads/挥杆视频.mp4` 通过 Pages Lite proxy 验证：HTTP 200、8 个关键帧、总分 97、返回完整中文挥杆诊断与建议。Modal 日志确认请求到达并耗时 107.2 秒完成；结果并非本地错误降级（本地降级固定为总分 0）。
+- Gemini 在该请求的首轮直连未在 10 秒内响应；NVIDIA NIM 已以同一视频关键帧独立验证 HTTP 200 且返回有效 JSON。产品响应按约定不暴露 `ai_provider` 字段，因此不得用其空值判断回退失败。
+
+### 运维与回滚
+
+- Lite 日志：`modal app logs stellar-ai-lite`。
+- 单独回滚 Pages：在 Cloudflare Pages 将 Production 回滚到此前 Production deployment，或重新部署目标前端构建到 `feat/modal-centric-backend-proxies`。
+- 单独回滚 Modal：从 Git 中检出先前已知版本的 `modal_app_lite.py`、`backend/routers/analyze.py`、`backend/services/gemini_service.py` 和 `backend/requirements-modal-lite.txt`，然后执行 `modal deploy modal_app_lite.py`。不要删除或覆盖已有 Modal secrets。
