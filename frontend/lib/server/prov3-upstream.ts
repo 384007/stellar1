@@ -3,13 +3,13 @@ import "server-only";
 import { PRO_V3_ANALYZE_PATH } from "@/lib/prov3-endpoints";
 
 /** Shipped default when env has no MODAL_BACKEND_URL; keep in sync with Modal deployment. */
-export const DEFAULT_PROV3_MODAL_URL = "https://suitsui72--stellar-ai-fastapi-app.modal.run";
+export const DEFAULT_PROV3_MODAL_URL = "https://dytsui--stellar-ai-fastapi-app.modal.run";
 
 /**
  * Lite-only Modal worker (`modal deploy modal_app_lite` → app `stellar-ai-lite`, ASGI `fastapi_app_lite`).
  * Override with ``LITE_BACKEND_URL`` in Cloudflare Pages if your workspace slug differs.
  */
-export const DEFAULT_LITE_MODAL_URL = "https://suitsui72--stellar-ai-lite-fastapi-app-lite.modal.run";
+export const DEFAULT_LITE_MODAL_URL = "https://dytsui--stellar-ai-lite-fastapi-app-lite.modal.run";
 
 const DEFAULT_RENDER = "https://stellar1-backend.onrender.com";
 
@@ -144,11 +144,9 @@ export function resolveLiteModalWorkerBase(
   getCfEnv: (key: string) => string,
   processEnv: Record<string, string | undefined> = process.env,
 ): string {
-  const configured = (getCfEnv("LITE_BACKEND_URL") || processEnv.LITE_BACKEND_URL || "").trim();
-  // Preview deployments may retain an obsolete workspace URL. Only accept the
-  // active Lite worker origin; otherwise use the shipped active default.
-  if (configured.includes("suitsui72--stellar-ai-lite-fastapi-app-lite.modal.run")) {
-    return normalizeProHttpApiBase(configured);
+  const secretLite = (getCfEnv("LITE_BACKEND_URL") || processEnv.LITE_BACKEND_URL || "").trim();
+  if (secretLite) {
+    return normalizeProHttpApiBase(secretLite);
   }
   return normalizeProHttpApiBase(DEFAULT_LITE_MODAL_URL);
 }

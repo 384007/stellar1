@@ -15,10 +15,6 @@ from services.golfdb_swingnet_service import (
 
 logger = logging.getLogger(__name__)
 
-_LITE_SWINGNET_DEFAULT_FRAMES = 1200
-_LITE_SWINGNET_MAX_FRAMES = 2400
-_LITE_SWINGNET_MIN_ACCURATE_FRAMES = 480
-
 
 def infer_lite_a_candidates(
     analysis_frames: List[dict],
@@ -28,37 +24,39 @@ def infer_lite_a_candidates(
     preprocess_meta: Optional[Dict[str, object]] = None,
 ) -> List[Dict[str, object]]:
     _ = (analysis_frames, preprocess_meta)
-    if not swingnet_enabled():
-        raise RuntimeError("lite_swingnet_checkpoint_missing")
-    if not analysis_video or not os.path.isfile(analysis_video):
-        raise RuntimeError("lite_swingnet_analysis_video_missing")
-    if not analysis_id:
-        raise RuntimeError("lite_swingnet_analysis_id_missing")
-
-    logger.info(
-        "[lite_ab][A] engine=%s checkpoint=%s",
-        PROV3_A_ENGINE_ID,
-        swingnet_checkpoint_path(),
-    )
-    afps = float((preprocess_meta or {}).get("analysis_fps") or 240)
-    lite_cap_raw = (os.getenv("STELLAR_SWINGNET_LITE_MAX_FRAMES") or str(_LITE_SWINGNET_DEFAULT_FRAMES)).strip()
-    try:
-        lite_cap = int(lite_cap_raw)
-    except ValueError:
-        lite_cap = _LITE_SWINGNET_DEFAULT_FRAMES
-    if lite_cap < _LITE_SWINGNET_MIN_ACCURATE_FRAMES:
-        logger.warning(
-            "[lite_ab][A] STELLAR_SWINGNET_LITE_MAX_FRAMES=%s below accuracy floor=%s; using floor",
-            lite_cap,
-            _LITE_SWINGNET_MIN_ACCURATE_FRAMES,
+    if (
+        swingnet_enabled()
+        and analysis_video
+        and analysis_id
+        and os.path.isfile(analysis_video)
+    ):
+        logger.info(
+            "[lite_ab][A] engine=%s checkpoint=%s",
+            PROV3_A_ENGINE_ID,
+            swingnet_checkpoint_path(),
         )
-    lite_cap = max(_LITE_SWINGNET_MIN_ACCURATE_FRAMES, min(lite_cap, _LITE_SWINGNET_MAX_FRAMES))
-    kfs = run_swingnet_extract(
-        analysis_video,
-        analysis_id=analysis_id,
-        analysis_fps=afps,
-        max_extract_frames=lite_cap,
+        afps = float((preprocess_meta or {}).get("analysis_fps") or 240)
+        lite_cap_raw = (os.getenv("STELLAR_SWINGNET_LITE_MAX_FRAMES") or "512").strip()
+        try:
+            lite_cap = int(lite_cap_raw)
+        except ValueError:
+            lite_cap = 512
+        lite_cap = max(64, min(lite_cap, 1200))
+        kfs = run_swingnet_extract(
+            analysis_video,
+            analysis_id=analysis_id,
+            analysis_fps=afps,
+            max_extract_frames=lite_cap,
+        )
+        if kfs:
+            return kfs
+        logger.warning("[lite_ab][A] %s inference failed — returning empty keyframes", PROV3_A_ENGINE_ID)
+        return []
+
+    logger.warning(
+        "[lite_ab][A] SwingNet unavailable or input missing (enabled=%s, video=%s, analysis_id=%s)",
+        swingnet_enabled(),
+        bool(analysis_video and os.path.isfile(analysis_video)),
+        bool(analysis_id),
     )
-    if not kfs:
-        raise RuntimeError("lite_swingnet_inference_empty")
-    return kfs
+    return []

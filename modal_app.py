@@ -192,16 +192,7 @@ image = (
         f'FN_TIMEOUT_S={MODAL_FASTAPI_FUNCTION_TIMEOUT_S}"'
     )
     # Keep backend mount last so local backend edits do not invalidate the whole image build.
-    .add_local_dir(
-        "backend",
-        remote_path="/backend",
-        ignore=[
-            ".venv/**", ".conda-mmaction/**", "__pycache__/**",
-            "services/__pycache__/**", "routers/__pycache__/**",
-            "services/fanjuv1/**", "services/lite_ab_mirror/**",
-            "mmaction_models/**", "deeplabcut_workspace/**", ".env", ".DS_Store",
-        ],
-    )
+    .add_local_dir("backend", remote_path="/backend")
 )
 
 # ---------------------------------------------------------------------------

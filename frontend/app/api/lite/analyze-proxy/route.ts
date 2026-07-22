@@ -121,39 +121,27 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ detail: "Missing request_id" }, { status: 400 });
   }
 
+  const out = new FormData();
   const f = file as File;
+  out.append("file", f, f.name || "video.mp4");
+  out.append("request_id", rid);
+
   const upstreamHeaders: Record<string, string> = {
     "X-Stellar-Idempotency-Key": idem.trim(),
   };
-  // Authentication is completed at Pages. Do not forward the product JWT to
-  // Modal: its gateway can treat an arbitrary Bearer value as Modal auth.
+  const authz = request.headers.get("authorization");
+  if (authz) upstreamHeaders.Authorization = authz;
   if (cfCountryHdr) upstreamHeaders["CF-IPCountry"] = cfCountryHdr;
 
   const url = `${base}/analyze/lite`;
-  const fetchUpstream = () => {
-    // FormData bodies are single-use in some Edge runtimes; rebuild for a retry.
-    const out = new FormData();
-    out.append("file", f, f.name || "video.mp4");
-    out.append("request_id", rid);
-    return fetch(url, {
+  const stream = createLiteAnalyzeEdgeSseStream(() =>
+    fetch(url, {
       method: "POST",
       headers: upstreamHeaders,
       body: out,
       signal: AbortSignal.timeout(LITE_ANALYZE_FETCH_TIMEOUT_MS),
-    });
-  };
-  const fetchWithColdStartRetry = async () => {
-    const first = await fetchUpstream();
-    if (first.status !== 524) return first;
-
-    // Modal may still be assigning a scale-to-zero container when its first
-    // request reaches the Modal gateway. Keep the browser SSE alive and retry
-    // once after the gateway's 524 rather than surfacing a false failure.
-    console.warn(`[lite/analyze-proxy] upstream 524; retrying cold start request_id=${rid}`);
-    await new Promise((resolve) => setTimeout(resolve, 3_000));
-    return fetchUpstream();
-  };
-  const stream = createLiteAnalyzeEdgeSseStream(fetchWithColdStartRetry);
+    }),
+  );
 
   return new NextResponse(stream, {
     status: 200,
