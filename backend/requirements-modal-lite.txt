@@ -10,5 +10,5 @@ numpy<2
 Pillow==11.1.0
 opencv-python-headless==4.10.0.84
 mediapipe==0.10.21
-# Gemini client for /analyze/lite (imported lazily inside gemini_service; not loaded for /health).
+# Legacy compatibility import path; /analyze/lite uses NVIDIA video AI for external vision.
 google-generativeai==0.8.4

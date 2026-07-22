@@ -7,8 +7,7 @@ Live logs (CLI):
 If the dashboard shows no logs, traffic may be hitting Render instead:
   curl -s "https://<your-modal-url>/health" | jq .runtime   # expect "modal"
 
-Gemini 地区/出口请在运行进程的环境变量中配置（与 Modal 解耦），例如本机或 CI：
-  HTTPS_PROXY / GEMINI_HTTPS_PROXY、或 GEMINI_BACKEND=vertex + VERTEX_AI_LOCATION=asia-southeast1
+AI 视频分析走 Modal Secrets 里的 NVIDIA_API_KEY*，NVIDIA hosted 默认出口即可；备用视频厂商只接受显式 video/vision 配置。
 
 Build identity (baked into the image at `modal deploy` time):
   STELLAR_GIT_SHA, STELLAR_GIT_BRANCH, STELLAR_BUILD_TIME — override via env, else from `git` + UTC clock.

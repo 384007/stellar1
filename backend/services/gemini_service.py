@@ -44,7 +44,14 @@ NVIDIA_TIMEOUT_S = float(os.getenv("STELLAR_NVIDIA_TIMEOUT_S", "180"))
 
 GEMINI_DEVELOPER_API_ORIGIN = "https://generativelanguage.googleapis.com"
 NVIDIA_API_BASE_DEFAULT = "https://integrate.api.nvidia.com/v1"
-NVIDIA_VIDEO_MODEL_DEFAULT = "qwen/qwen3.6-35b-a3b"
+NVIDIA_VIDEO_MODEL_DEFAULT = "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning"
+NVIDIA_VIDEO_MODEL_CANDIDATES = (
+    NVIDIA_VIDEO_MODEL_DEFAULT,
+    "nvidia/nemotron-nano-12b-v2-vl",
+)
+NVIDIA_KNOWN_UNHOSTED_VIDEO_MODELS = {
+    "qwen/qwen3.6-35b-a3b",
+}
 
 _genai = None
 _vertex_inited = False
@@ -208,6 +215,13 @@ def provider_key_label(provider: str, slot: Optional[int], fallback: str | None 
     return f"{provider}_key{slot if slot > 1 else ''}"
 
 
+class VideoAiProviderHttpError(RuntimeError):
+    def __init__(self, provider: str, status_code: int, body: str) -> None:
+        super().__init__(f"{provider} HTTP {status_code}: {body}")
+        self.provider = provider
+        self.status_code = status_code
+
+
 def _split_env_keys(raw: str) -> list[str]:
     parts = re.split(r"[,;\n\r]+", raw or "")
     return [p.strip() for p in parts if p.strip()]
@@ -257,12 +271,9 @@ def _model_looks_video_capable(model: str) -> bool:
     m = (model or "").strip().lower()
     if not m:
         return False
-    # NVIDIA docs explicitly note Qwen3.6-27B has no video support.
-    if "qwen3.6-27b" in m:
+    if "qwen3.6-27b" in m or m in NVIDIA_KNOWN_UNHOSTED_VIDEO_MODELS:
         return False
     needles = (
-        "qwen/qwen3.6-35b",
-        "qwen/qwen3.5",
         "cosmos",
         "omni",
         "vision",
@@ -275,15 +286,32 @@ def _model_looks_video_capable(model: str) -> bool:
     return any(x in m for x in needles)
 
 
-def _nvidia_video_model() -> str:
+def _nvidia_model_allowed(model: str, *, base: str) -> bool:
+    m = (model or "").strip().lower()
+    if not m:
+        return False
+    # The hosted NVIDIA API returns 404 for this older default. Keep custom NIM/self-hosted bases opt-in.
+    if base.rstrip("/") == NVIDIA_API_BASE_DEFAULT and m in NVIDIA_KNOWN_UNHOSTED_VIDEO_MODELS:
+        return False
+    return True
+
+
+def _nvidia_video_models(*, base: str | None = None) -> list[str]:
+    api_base = (base or _nvidia_api_base()).rstrip("/")
     for env_name in ("NVIDIA_VIDEO_MODEL", "STELLAR_NVIDIA_VIDEO_MODEL"):
         v = (os.getenv(env_name) or "").strip()
+        if v and _nvidia_model_allowed(v, base=api_base):
+            return [v]
         if v:
-            return v
+            logger.warning("[ai] ignore_unhosted_nvidia_video_model env=%s model=%s base=%s", env_name, v, api_base)
     inherited = (os.getenv("NVIDIA_MODEL") or "").strip()
-    if _model_looks_video_capable(inherited):
-        return inherited
-    return NVIDIA_VIDEO_MODEL_DEFAULT
+    if _model_looks_video_capable(inherited) and _nvidia_model_allowed(inherited, base=api_base):
+        return [inherited]
+    return list(NVIDIA_VIDEO_MODEL_CANDIDATES)
+
+
+def _nvidia_video_model() -> str:
+    return _nvidia_video_models()[0]
 
 
 def _provider_base_default(provider: str) -> str:
@@ -405,29 +433,38 @@ def _collect_numbered_video_ai_providers() -> list[dict[str, Any]]:
 def _ordered_video_ai_providers() -> list[dict[str, Any]]:
     """NVIDIA keys first, round-robin start slot; explicit video fallback providers after."""
     global _nvidia_rr_cursor
-    nvidia_entries = [
-        {
-            "provider": "nvidia",
-            "key": key,
-            "model": _nvidia_video_model(),
-            "base": _nvidia_api_base(),
-            "label": nvidia_key_label(slot),
-            "slot": slot,
-            "env_name": env_name,
-        }
-        for slot, key, env_name in _collect_nvidia_api_keys()
-    ]
-    if nvidia_entries:
+    nvidia_key_entries = _collect_nvidia_api_keys()
+    nvidia_entries: list[dict[str, Any]] = []
+    if nvidia_key_entries:
         with _video_ai_lock:
-            start = _nvidia_rr_cursor % len(nvidia_entries)
+            start = _nvidia_rr_cursor % len(nvidia_key_entries)
             _nvidia_rr_cursor += 1
-        nvidia_entries = nvidia_entries[start:] + nvidia_entries[:start]
+        nvidia_key_entries = nvidia_key_entries[start:] + nvidia_key_entries[:start]
+        base = _nvidia_api_base()
+        for model in _nvidia_video_models(base=base):
+            for slot, key, env_name in nvidia_key_entries:
+                nvidia_entries.append(
+                    {
+                        "provider": "nvidia",
+                        "key": key,
+                        "model": model,
+                        "base": base,
+                        "label": nvidia_key_label(slot),
+                        "slot": slot,
+                        "env_name": env_name,
+                    }
+                )
 
     providers = nvidia_entries + _collect_json_video_ai_providers() + _collect_numbered_video_ai_providers()
     out: list[dict[str, Any]] = []
-    seen: set[tuple[str, str, str]] = set()
+    seen: set[tuple[str, str, str, str]] = set()
     for p in providers:
-        ident = (str(p.get("provider") or ""), str(p.get("base") or ""), str(p.get("key") or ""))
+        ident = (
+            str(p.get("provider") or ""),
+            str(p.get("base") or ""),
+            str(p.get("key") or ""),
+            str(p.get("model") or ""),
+        )
         if not ident[2] or ident in seen:
             continue
         seen.add(ident)
@@ -1452,7 +1489,6 @@ def _openai_compat_chat_sync(
         "stream": False,
     }
     if name == "nvidia":
-        payload["include_reasoning"] = False
         payload["chat_template_kwargs"] = {"enable_thinking": False}
 
     headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
@@ -1461,7 +1497,7 @@ def _openai_compat_chat_sync(
         resp = client.post(f"{base}/chat/completions", headers=headers, json=payload)
     if resp.status_code != 200:
         body = resp.text[:500]
-        raise RuntimeError(f"{name} HTTP {resp.status_code}: {body}")
+        raise VideoAiProviderHttpError(name, resp.status_code, body)
     data = resp.json()
     text = _openai_compat_extract_text(data)
     if not text:
@@ -1482,10 +1518,15 @@ def _call_video_ai_sync(
         raise RuntimeError("NVIDIA_API_KEY not configured; no explicit video AI provider configured")
 
     last_err: BaseException | None = None
+    skipped_404_models: set[tuple[str, str, str]] = set()
     for p in providers:
         provider = str(p.get("provider") or "video_ai").lower()
         key_label = str(p.get("label") or provider_key_label(provider, p.get("slot")) or provider)
         model = str(p.get("model") or "")
+        base = str(p.get("base") or "").rstrip("/")
+        model_ident = (provider, base, model)
+        if model_ident in skipped_404_models:
+            continue
         try:
             text = _openai_compat_chat_sync(
                 p,
@@ -1500,7 +1541,16 @@ def _call_video_ai_sync(
             return text, provider, key_label
         except Exception as e:
             last_err = e
-            logger.warning("[ai] video_ai_fail provider=%s label=%s ai_key=%s err=%s", provider, label, key_label, e)
+            logger.warning(
+                "[ai] video_ai_fail provider=%s label=%s ai_key=%s model=%s err=%s",
+                provider,
+                label,
+                key_label,
+                model,
+                e,
+            )
+            if isinstance(e, VideoAiProviderHttpError) and e.status_code == 404:
+                skipped_404_models.add(model_ident)
             continue
     raise RuntimeError(f"All video AI providers failed for {label}: {last_err}")
 

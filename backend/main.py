@@ -538,7 +538,7 @@ async def health_check():
             "NVIDIA_VIDEO_MODEL": (
                 os.getenv("NVIDIA_VIDEO_MODEL")
                 or os.getenv("STELLAR_NVIDIA_VIDEO_MODEL")
-                or "qwen/qwen3.6-35b-a3b"
+                or "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning"
             ),
             "GEMINI_BACKEND": gemini_backend,
             "VERTEX_AI_LOCATION": vertex_loc or None,

@@ -158,7 +158,7 @@ async def run_lite_orchestrator(video_path: str, *, region: str = "global") -> d
             logger.info("%s path=B_low_trust ab_reasons=%s", _LOG, ab_reasons)
         role_log(
             f"[ROLE=LITE_PIPELINE] ab_done rows={len(final_rows)} trust={trust_tier} "
-            f"phase_pass={ab_phase_pass} next=keyframe_export_then_unified_gemini"
+            f"phase_pass={ab_phase_pass} next=keyframe_export_then_unified_video_ai"
         )
 
         hand_info = detect_handedness(poses, None) if poses else {"hand": "UNKNOWN", "confidence": 0.0}
@@ -194,7 +194,7 @@ async def run_lite_orchestrator(video_path: str, *, region: str = "global") -> d
             club_b64s.append(club_b64s[-1])
         club_kw = club_b64s[:3] if club_b64s else None
 
-        role_log("[ROLE=LITE_PIPELINE] gemini_lite_unified_start (strip+club one vision call)")
+        role_log("[ROLE=LITE_PIPELINE] video_ai_lite_unified_start provider_pool=nvidia_primary (strip+club one vision call)")
         ai_result = await asyncio.wait_for(
             analyze_swing_lite(
                 pose_data={

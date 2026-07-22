@@ -23,7 +23,7 @@ pages_build_output_dir = ".vercel/output/static"
 [vars]
 ENVIRONMENT = "production"
 BACKEND_URL = "https://stellar1-backend.onrender.com"
-NVIDIA_VIDEO_MODEL = "qwen/qwen3.6-35b-a3b"
+NVIDIA_VIDEO_MODEL = "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning"
 # Secrets (dashboard): JWT_SECRET for auth. Analysis AI runs on Modal and reads NVIDIA_API_KEY*
 # from Modal secrets (custom-secret + ai-keys + patentpaper-all-secrets-latest).
 # Disabled legacy routes: /api/upload-video (Gemini Files) and /api/modal-gemini-forward.

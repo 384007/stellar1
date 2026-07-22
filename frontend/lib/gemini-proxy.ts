@@ -5,7 +5,7 @@
  */
 
 export const NVIDIA_DIRECT = "https://integrate.api.nvidia.com/v1";
-export const NVIDIA_VIDEO_MODEL_DEFAULT = "qwen/qwen3.6-35b-a3b";
+export const NVIDIA_VIDEO_MODEL_DEFAULT = "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning";
 
 export function getNvidiaKeys(getCfEnv: (key: string) => string): string[] {
   const keys: string[] = [];
@@ -36,10 +36,8 @@ export function getNvidiaApiBase(getCfEnv: (key: string) => string): string {
 
 function modelLooksVideoCapable(model: string): boolean {
   const m = (model || "").trim().toLowerCase();
-  if (!m || m.includes("qwen3.6-27b")) return false;
+  if (!m || m.includes("qwen3.6-27b") || m === "qwen/qwen3.6-35b-a3b") return false;
   return [
-    "qwen/qwen3.6-35b",
-    "qwen/qwen3.5",
     "cosmos",
     "omni",
     "vision",

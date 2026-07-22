@@ -364,7 +364,7 @@ async def analyze_club_detect_batch_multipart(
     """
     Three JPEG frames in **one** HTTP request — **one** multimodal club vision call (not 3× single-frame).
 
-    One Modal/ASGI invocation; one Gemini/Qwen round-trip for the three frames together.
+    One Modal/ASGI invocation; one shared NVIDIA/video-AI round-trip for the three frames together.
     """
     from services.club_detector import detect_club_multiframe_bgr
 
@@ -412,7 +412,7 @@ async def vision_classic_multipart(
     request: Request,
     current_user: Optional[dict] = Depends(get_current_user),
 ):
-    """Classic Lite vision (Gemini Files + Qwen fallback) — product JSON only."""
+    """Classic Lite vision through NVIDIA/video-AI provider pool — product JSON only."""
     from services.vision_classic_lite_service import VisionClassicLiteError, run_vision_classic_lite_sync
 
     tmp_path: Optional[str] = None
